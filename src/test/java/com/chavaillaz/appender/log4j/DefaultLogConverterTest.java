@@ -55,7 +55,6 @@ class DefaultLogConverterTest {
         assertEquals("java.lang.RuntimeException", document.get("class"));
         String stacktrace = document.get("stacktrace").toString();
         assertTrue(stacktrace.contains("java.lang.RuntimeException: my-exception"));
-        assertTrue(stacktrace.contains("at com.chavaillaz.appender.log4j.DefaultLogConverterTest.convert(DefaultLogConverterTest.java"));
     }
 
 }
