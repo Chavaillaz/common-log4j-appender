@@ -1,11 +1,28 @@
 # Common Log4j Appender
 
-Library for the creation of Appenders for Log4j
-
 ![Quality Gate](https://github.com/chavaillaz/common-log4j-appender/actions/workflows/sonarcloud.yml/badge.svg)
 ![Dependency Check](https://github.com/chavaillaz/common-log4j-appender/actions/workflows/snyk.yml/badge.svg)
 [![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.chavaillaz/common-log4j-appender/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.chavaillaz/common-log4j-appender)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+Library for the creation of Appenders for Log4j
+
+## Installation
+
+The dependency is available in maven central (see badge for version):
+
+```xml
+<dependency>
+    <groupId>com.chavaillaz</groupId>
+    <artifactId>common-log4j-appender</artifactId>
+</dependency>
+```
+
+## Usage
+
+Create a new appender by extending the `AbstractLogDeliveryAppender` class and implementing the following methods:
+- **createDeliveryHandler**: Create a new instance of a delivery handler implementing `LogDelivery`.
+- **createDeliveryTask**: Create a new instance of a delivery task to send a log event.
 
 ## Contributing
 
