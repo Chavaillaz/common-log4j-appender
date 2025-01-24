@@ -82,7 +82,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     protected abstract boolean sendBulk(List<Map<String, Object>> documents);
 
     @Override
-    public void close() {
+    public void close() throws Exception {
         sendBatch();
     }
 
