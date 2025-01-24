@@ -110,12 +110,12 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createDeliveryHandler() {
+        public LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
         @Override
-        public Runnable createDeliveryTask(LogEvent loggingEvent) {
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> countTaskExecuted.increment();
         }
 

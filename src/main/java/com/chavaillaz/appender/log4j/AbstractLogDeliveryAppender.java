@@ -55,21 +55,25 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     @Override
     public void start() {
-        try {
-            logDeliveryHandler = createDeliveryHandler();
-        } catch (Exception e) {
-            error("Client configuration error", e);
-        }
+        startLogDeliveryHandler();
 
-        if (logConfiguration.getFlushThreshold() > 1) {
-            threadPool.scheduleWithFixedDelay(
-                    logDeliveryHandler::flush,
-                    logConfiguration.getFlushInterval().toMillis(),
-                    logConfiguration.getFlushInterval().toMillis(),
-                    MILLISECONDS);
+        if (logDeliveryHandler != null && logConfiguration.getFlushThreshold() > 1) {
+            long interval = logConfiguration.getFlushInterval().toMillis();
+            threadPool.scheduleWithFixedDelay(logDeliveryHandler::flush, interval, interval, MILLISECONDS);
         }
 
         super.start();
+    }
+
+    /**
+     * Starts the client for logs transmission.
+     */
+    private void startLogDeliveryHandler() {
+        try {
+            logDeliveryHandler = createLogDeliveryHandler();
+        } catch (Exception e) {
+            error("Log delivery starting error", e);
+        }
     }
 
     /**
@@ -77,11 +81,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      *
      * @return The logs delivery handler
      */
-    public abstract LogDelivery createDeliveryHandler();
+    public abstract LogDelivery createLogDeliveryHandler();
 
     @Override
     public void append(LogEvent loggingEvent) {
-        threadPool.submit(createDeliveryTask(loggingEvent));
+        threadPool.submit(createLogDeliveryTask(loggingEvent));
     }
 
     /**
@@ -90,25 +94,32 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param loggingEvent The logging event to send
      * @return The runnable to execute
      */
-    public abstract Runnable createDeliveryTask(LogEvent loggingEvent);
+    public abstract Runnable createLogDeliveryTask(LogEvent loggingEvent);
 
     @Override
     public boolean stop(long timeout, TimeUnit timeUnit) {
         try {
+            stopLogDeliveryHandler();
             threadPool.shutdown();
             threadPool.awaitTermination(timeout, timeUnit);
         } catch (InterruptedException e) {
             error("Thread interrupted during termination", e);
             currentThread().interrupt();
         } finally {
-            try {
-                logDeliveryHandler.close();
-            } catch (Exception e) {
-                error("Log delivery closing error", e);
-            }
             super.stop(timeout, timeUnit);
         }
         return true;
+    }
+
+    /**
+     * Stops the client for logs transmission.
+     */
+    private void stopLogDeliveryHandler() {
+        try {
+            logDeliveryHandler.close();
+        } catch (Exception e) {
+            error("Log delivery closing error", e);
+        }
     }
 
 }
