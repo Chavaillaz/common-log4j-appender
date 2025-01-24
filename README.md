@@ -5,7 +5,7 @@
 [![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.chavaillaz/common-log4j-appender/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.chavaillaz/common-log4j-appender)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Library for the creation of Appenders for Log4j
+Library for the creation of Appenders for Log4j.
 
 ## Installation
 
@@ -21,8 +21,8 @@ The dependency is available in maven central (see badge for version):
 ## Usage
 
 Create a new appender by extending the `AbstractLogDeliveryAppender` class and implementing the following methods:
-- **createDeliveryHandler**: Create a new instance of a delivery handler implementing `LogDelivery`.
-- **createDeliveryTask**: Create a new instance of a delivery task to send a log event.
+- **createLogDeliveryHandler**: Create a new instance of a delivery handler implementing `LogDelivery`.
+- **createLogDeliveryTask**: Create a new instance of a delivery task to send a log event.
 
 ## Contributing
 
