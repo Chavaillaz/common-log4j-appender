@@ -74,6 +74,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Creates the client for logs transmission.
+     *
+     * @return The logs delivery handler
      */
     public abstract LogDelivery createDeliveryHandler();
 
@@ -86,6 +88,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Creates a runnable in order to transmit the given log.
      *
      * @param loggingEvent The logging event to send
+     * @return The runnable to execute
      */
     public abstract Runnable createDeliveryTask(LogEvent loggingEvent);
 
