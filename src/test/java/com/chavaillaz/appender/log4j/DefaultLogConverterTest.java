@@ -32,7 +32,7 @@ class DefaultLogConverterTest {
         var event = Log4jLogEvent.newBuilder()
                 .setMessage(new SimpleMessage("Correct horse battery staple"))
                 .setTimeMillis(epochMilli)
-                .setLoggerFqcn("com.chavaillaz.appender.log4j.MyClass")
+                .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
                 .setLevel(Level.ERROR)
                 .setThreadName("thread-name")
                 .setContextData(mdc)

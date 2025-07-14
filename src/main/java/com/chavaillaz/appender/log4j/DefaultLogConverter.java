@@ -56,7 +56,7 @@ public class DefaultLogConverter implements LogConverter {
     /**
      * Writes the basic fields of the logging event in the given document.
      *
-     * @param document The document in which write the fields
+     * @param document The document in which writes the fields
      * @param event    The logging event
      */
     protected void writeBasic(Map<String, Object> document, LogEvent event) {
@@ -64,7 +64,7 @@ public class DefaultLogConverter implements LogConverter {
         document.put("host", configuration.getHost());
         document.put("environment", configuration.getEnvironment());
         document.put("application", configuration.getApplication());
-        document.put("logger", event.getLoggerFqcn());
+        document.put("logger", event.getLoggerName());
         document.put("level", Optional.of(event)
                 .map(LogEvent::getLevel)
                 .map(Level::toString)
@@ -79,7 +79,7 @@ public class DefaultLogConverter implements LogConverter {
     /**
      * Writes the MDC fields of the logging event in the given document.
      *
-     * @param document The document in which write the fields
+     * @param document The document in which writes the fields
      * @param event    The logging event
      */
     protected void writeMDC(Map<String, Object> document, LogEvent event) {
@@ -91,7 +91,7 @@ public class DefaultLogConverter implements LogConverter {
     /**
      * Writes the exception passed to the logging event in the given document.
      *
-     * @param document The document in which write the fields
+     * @param document The document in which writes the fields
      * @param event    The logging event
      */
     protected void writeThrowable(Map<String, Object> document, LogEvent event) {
