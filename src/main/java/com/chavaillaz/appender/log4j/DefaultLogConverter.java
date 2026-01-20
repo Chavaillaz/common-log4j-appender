@@ -64,7 +64,9 @@ public class DefaultLogConverter implements LogConverter {
         document.put("host", configuration.getHost());
         document.put("environment", configuration.getEnvironment());
         document.put("application", configuration.getApplication());
-        document.put("logger", event.getLoggerName());
+        document.put("logger", Optional.of(event)
+                .map(LogEvent::getLoggerFqcn)
+                .orElse(event.getLoggerName()));
         document.put("level", Optional.of(event)
                 .map(LogEvent::getLevel)
                 .map(Level::toString)
