@@ -68,6 +68,14 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- Nullness annotations, kept on the compile classpath (not just provided) so that consumers
+             running their own null-checking tool can read them from this library's compiled classes. -->
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+            <version>1.0.1</version>
+        </dependency>
+
         <!-- Logs -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

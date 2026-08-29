@@ -16,6 +16,7 @@ import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
 import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Abstract implementation of logs transmission by batches.
@@ -123,9 +124,10 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * Creates a new logs delivery handler sending them by batches.
      *
      * @param configuration The configuration to use
-     * @param listener      The listener to notify of the outcome of every transmission attempt
+     * @param listener      The listener to notify of the outcome of every transmission attempt, or
+     *                      {@code null} to not notify any listener
      */
-    protected AbstractBatchLogDelivery(C configuration, LogDeliveryListener listener) {
+    protected AbstractBatchLogDelivery(C configuration, @Nullable LogDeliveryListener listener) {
         this.configuration = configuration;
         this.batch = newBatch();
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
@@ -138,7 +140,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      *
      * @param listener The listener, or {@code null} to stop notifying any listener
      */
-    public void setListener(LogDeliveryListener listener) {
+    public void setListener(@Nullable LogDeliveryListener listener) {
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
     }
 
@@ -186,7 +188,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     @Override
-    public void send(Map<String, Object> document) {
+    public void send(@Nullable Map<String, Object> document) {
         // A null document is treated as a no-op rather than stacked as-is, be it because of a caller
         // mistake or a LogConverter implementation choosing to signal "skip this event" by returning null.
         if (document != null) {
@@ -195,7 +197,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     @Override
-    public void send(List<Map<String, Object>> documents) {
+    public void send(@Nullable List<@Nullable Map<String, Object>> documents) {
         if (documents != null && !documents.isEmpty()) {
             List<Map<String, Object>> filtered = withoutNullElements(documents);
             if (!filtered.isEmpty()) {
@@ -211,7 +213,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * @param documents The list of documents to filter
      * @return The given list, or a copy of it without its null elements if it had any
      */
-    private static List<Map<String, Object>> withoutNullElements(List<Map<String, Object>> documents) {
+    private static List<Map<String, Object>> withoutNullElements(List<@Nullable Map<String, Object>> documents) {
         int firstNullIndex = -1;
         for (int i = 0; i < documents.size(); i++) {
             if (documents.get(i) == null) {

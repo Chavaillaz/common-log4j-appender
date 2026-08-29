@@ -20,6 +20,7 @@ import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Abstract appender with basic implementation for transmissions of logs from Log4j2.
@@ -60,7 +61,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * The scheduler periodically triggering a flush on {@link #workerExecutor}, created only when batching
      * is enabled (a flush threshold greater than {@code 1}).
      */
-    private ScheduledExecutorService flushScheduler;
+    private @Nullable ScheduledExecutorService flushScheduler;
 
     /**
      * The configuration of the logs transmission
@@ -69,10 +70,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final C logConfiguration;
 
     /**
-     * The logs delivery handler
+     * The logs delivery handler, or {@code null} before {@link #start()} is called, or if
+     * {@link #createLogDeliveryHandler()} threw an exception while starting it.
      */
     @Getter
-    private LogDelivery logDeliveryHandler;
+    private @Nullable LogDelivery logDeliveryHandler;
 
     /**
      * Creates a new logs delivery handler.

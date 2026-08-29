@@ -3,6 +3,8 @@ package com.chavaillaz.appender;
 import java.util.List;
 import java.util.Map;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Transmission of logs to an external monitoring system.
  */
@@ -15,7 +17,7 @@ public interface LogDelivery extends AutoCloseable {
      *
      * @param document The record data, or {@code null} to skip this event
      */
-    void send(Map<String, Object> document);
+    void send(@Nullable Map<String, Object> document);
 
     /**
      * Sends the given list of record data. Any {@code null} element of the list is skipped for the same
@@ -24,7 +26,7 @@ public interface LogDelivery extends AutoCloseable {
      *
      * @param documents The list of record data
      */
-    void send(List<Map<String, Object>> documents);
+    void send(@Nullable List<@Nullable Map<String, Object>> documents);
 
     /**
      * Sends the pending records (generating a partially filled batch).

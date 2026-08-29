@@ -3,6 +3,8 @@ package com.chavaillaz.appender;
 import java.util.List;
 import java.util.Map;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Observes the outcome of log transmissions performed by a {@link LogDelivery}, so that the health of the
  * delivery pipeline (throughput, latency, failures, data loss) can be monitored by the application using
@@ -39,7 +41,7 @@ public interface LogDeliveryListener {
      * @param cause         The exception responsible for the failure, or {@code null} if the implementation
      *                      of {@code sendBulk} simply returned {@code false} without throwing
      */
-    default void onTransmissionFailed(int documentCount, Throwable cause) {
+    default void onTransmissionFailed(int documentCount, @Nullable Throwable cause) {
         // No-op by default
     }
 
