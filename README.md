@@ -5,7 +5,20 @@
 [![Maven Central](https://maven-badges.sml.io/maven-central/com.chavaillaz/common-log4j-appender/badge.svg?subject=Maven%20Central&color=blue)](https://maven-badges.sml.io/maven-central/com.chavaillaz/common-log4j-appender)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-This library helps you to easily create Appenders for Log4j.
+This library provides the building blocks to create Log4j2 appenders that ship log events to an external
+system (a search engine, a log management platform, a custom HTTP endpoint, ...), with two guarantees
+that matter for production logging:
+
+- **The application thread is never blocked.** Every call to `append()` only takes an immutable snapshot
+  of the event and hands it off to a background thread; conversion and network I/O never happen on the
+  calling thread.
+- **Logs are sent by batches.** Instead of opening one connection per log line, events are accumulated
+  and shipped together, either once a configurable number of messages is reached or after a configurable
+  time interval, whichever comes first.
+
+It is used by the [Elasticsearch Appender](https://github.com/chavaillaz/elasticsearch-log4j-appender)
+and the [OpenSearch Appender](https://github.com/chavaillaz/opensearch-log4j-appender), which are good
+references to look at alongside this documentation.
 
 ## Installation
 
@@ -18,21 +31,168 @@ The dependency is available in maven central (see badge for version):
 </dependency>
 ```
 
-## Usage
+You usually don't depend on it directly as an application: instead, use (or create) an appender built on
+top of it, such as the two implementations linked above.
 
-Three classes will be needed to create your appender:
-- Implementing `LogDelivery` or extending `AbstractBatchLogDelivery` to ship the logs with the following methods:
-  - **send**: Send a log event (possibly stacked before being sent)
-  - **flush**: Flush any buffer to send all remaining log events
-- Extending `AbstractLogDeliveryAppender` to create the appender with the following methods:
-  - **createLogDeliveryHandler**: Create a new instance of your log delivery above
-  - **createLogDeliveryTask**: Create a new instance of a log delivery task to send a log event
-- Implementing `LogConfiguration` to configure the appender, by adding any configuration needed for the log shipping
+## How it works
 
-## Example
+Three concepts are involved, each with a corresponding interface/class to implement:
 
-Two implementation examples are available:
-- [ElasticSearch Appender](https://github.com/chavaillaz/elasticsearch-log4j-appender)
+| Concept       | Type to extend/implement       | Responsibility                                                                 |
+|---------------|---------------------------------|---------------------------------------------------------------------------------|
+| Appender      | `AbstractLogDeliveryAppender`   | Plugs into Log4j2, receives events and hands them off to the background thread |
+| Delivery      | `AbstractBatchLogDelivery`      | Accumulates converted documents and sends them by batches                      |
+| Conversion    | `LogConverter`                  | Turns a `LogEvent` into a `Map<String, Object>` document to be sent            |
+| Configuration | `LogConfiguration`              | Carries the settings shared by the three components above                      |
+
+The flow for a single log event is:
+
+1. Log4j2 calls `append(LogEvent)` on your appender (on the application thread).
+2. The event is immediately converted to an immutable snapshot and submitted as a task to a single
+   background thread. `append()` returns right away: the application thread never waits on this task.
+3. On the background thread, the task converts the event to a document (using your `LogConverter`) and
+   hands it to your `LogDelivery`, which stacks it into the current batch.
+4. Once the batch reaches `FlushThreshold` documents, or `FlushInterval` has elapsed since the last
+   transmission (whichever happens first), the batch is sent in one call to the external system.
+5. If a transmission fails, the documents are kept and retried at the next opportunity instead of being
+   lost, without hammering the external system with one attempt per incoming message in the meantime.
+
+All of this (steps 2 to 5) happens on the same single background thread, so batches are always sent in
+the order the corresponding logs were received, and your `LogDelivery` implementation never needs to
+worry about concurrent calls to `send()`/`flush()`.
+
+## Creating your own appender
+
+### 1. Configuration
+
+Implement `LogConfiguration` (or extend an existing implementation) to carry whatever settings your
+delivery mechanism needs, in addition to the ones already required by the interface:
+
+```java
+public class MyConfiguration implements LogConfiguration {
+    private String application;
+    private String host;
+    private String environment;
+    private long flushThreshold;
+    private Duration flushInterval;
+    private LogConverter converter; // Not part of LogConfiguration itself, but used below
+    private String url; // Anything else specific to your delivery mechanism
+    // Getters and setters...
+}
+```
+
+### 2. Delivery
+
+Extend `AbstractBatchLogDelivery` and implement `sendBulk(List<Map<String, Object>>)`, returning
+`true` on success and `false` on failure (so the batch is retried later instead of being dropped):
+
+```java
+public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
+
+    public MyLogDelivery(MyConfiguration configuration) {
+        super(configuration);
+    }
+
+    @Override
+    protected boolean sendBulk(List<Map<String, Object>> documents) {
+        try {
+            myClient.send(documents);
+            return true;
+        } catch (Exception e) {
+            log.warn("Unable to send bulk of {} documents", documents.size(), e);
+            return false;
+        }
+    }
+}
+```
+
+If you need to release resources (close an HTTP client, ...), override `close()`, calling
+`super.close()` first so that the current batch is flushed before your resources are released.
+
+### 3. Appender
+
+Extend `AbstractLogDeliveryAppender` to wire everything together as a Log4j2 plugin:
+
+```java
+@Plugin(name = "MyAppender", category = Core.CATEGORY_NAME, elementType = Appender.ELEMENT_TYPE)
+public class MyAppender extends AbstractLogDeliveryAppender<MyConfiguration> {
+
+    protected MyAppender(String name, Filter filter, Layout<?> layout, MyConfiguration configuration) {
+        super(name, filter, layout, configuration);
+    }
+
+    @Override
+    public LogDelivery createLogDeliveryHandler() {
+        return new MyLogDelivery(getLogConfiguration());
+    }
+
+    @Override
+    public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        // loggingEvent is already an immutable snapshot, safe to use from the background thread
+        LogConverter converter = getLogConfiguration().getConverter();
+        return () -> Optional.ofNullable(getLogDeliveryHandler())
+                .ifPresent(handler -> handler.send(converter.convert(loggingEvent)));
+    }
+
+    // A @PluginBuilderFactory Builder is also needed to expose the configuration as XML/properties/...
+    // attributes; see the linked implementations for a complete example.
+}
+```
+
+### 4. Conversion (optional)
+
+`DefaultLogConverter` already produces a sensible document for most use cases, with the following
+fields:
+
+| Field         | Description                                                                          |
+|---------------|---------------------------------------------------------------------------------------|
+| `datetime`    | ISO-8601 timestamp of the logging event                                              |
+| `host`        | Taken from the configuration                                                         |
+| `environment` | Taken from the configuration                                                         |
+| `application` | Taken from the configuration                                                         |
+| `logger`      | Fully qualified caller class name, falling back to the logger name if not available  |
+| `level`       | Level of the logging event (e.g. `INFO`, `ERROR`)                                    |
+| `logmessage`  | Formatted message of the logging event                                               |
+| `thread`      | Name of the thread that created the logging event                                    |
+| `class`       | Canonical name of the exception class, only present if the event carries an exception |
+| `stacktrace`  | Stack trace of the exception, only present if the event carries an exception          |
+
+All MDC (context) entries are also added as-is, without overriding any of the fields above should a key
+collide with one of them. To customize this behaviour, extend `DefaultLogConverter` and override the
+relevant `write*` method, or implement `LogConverter` from scratch for full control.
+
+## Configuration reference
+
+These settings are defined by `LogConfiguration` and used regardless of the delivery mechanism (each
+appender implementation typically exposes them as its own plugin attributes, see its documentation):
+
+| Setting         | Description                                                                                              |
+|-----------------|-------------------------------------------------------------------------------------------------------------|
+| `Application`   | Name of the application generating the logs, included in every document.                                    |
+| `Host`          | Name of the host on which the application is running, included in every document.                          |
+| `Environment`   | Name of the environment in which the application is running, included in every document.                   |
+| `FlushThreshold`| Number of accumulated documents that triggers a transmission. Use `1` to send every log individually (no batching), or a higher value to reduce the number of requests sent to the external system. |
+| `FlushInterval` | Maximum time between two transmissions: even a partially filled batch is sent once this interval elapses, so logs are not delayed indefinitely under low traffic. Only relevant when `FlushThreshold` is greater than `1`. |
+
+## Performance and reliability notes
+
+- **Unbounded queue:** the background thread pool relies on Log4j2's `LogEvent.toImmutable()` and an
+  unbounded internal queue, so `append()` never blocks nor drops a log under normal circumstances. If the
+  external system stays unavailable for a long time, the queue of pending events keeps growing in memory:
+  size your `FlushThreshold`/`FlushInterval` and monitor the application accordingly if this is a concern
+  for your use case.
+- **Shutdown:** when the appender is stopped, it stops accepting new logs, waits (up to the given
+  timeout) for already-accepted logs to be processed, and only then flushes and closes the delivery
+  handler, so that logs emitted just before shutdown are not lost. This requires a non-zero shutdown
+  timeout to actually wait: set the `shutdownTimeout` attribute (in milliseconds) on the root
+  `<Configuration>` element of your Log4j2 configuration, as it otherwise defaults to not waiting at all.
+- **Failures:** if `sendBulk` returns `false`, the batch is kept and retried later instead of being lost.
+  Any exception thrown while converting or sending a log is reported through Log4j2's `StatusLogger`
+  (visible with `-Dlog4j2.debug` or a `<StatusListener>`) instead of being silently swallowed.
+
+## Example implementations
+
+- [Elasticsearch Appender](https://github.com/chavaillaz/elasticsearch-log4j-appender)
 - [OpenSearch Appender](https://github.com/chavaillaz/opensearch-log4j-appender)
 
 ## Contributing

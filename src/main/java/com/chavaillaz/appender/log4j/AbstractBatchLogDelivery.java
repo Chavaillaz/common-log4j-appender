@@ -13,6 +13,13 @@ import lombok.extern.log4j.Log4j2;
 
 /**
  * Abstract implementation of logs transmission by batches.
+ * <p>
+ * When a transmission fails, the failed documents are kept in the batch so they are retried later
+ * instead of being lost. However, when batching is enabled (a flush threshold greater than {@code 1}),
+ * a new transmission is not attempted for every single additional message received while the previous
+ * attempt is still failing, as that would hammer an already struggling downstream system with one
+ * request per incoming log message. Instead, once batching is enabled, retries only happen on the next
+ * call to {@link #flush()}, which the appender using this class calls periodically.
  *
  * @param <C> The configuration type
  */
@@ -29,6 +36,12 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     @Getter
     private final C configuration;
+
+    /**
+     * Whether the last transmission attempt failed, used to avoid retrying on every single new message
+     * received while batching is enabled and the downstream system is unavailable or failing.
+     */
+    private volatile boolean transmissionFailed;
 
     /**
      * Creates a new logs delivery handler sending them by batches.
@@ -62,14 +75,20 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     private synchronized void stackAndSend(List<Map<String, Object>> data) {
         batch.addAll(data);
         log.trace("Stacking batch {}/{}", batch.size(), configuration.getFlushThreshold());
-        if (batch.size() >= configuration.getFlushThreshold()) {
+
+        boolean batchingEnabled = configuration.getFlushThreshold() > 1;
+        boolean thresholdReached = batch.size() >= configuration.getFlushThreshold();
+        if (thresholdReached && !(batchingEnabled && transmissionFailed)) {
             sendBatch();
         }
     }
 
     private synchronized void sendBatch() {
-        if (!batch.isEmpty() && sendBulk(batch)) {
-            batch.clear();
+        if (!batch.isEmpty()) {
+            transmissionFailed = !sendBulk(batch);
+            if (!transmissionFailed) {
+                batch.clear();
+            }
         }
     }
 
@@ -83,7 +102,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     @Override
     public void close() throws Exception {
-        sendBatch();
+        flush();
     }
 
 }

@@ -25,7 +25,7 @@ import org.apache.logging.log4j.message.Message;
  *     <li><strong>logmessage:</strong> Message of the logging event</li>
  *     <li><strong>thread:</strong> Thread that created the logging event</li>
  * </ul>
- * <p>All the MDC fields will also be added as is (if they not already exist).</p>
+ * <p>All the MDC fields will also be added as is (only if they do not already exist).</p>
  * <p>In case the event contains an exception, it also includes the fields:</p>
  * <ul>
  *     <li><strong>class:</strong> Class of the exception</li>

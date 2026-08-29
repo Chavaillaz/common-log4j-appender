@@ -1,13 +1,12 @@
 package com.chavaillaz.appender.log4j;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import java.time.Instant;
 
-import com.chavaillaz.appender.LogConfiguration;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.impl.JdkMapAdapterStringMap;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
@@ -19,10 +18,10 @@ class DefaultLogConverterTest {
     @Test
     void testConversion() {
         // given
-        var configuration = mock(LogConfiguration.class);
-        when(configuration.getHost()).thenReturn("my-host");
-        when(configuration.getEnvironment()).thenReturn("pre-production");
-        when(configuration.getApplication()).thenReturn("my-application");
+        var configuration = new TestLogConfiguration();
+        configuration.setHost("my-host");
+        configuration.setEnvironment("pre-production");
+        configuration.setApplication("my-application");
         var converter = new DefaultLogConverter();
         converter.configure(configuration);
         var mdc = new JdkMapAdapterStringMap();
@@ -55,6 +54,100 @@ class DefaultLogConverterTest {
         assertEquals("java.lang.RuntimeException", document.get("class"));
         String stacktrace = document.get("stacktrace").toString();
         assertTrue(stacktrace.contains("java.lang.RuntimeException: my-exception"));
+    }
+
+    @Test
+    void testConversionWithoutException() {
+        // given
+        var configuration = new TestLogConfiguration();
+        var converter = new DefaultLogConverter();
+        converter.configure(configuration);
+        var event = Log4jLogEvent.newBuilder()
+                .setMessage(new SimpleMessage("No exception here"))
+                .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                .setLevel(Level.INFO)
+                .build();
+
+        // when
+        var document = converter.convert(event);
+
+        // then
+        assertFalse(document.containsKey("class"));
+        assertFalse(document.containsKey("stacktrace"));
+    }
+
+    @Test
+    void testConversionWithoutMdc() {
+        // given
+        var configuration = new TestLogConfiguration();
+        var converter = new DefaultLogConverter();
+        converter.configure(configuration);
+        var event = Log4jLogEvent.newBuilder()
+                .setMessage(new SimpleMessage("No MDC here"))
+                .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                .setLevel(Level.INFO)
+                .build();
+
+        // when / then (no exception raised despite the absence of context data)
+        converter.convert(event);
+    }
+
+    @Test
+    void testConversionMdcDoesNotOverrideReservedFields() {
+        // given: MDC contains a key colliding with one of the fields written by the converter itself
+        var configuration = new TestLogConfiguration();
+        configuration.setHost("real-host");
+        var converter = new DefaultLogConverter();
+        converter.configure(configuration);
+        var mdc = new JdkMapAdapterStringMap();
+        mdc.putValue("host", "should-not-override");
+        var event = Log4jLogEvent.newBuilder()
+                .setMessage(new SimpleMessage("Message"))
+                .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                .setContextData(mdc)
+                .build();
+
+        // when
+        var document = converter.convert(event);
+
+        // then
+        assertEquals("real-host", document.get("host"));
+    }
+
+    @Test
+    void testConversionFallsBackToLoggerNameWhenFqcnMissing() {
+        // given
+        var configuration = new TestLogConfiguration();
+        var converter = new DefaultLogConverter();
+        converter.configure(configuration);
+        var event = Log4jLogEvent.newBuilder()
+                .setMessage(new SimpleMessage("Message"))
+                .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                .setLoggerFqcn(null)
+                .build();
+
+        // when
+        var document = converter.convert(event);
+
+        // then
+        assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+    }
+
+    @Test
+    void testConversionWithNullMessage() {
+        // given
+        var configuration = new TestLogConfiguration();
+        var converter = new DefaultLogConverter();
+        converter.configure(configuration);
+        var event = Log4jLogEvent.newBuilder()
+                .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                .build();
+
+        // when
+        var document = converter.convert(event);
+
+        // then
+        assertNull(document.get("logmessage"));
     }
 
 }
