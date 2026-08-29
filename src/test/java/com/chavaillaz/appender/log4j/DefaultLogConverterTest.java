@@ -164,6 +164,58 @@ class DefaultLogConverterTest {
             assertNull(document.get("logmessage"));
         }
 
+        @Test
+        @DisplayName("Truncates the stack trace once it exceeds the configured maximum length")
+        void testConversionTruncatesLongStackTrace() {
+            // given
+            var configuration = new TestLogConfiguration();
+            var converter = new DefaultLogConverter() {
+                @Override
+                protected int getMaxStackTraceLength() {
+                    return 50;
+                }
+            };
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(new RuntimeException("my-exception"))
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            String stacktrace = document.get("stacktrace").toString();
+            assertEquals(50, stacktrace.indexOf("... (truncated"));
+            assertTrue(stacktrace.startsWith("java.lang.RuntimeException: my-exception"));
+        }
+
+        @Test
+        @DisplayName("Does not truncate a stack trace within the configured maximum length")
+        void testConversionDoesNotTruncateShortStackTrace() {
+            // given: a stack trace pinned to a single frame, since the real one at this point in the test
+            // includes the whole JUnit/reflection call chain and could otherwise exceed the default limit
+            var configuration = new TestLogConfiguration();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var exception = new RuntimeException("my-exception");
+            exception.setStackTrace(new StackTraceElement[]{
+                    new StackTraceElement("com.chavaillaz.appender.log4j.MyClass", "myMethod", "MyClass.java", 42)
+            });
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(exception)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertFalse(document.get("stacktrace").toString().contains("truncated"));
+        }
+
     }
 
 }

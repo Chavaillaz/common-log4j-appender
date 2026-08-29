@@ -29,7 +29,8 @@ import org.apache.logging.log4j.message.Message;
  * <p>In case the event contains an exception, it also includes the fields:</p>
  * <ul>
  *     <li><strong>class:</strong> Class of the exception</li>
- *     <li><strong>stacktrace:</strong> Stacktrace of the exception</li>
+ *     <li><strong>stacktrace:</strong> Stacktrace of the exception, truncated to
+ *     {@link #getMaxStackTraceLength()} characters</li>
  * </ul>
  */
 public class DefaultLogConverter implements LogConverter {
@@ -135,7 +136,10 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Gets the stack trace of the given throwable.
+     * Gets the stack trace of the given throwable, truncated to {@link #getMaxStackTraceLength()}
+     * characters if needed, so that a deeply nested cause chain (or a recursive one caused by a bug in the
+     * application itself) cannot single-handedly inflate a document (and by extension a whole batch) to a
+     * size more likely to be rejected by the downstream system.
      *
      * @param throwable The throwable
      * @return The stack trace
@@ -144,7 +148,25 @@ public class DefaultLogConverter implements LogConverter {
         Writer result = new StringWriter();
         PrintWriter printWriter = new PrintWriter(result);
         throwable.printStackTrace(printWriter);
-        return result.toString();
+        String stackTrace = result.toString();
+
+        int maxLength = getMaxStackTraceLength();
+        if (maxLength > 0 && stackTrace.length() > maxLength) {
+            int truncatedChars = stackTrace.length() - maxLength;
+            return stackTrace.substring(0, maxLength) + "... (truncated, " + truncatedChars + " more characters)";
+        }
+        return stackTrace;
+    }
+
+    /**
+     * Gets the maximum length (in characters) of the {@code stacktrace} field written by
+     * {@link #writeThrowable(Map, LogEvent)}. Can be overridden to raise, lower, or disable ({@code 0} or
+     * a negative value) this limit.
+     *
+     * @return The maximum length allowed for the stack trace, or a non-positive value to disable truncation
+     */
+    protected int getMaxStackTraceLength() {
+        return 8_192;
     }
 
 }

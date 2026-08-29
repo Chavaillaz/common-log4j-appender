@@ -65,7 +65,12 @@ The flow for a single log event is:
    system is never overwhelmed with unbounded concurrent requests.
 5. If a transmission fails, its documents are put back in front of the current batch and retried at the
    next opportunity instead of being lost, without hammering the external system with one attempt per
-   incoming message in the meantime.
+   incoming message in the meantime. Two safety nets bound how far this can go: a batch is never allowed
+   to grow past `MaxBatchSize` documents (the oldest ones are discarded past that point), and a batch that
+   fails `MaxConsecutiveFailures` times in a row is discarded entirely instead of being retried forever,
+   which would otherwise happen if a single document can never be accepted by the downstream system. Both
+   cases are reported through a `LogDeliveryListener` if one is configured (see
+   [Observability](#observability) below), so this data loss is never silent.
 
 Steps 2 and 3 (batching) always happen on the same single background thread, so your `LogDelivery`
 implementation never needs to worry about concurrent calls to `send()`/`flush()`. Step 4 (transmission)
@@ -168,11 +173,50 @@ fields:
 | `logmessage`  | Formatted message of the logging event                                               |
 | `thread`      | Name of the thread that created the logging event                                    |
 | `class`       | Canonical name of the exception class, only present if the event carries an exception |
-| `stacktrace`  | Stack trace of the exception, only present if the event carries an exception          |
+| `stacktrace`  | Stack trace of the exception, only present if the event carries an exception, truncated to 8'192 characters by default (see `getMaxStackTraceLength()`) so that a deep or recursive cause chain cannot inflate a document (and by extension a whole batch) on its own |
 
 All MDC (context) entries are also added as-is, without overriding any of the fields above should a key
 collide with one of them. To customize this behaviour, extend `DefaultLogConverter` and override the
 relevant `write*` method, or implement `LogConverter` from scratch for full control.
+
+## Observability
+
+To monitor the health of the delivery pipeline (throughput, latency, failures, data loss), pass a
+`LogDeliveryListener` to your `LogDelivery` implementation, either through the constructor or via
+`setListener(...)`:
+
+```java
+public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
+
+    public MyLogDelivery(MyConfiguration configuration) {
+        super(configuration, new LogDeliveryListener() {
+            @Override
+            public void onTransmissionSucceeded(int documentCount, long durationMillis) {
+                metrics.recordBatch(documentCount, durationMillis);
+            }
+
+            @Override
+            public void onTransmissionFailed(int documentCount, Throwable cause) {
+                metrics.recordFailure(documentCount);
+            }
+
+            @Override
+            public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                metrics.recordDataLoss(documents.size(), reason);
+                fallbackSink.save(documents); // e.g. write to a local file or a dead-letter queue
+            }
+        });
+    }
+    // ...
+}
+```
+
+All three methods have a no-op default implementation, so you only need to override the ones you are
+interested in. `onDocumentsDropped` is the one to pay the most attention to in production: it is only
+called when documents are irrecoverably discarded (see the safety nets described above), which should
+normally never happen and is worth alerting on. Unlike the other two methods, it receives the actual
+documents (as an unmodifiable list) rather than just a count, since this is meant as a last chance to save
+them from being lost entirely.
 
 ## Configuration reference
 
@@ -186,27 +230,42 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `Environment`   | Name of the environment in which the application is running, included in every document.                   |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. Use `1` to send every log individually (no batching), or a higher value to reduce the number of requests sent to the external system. |
 | `FlushInterval` | Maximum time between two transmissions: even a partially filled batch is sent once this interval elapses, so logs are not delayed indefinitely under low traffic. Only relevant when `FlushThreshold` is greater than `1`. |
+| `MaxConcurrentTransmissions` | Maximum number of batches transmitted at the same time (see step 4 above). Defaults to `4`; raise it for a downstream system that can absorb more concurrent requests, or lower it (e.g. to `1`) to strictly serialize transmissions. |
+| `MaxBatchSize` | Maximum number of documents a pending batch can hold while waiting to be (re)transmitted, discarding the oldest ones past that point (see step 5 above). Defaults to `10'000`. |
+| `MaxConsecutiveFailures` | Maximum number of consecutive failed attempts allowed for the same batch before it is discarded instead of retried again (see step 5 above). Defaults to `5`. |
+
+These three are implemented as default methods on `LogConfiguration` itself (rather than plugin
+attributes), so they are available even if the appender implementation you use does not explicitly expose
+them as configuration; ask its maintainer to wire them up, or override them in your own configuration
+class in the meantime.
 
 ## Performance and reliability notes
 
-- **Unbounded queue:** the background thread pool relies on Log4j2's `LogEvent.toImmutable()` and an
-  unbounded internal queue, so `append()` never blocks nor drops a log under normal circumstances. If the
-  external system stays unavailable for a long time, the queue of pending events keeps growing in memory:
-  size your `FlushThreshold`/`FlushInterval` and monitor the application accordingly if this is a concern
-  for your use case.
-- **Concurrent transmissions:** up to 4 batches can be transmitted at the same time (see step 4 above),
-  each on its own virtual thread, so network latency does not throttle how fast new batches are formed.
-  This only ever adds backpressure to the internal background thread (never to the application thread): if
-  4 transmissions are already in flight, forming the next batch briefly waits for one of them to finish.
+- **Constant-time event queueing:** events accepted by `append()` are handed to the background thread
+  through a plain FIFO queue (constant time to enqueue/dequeue), not a scheduled executor's queue (which
+  would be logarithmic time, since it keeps tasks ordered by delay); the periodic flush trigger runs on a
+  separate, otherwise idle, thread that simply hands a flush over to that same FIFO queue, so this doesn't
+  come at the cost of the ordering guarantees described above.
+- **Unbounded queue:** that said, the queue itself remains unbounded, so `append()` never blocks nor drops
+  a log under normal circumstances. If the external system stays unavailable for a long time, the queue of
+  pending events keeps growing in memory: size your `FlushThreshold`/`FlushInterval` and monitor the
+  application accordingly if this is a concern for your use case.
+- **Concurrent transmissions:** up to `MaxConcurrentTransmissions` batches (4 by default) can be
+  transmitted at the same time (see step 4 above), each on its own virtual thread, so network latency does
+  not throttle how fast new batches are formed. This only ever adds backpressure to the internal
+  background thread (never to the application thread): once that many transmissions are in flight, forming
+  the next batch briefly waits for one of them to finish.
 - **Shutdown:** when the appender is stopped, it stops accepting new logs, waits (up to the given
   timeout) for already-accepted logs to be processed, and only then flushes and closes the delivery
   handler, waiting for that final transmission to complete as well, so that logs emitted just before
   shutdown are not lost. This requires a non-zero shutdown timeout to actually wait: set the
   `shutdownTimeout` attribute (in milliseconds) on the root `<Configuration>` element of your Log4j2
   configuration, as it otherwise defaults to not waiting at all.
-- **Failures:** if `sendBulk` returns `false`, the batch is kept and retried later instead of being lost.
-  Any exception thrown while converting or sending a log is reported through Log4j2's `StatusLogger`
-  (visible with `-Dlog4j2.debug` or a `<StatusListener>`) instead of being silently swallowed.
+- **Failures:** if `sendBulk` returns `false` (or throws), the batch is kept and retried later instead of
+  being lost, up to the safety limits described above. Any exception thrown while converting or sending a
+  log is reported through Log4j2's `StatusLogger` (visible with `-Dlog4j2.debug` or a `<StatusListener>`)
+  instead of being silently swallowed, in addition to being reported to your `LogDeliveryListener` if one
+  is configured.
 
 ## Example implementations
 

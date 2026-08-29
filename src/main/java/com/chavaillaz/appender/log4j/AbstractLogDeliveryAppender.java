@@ -1,9 +1,11 @@
 package com.chavaillaz.appender.log4j;
 
 import static java.lang.Thread.currentThread;
+import static java.util.concurrent.Executors.newSingleThreadExecutor;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -26,15 +28,26 @@ import org.apache.logging.log4j.core.config.Property;
  * {@link AbstractBatchLogDelivery}). The actual network transmission of a batch may then run concurrently
  * on a separate virtual thread, so that a slow transmission never delays the accumulation of the next
  * batch either. This guarantees that logging calls made by the application never wait on network I/O.
+ * <p>
+ * The background thread is fed by a plain FIFO queue (constant-time to enqueue/dequeue) rather than a
+ * scheduled executor's queue (logarithmic-time, since it is ordered by delay), as this is the path taken
+ * once per log event; a separate, otherwise idle, single-thread scheduler is only used to periodically hand
+ * a flush trigger over to that same background thread, so batching still always happens on it alone.
  *
  * @param <C> The configuration type
  */
 public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> extends AbstractAppender {
 
     /**
-     * The thread pool to schedule the logs transmission
+     * The single background thread converting and batching events (see the class documentation).
      */
-    private final ScheduledExecutorService threadPool = newSingleThreadScheduledExecutor();
+    private final ExecutorService workerExecutor = newSingleThreadExecutor();
+
+    /**
+     * The scheduler periodically triggering a flush on {@link #workerExecutor}, created only when batching
+     * is enabled (a flush threshold greater than {@code 1}).
+     */
+    private ScheduledExecutorService flushScheduler;
 
     /**
      * The configuration of the logs transmission
@@ -67,10 +80,24 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         if (logDeliveryHandler != null && logConfiguration.getFlushThreshold() > 1) {
             long interval = logConfiguration.getFlushInterval().toMillis();
-            threadPool.scheduleWithFixedDelay(logDeliveryHandler::flush, interval, interval, MILLISECONDS);
+            flushScheduler = newSingleThreadScheduledExecutor();
+            flushScheduler.scheduleWithFixedDelay(this::triggerFlush, interval, interval, MILLISECONDS);
         }
 
         super.start();
+    }
+
+    /**
+     * Hands a flush over to {@link #workerExecutor}, so that it still only ever runs on the same single
+     * background thread as the conversion and batching of events, even though it is triggered by the
+     * (otherwise idle) {@link #flushScheduler} thread.
+     */
+    private void triggerFlush() {
+        try {
+            workerExecutor.execute(logDeliveryHandler::flush);
+        } catch (RejectedExecutionException e) {
+            // The worker is shutting down; the scheduler itself is about to be stopped as well.
+        }
     }
 
     /**
@@ -99,7 +126,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         LogEvent immutableEvent = loggingEvent.toImmutable();
         Runnable task = createLogDeliveryTask(immutableEvent);
         try {
-            threadPool.submit(() -> executeLogDeliveryTask(task));
+            workerExecutor.execute(() -> executeLogDeliveryTask(task));
         } catch (RejectedExecutionException e) {
             // Happens when a log is emitted while the appender is stopping: the event is dropped
             // instead of being propagated to the calling application thread.
@@ -133,11 +160,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     @Override
     public boolean stop(long timeout, TimeUnit timeUnit) {
         try {
-            // Stops accepting new tasks and waits for those already submitted (i.e. log events accepted
-            // before this call) to complete first, so that closing the delivery handler below flushes
-            // every log received so far instead of racing with the background thread still processing them.
-            threadPool.shutdown();
-            boolean terminated = threadPool.awaitTermination(timeout, timeUnit);
+            // Stops any further flush from being triggered first, then stops accepting new tasks and waits
+            // for those already submitted (i.e. log events accepted before this call) to complete, so that
+            // closing the delivery handler below flushes every log received so far instead of racing with
+            // the background thread still processing them.
+            if (flushScheduler != null) {
+                flushScheduler.shutdownNow();
+            }
+            workerExecutor.shutdown();
+            boolean terminated = workerExecutor.awaitTermination(timeout, timeUnit);
             if (!terminated && timeout > 0) {
                 error("Log delivery thread pool did not terminate within the given timeout, some logs may be lost");
             }
