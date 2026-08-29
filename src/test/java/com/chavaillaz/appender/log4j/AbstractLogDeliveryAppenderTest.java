@@ -19,10 +19,10 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.chavaillaz.appender.LogDelivery;
 import lombok.Getter;
-import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.logging.log4j.core.ErrorHandler;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.Layout;
@@ -248,13 +248,36 @@ class AbstractLogDeliveryAppenderTest {
             assertFalse(errors.isEmpty(), "The exception thrown by the first task should have been reported");
         }
 
+        @Test
+        @DisplayName("Reports an exception thrown while creating a task without propagating it to the caller")
+        void testTaskCreationExceptionIsReportedAndDoesNotPropagateToCaller() throws Exception {
+            // given: createLogDeliveryTask() itself throws on the calling (application) thread, simulating
+            // a subclass mistake; this must never break the guarantee that append() never fails the caller
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var appender = new FailCreationLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when / then
+            appender.start();
+            assertDoesNotThrow(() -> appender.append(mockLogEvent()));
+            appender.append(mockLogEvent());
+            appender.stop(2, SECONDS);
+
+            // then the second (non-throwing) task creation was still processed by the background thread
+            assertEquals(1, appender.getCountTaskExecuted().get());
+            assertFalse(errors.isEmpty(), "The exception thrown while creating the task should have been reported");
+        }
+
     }
 
     @Getter
     static class LogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
-        MutableInt countTaskExecuted = new MutableInt();
+        AtomicInteger countTaskExecuted = new AtomicInteger();
 
         protected LogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
             super(name, filter, layout, configuration);
@@ -267,7 +290,7 @@ class AbstractLogDeliveryAppenderTest {
 
         @Override
         public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
-            return () -> countTaskExecuted.increment();
+            return () -> countTaskExecuted.incrementAndGet();
         }
 
     }
@@ -359,7 +382,7 @@ class AbstractLogDeliveryAppenderTest {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
         AtomicBoolean firstTask = new AtomicBoolean(true);
-        MutableInt countTaskExecuted = new MutableInt();
+        AtomicInteger countTaskExecuted = new AtomicInteger();
 
         protected FailFirstLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
             super(name, filter, layout, configuration);
@@ -376,8 +399,34 @@ class AbstractLogDeliveryAppenderTest {
                 if (firstTask.compareAndSet(true, false)) {
                     throw new RuntimeException("Simulated failure");
                 }
-                countTaskExecuted.increment();
+                countTaskExecuted.incrementAndGet();
             };
+        }
+
+    }
+
+    @Getter
+    static class FailCreationLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        LogDelivery logDeliveryHandler = mock(LogDelivery.class);
+        AtomicBoolean firstCall = new AtomicBoolean(true);
+        AtomicInteger countTaskExecuted = new AtomicInteger();
+
+        protected FailCreationLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
+            super(name, filter, layout, configuration);
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            if (firstCall.compareAndSet(true, false)) {
+                throw new RuntimeException("Simulated failure creating the task");
+            }
+            return countTaskExecuted::incrementAndGet;
         }
 
     }

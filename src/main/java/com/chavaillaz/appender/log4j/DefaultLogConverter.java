@@ -95,15 +95,12 @@ public class DefaultLogConverter implements LogConverter {
         document.put("host", configuration.getHost());
         document.put("environment", configuration.getEnvironment());
         document.put("application", configuration.getApplication());
-        document.put("logger", Optional.of(event)
-                .map(LogEvent::getLoggerFqcn)
+        document.put("logger", Optional.ofNullable(event.getLoggerFqcn())
                 .orElse(event.getLoggerName()));
-        document.put("level", Optional.of(event)
-                .map(LogEvent::getLevel)
+        document.put("level", Optional.ofNullable(event.getLevel())
                 .map(Level::toString)
                 .orElse(null));
-        document.put("logmessage", Optional.of(event)
-                .map(LogEvent::getMessage)
+        document.put("logmessage", Optional.ofNullable(event.getMessage())
                 .map(Message::getFormattedMessage)
                 .orElse(null));
         document.put("thread", event.getThreadName());

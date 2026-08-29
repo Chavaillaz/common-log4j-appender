@@ -5,9 +5,11 @@ import static java.util.concurrent.Executors.newSingleThreadExecutor;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
+import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 import com.chavaillaz.appender.LogConfiguration;
@@ -39,9 +41,20 @@ import org.apache.logging.log4j.core.config.Property;
 public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> extends AbstractAppender {
 
     /**
+     * Names the threads created by an executor with the given prefix, so that they can be identified in a
+     * thread dump instead of showing up as a generic {@code pool-N-thread-1}.
+     *
+     * @param name The thread name prefix
+     * @return The thread factory to use
+     */
+    private static ThreadFactory namedThreadFactory(String name) {
+        return Thread.ofPlatform().name(name).factory();
+    }
+
+    /**
      * The single background thread converting and batching events (see the class documentation).
      */
-    private final ExecutorService workerExecutor = newSingleThreadExecutor();
+    private final ExecutorService workerExecutor = newSingleThreadExecutor(namedThreadFactory("log-delivery-worker"));
 
     /**
      * The scheduler periodically triggering a flush on {@link #workerExecutor}, created only when batching
@@ -79,9 +92,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         startLogDeliveryHandler();
 
         if (logDeliveryHandler != null && logConfiguration.getFlushThreshold() > 1) {
-            long interval = logConfiguration.getFlushInterval().toMillis();
-            flushScheduler = newSingleThreadScheduledExecutor();
-            flushScheduler.scheduleWithFixedDelay(this::triggerFlush, interval, interval, MILLISECONDS);
+            Duration flushInterval = logConfiguration.getFlushInterval();
+            if (flushInterval == null) {
+                error("FlushInterval is not set although FlushThreshold is greater than 1, "
+                        + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
+            } else {
+                long interval = flushInterval.toMillis();
+                flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
+                flushScheduler.scheduleWithFixedDelay(this::triggerFlush, interval, interval, MILLISECONDS);
+            }
         }
 
         super.start();
@@ -124,13 +143,20 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         // (mutate) the given event object once this method returns, which would corrupt the data
         // read later by the background thread if a mutable reference was kept instead.
         LogEvent immutableEvent = loggingEvent.toImmutable();
-        Runnable task = createLogDeliveryTask(immutableEvent);
         try {
+            // createLogDeliveryTask() itself runs on the calling (application) thread: a subclass is
+            // expected to only capture state there and defer any actual work to the returned Runnable,
+            // but this call is still guarded so that a subclass mistake (or an unexpected null/exception)
+            // can never propagate to the application thread, which would otherwise break the guarantee
+            // that logging calls never fail or block because of this appender.
+            Runnable task = createLogDeliveryTask(immutableEvent);
             workerExecutor.execute(() -> executeLogDeliveryTask(task));
         } catch (RejectedExecutionException e) {
             // Happens when a log is emitted while the appender is stopping: the event is dropped
             // instead of being propagated to the calling application thread.
             error("Log delivery task rejected, the appender is stopping", e);
+        } catch (Throwable e) {
+            error("Log delivery task creation error", e);
         }
     }
 

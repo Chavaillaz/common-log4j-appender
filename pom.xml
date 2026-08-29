@@ -68,13 +68,6 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Apache commons -->
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
-            <version>3.20.0</version>
-        </dependency>
-
         <!-- Logs -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
@@ -140,21 +133,15 @@
             </plugin>
 
             <plugin>
+                <!-- Invoke manually with e.g. "mvn versions:display-dependency-updates": binding it to a
+                     default lifecycle phase would require network access (and slow down) every single
+                     build, including offline or CI ones that only need to compile or run tests. -->
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>versions-maven-plugin</artifactId>
                 <version>2.21.0</version>
                 <configuration>
                     <rulesUri>file:///${project.basedir}/versions.xml</rulesUri>
                 </configuration>
-                <executions>
-                    <execution>
-                        <phase>compile</phase>
-                        <goals>
-                            <goal>display-dependency-updates</goal>
-                            <goal>display-plugin-updates</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
 
             <plugin>

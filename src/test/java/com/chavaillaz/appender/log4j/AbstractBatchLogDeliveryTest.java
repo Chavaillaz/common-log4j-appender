@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -71,6 +72,55 @@ class AbstractBatchLogDeliveryTest {
 
             // when
             logDelivery.send(documents);
+
+            // then
+            assertEquals(0, logDelivery.countBulkSent.get());
+        }
+
+        @Test
+        @DisplayName("Sending a null document does not trigger a transmission nor stack a null entry")
+        void testNotSendingNullDocument() throws Exception {
+            // given: a LogConverter returning null (e.g. to signal "skip this event") must be tolerated
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            var logDelivery = new TestLogDelivery(configuration);
+
+            // when
+            logDelivery.send((Map<String, Object>) null);
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertEquals(0, logDelivery.countBulkSent.get());
+        }
+
+        @Test
+        @DisplayName("Filters out null elements of a list before stacking them")
+        void testFiltersOutNullElementsOfList() throws Exception {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            var logDelivery = new TestLogDelivery(configuration);
+
+            // when
+            logDelivery.send(Arrays.asList(Map.of("id", 1), null, Map.of("id", 2)));
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertEquals(1, logDelivery.countBulkSent.get());
+            assertEquals(List.of(Map.of("id", 1), Map.of("id", 2)), logDelivery.lastBulkDocuments);
+        }
+
+        @Test
+        @DisplayName("Does not trigger a transmission when a list only contains null elements")
+        void testNotSendingListOfOnlyNullElements() throws Exception {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            var logDelivery = new TestLogDelivery(configuration);
+
+            // when
+            logDelivery.send(Arrays.asList(null, null));
+            logDelivery.awaitPendingTransmissions();
 
             // then
             assertEquals(0, logDelivery.countBulkSent.get());
@@ -503,6 +553,7 @@ class AbstractBatchLogDeliveryTest {
         AtomicInteger countBulkSent = new AtomicInteger();
         AtomicInteger lastBulkSize = new AtomicInteger();
         AtomicInteger totalDocumentsSent = new AtomicInteger();
+        volatile List<Map<String, Object>> lastBulkDocuments;
         volatile boolean bulkResult = true;
         volatile RuntimeException failureToThrow;
 
@@ -518,6 +569,7 @@ class AbstractBatchLogDeliveryTest {
         protected boolean sendBulk(List<Map<String, Object>> documents) {
             countBulkSent.incrementAndGet();
             lastBulkSize.set(documents.size());
+            lastBulkDocuments = documents;
             if (failureToThrow != null) {
                 throw failureToThrow;
             }

@@ -13,9 +13,12 @@ import lombok.experimental.UtilityClass;
 public class CommonUtils {
 
     /**
-     * Searches an environment or system property value.
+     * Searches an environment or system property value, giving priority to the environment variable of the
+     * given name if both are set.
      *
-     * @param key          The key to search in the properties
+     * @param key          The key to search in the properties (used as-is for both the environment
+     *                     variable and the system property, so it must be a valid name for both, e.g. one
+     *                     using only uppercase letters, digits and underscores)
      * @param defaultValue The default value to use in case the given key is not found
      * @return The value found in environment/system properties or the given default value
      */

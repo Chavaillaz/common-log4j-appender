@@ -187,14 +187,51 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     @Override
     public void send(Map<String, Object> document) {
-        send(singletonList(document));
+        // A null document is treated as a no-op rather than stacked as-is, be it because of a caller
+        // mistake or a LogConverter implementation choosing to signal "skip this event" by returning null.
+        if (document != null) {
+            send(singletonList(document));
+        }
     }
 
     @Override
     public void send(List<Map<String, Object>> documents) {
         if (documents != null && !documents.isEmpty()) {
-            stackAndSend(documents);
+            List<Map<String, Object>> filtered = withoutNullElements(documents);
+            if (!filtered.isEmpty()) {
+                stackAndSend(filtered);
+            }
         }
+    }
+
+    /**
+     * Filters out any {@code null} element of the given list, only allocating a new list if at least one
+     * was actually found, so that the common case (no null element) does not pay for an extra copy.
+     *
+     * @param documents The list of documents to filter
+     * @return The given list, or a copy of it without its null elements if it had any
+     */
+    private static List<Map<String, Object>> withoutNullElements(List<Map<String, Object>> documents) {
+        int firstNullIndex = -1;
+        for (int i = 0; i < documents.size(); i++) {
+            if (documents.get(i) == null) {
+                firstNullIndex = i;
+                break;
+            }
+        }
+        if (firstNullIndex < 0) {
+            return documents;
+        }
+
+        List<Map<String, Object>> filtered = new ArrayList<>(documents.size() - 1);
+        filtered.addAll(documents.subList(0, firstNullIndex));
+        for (int i = firstNullIndex + 1; i < documents.size(); i++) {
+            Map<String, Object> document = documents.get(i);
+            if (document != null) {
+                filtered.add(document);
+            }
+        }
+        return filtered;
     }
 
     @Override
