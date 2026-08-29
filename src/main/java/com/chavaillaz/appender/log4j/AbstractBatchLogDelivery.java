@@ -11,12 +11,13 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.chavaillaz.appender.LogConfiguration;
-import com.chavaillaz.appender.LogDelivery;
-import com.chavaillaz.appender.LogDeliveryListener;
 import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
 import org.jspecify.annotations.Nullable;
+
+import com.chavaillaz.appender.LogConfiguration;
+import com.chavaillaz.appender.LogDelivery;
+import com.chavaillaz.appender.LogDeliveryListener;
 
 /**
  * Abstract implementation of logs transmission by batches.

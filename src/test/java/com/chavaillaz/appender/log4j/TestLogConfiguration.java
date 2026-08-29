@@ -2,9 +2,10 @@ package com.chavaillaz.appender.log4j;
 
 import java.time.Duration;
 
-import com.chavaillaz.appender.LogConfiguration;
 import lombok.Getter;
 import lombok.Setter;
+
+import com.chavaillaz.appender.LogConfiguration;
 
 /**
  * Minimal, real implementation of {@link LogConfiguration} used across the test suite instead of mocking

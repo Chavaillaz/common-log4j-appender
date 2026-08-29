@@ -12,8 +12,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
-import com.chavaillaz.appender.LogConfiguration;
-import com.chavaillaz.appender.LogDelivery;
 import lombok.Getter;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.Layout;
@@ -21,6 +19,9 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.jspecify.annotations.Nullable;
+
+import com.chavaillaz.appender.LogConfiguration;
+import com.chavaillaz.appender.LogDelivery;
 
 /**
  * Abstract appender with basic implementation for transmissions of logs from Log4j2.

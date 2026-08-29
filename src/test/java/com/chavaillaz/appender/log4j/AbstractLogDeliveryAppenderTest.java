@@ -21,7 +21,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.chavaillaz.appender.LogDelivery;
 import lombok.Getter;
 import org.apache.logging.log4j.core.ErrorHandler;
 import org.apache.logging.log4j.core.Filter;
@@ -30,6 +29,8 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import com.chavaillaz.appender.LogDelivery;
 
 @DisplayName("AbstractLogDeliveryAppender")
 class AbstractLogDeliveryAppenderTest {

@@ -8,10 +8,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-import com.chavaillaz.appender.LogConfiguration;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.message.Message;
+
+import com.chavaillaz.appender.LogConfiguration;
 
 /**
  * Default implementation converting the following fields:

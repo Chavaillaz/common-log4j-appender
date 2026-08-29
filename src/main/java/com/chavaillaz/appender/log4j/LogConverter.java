@@ -2,9 +2,10 @@ package com.chavaillaz.appender.log4j;
 
 import java.util.Map;
 
-import com.chavaillaz.appender.LogConfiguration;
 import org.apache.logging.log4j.core.LogEvent;
 import org.jspecify.annotations.Nullable;
+
+import com.chavaillaz.appender.LogConfiguration;
 
 /**
  * Conversion of events to records for logs transmission.
