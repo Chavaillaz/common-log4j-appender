@@ -35,6 +35,16 @@ import org.apache.logging.log4j.message.Message;
 public class DefaultLogConverter implements LogConverter {
 
     /**
+     * Number of fields written by {@link #writeBasic(Map, LogEvent)}.
+     */
+    private static final int BASIC_FIELD_COUNT = 8;
+
+    /**
+     * Number of fields written by {@link #writeThrowable(Map, LogEvent)} when an exception is present.
+     */
+    private static final int THROWABLE_FIELD_COUNT = 2;
+
+    /**
      * The configuration of the logs transmission
      */
     private LogConfiguration configuration;
@@ -46,11 +56,31 @@ public class DefaultLogConverter implements LogConverter {
 
     @Override
     public Map<String, Object> convert(LogEvent event) {
-        Map<String, Object> document = new HashMap<>();
+        Map<String, Object> document = new HashMap<>(estimateCapacity(event));
         writeBasic(document, event);
         writeThrowable(document, event);
         writeMDC(document, event);
         return document;
+    }
+
+    /**
+     * Estimates the {@link HashMap} capacity needed to hold the document of the given event without
+     * triggering a resize while it is being populated, based on the number of fields this converter is
+     * expected to write for it.
+     *
+     * @param event The logging event
+     * @return The estimated initial capacity to use for the resulting document
+     */
+    private int estimateCapacity(LogEvent event) {
+        int entries = BASIC_FIELD_COUNT;
+        if (event.getThrown() != null) {
+            entries += THROWABLE_FIELD_COUNT;
+        }
+        if (event.getContextData() != null) {
+            entries += event.getContextData().size();
+        }
+        // Default HashMap load factor is 0.75, so this avoids a resize for the estimated entry count
+        return (int) (entries / 0.75f) + 1;
     }
 
     /**

@@ -6,8 +6,8 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 This library provides the building blocks to create Log4j2 appenders that ship log events to an external
-system (a search engine, a log management platform, a custom HTTP endpoint, ...), with two guarantees
-that matter for production logging:
+system (a search engine, a log management platform, a custom HTTP endpoint, ...), with guarantees that
+matter for production logging:
 
 - **The application thread is never blocked.** Every call to `append()` only takes an immutable snapshot
   of the event and hands it off to a background thread; conversion and network I/O never happen on the
@@ -15,12 +15,17 @@ that matter for production logging:
 - **Logs are sent by batches.** Instead of opening one connection per log line, events are accumulated
   and shipped together, either once a configurable number of messages is reached or after a configurable
   time interval, whichever comes first.
+- **Transmissions overlap instead of queuing up behind each other.** Sending a batch never delays the
+  accumulation of the next one: each batch is transmitted on its own virtual thread, with a bounded number
+  of transmissions in flight at once.
 
 It is used by the [Elasticsearch Appender](https://github.com/chavaillaz/elasticsearch-log4j-appender)
 and the [OpenSearch Appender](https://github.com/chavaillaz/opensearch-log4j-appender), which are good
 references to look at alongside this documentation.
 
 ## Installation
+
+Requires **Java 21 or later** (virtual threads are used internally to transmit batches).
 
 The dependency is available in maven central (see badge for version):
 
@@ -53,13 +58,21 @@ The flow for a single log event is:
 3. On the background thread, the task converts the event to a document (using your `LogConverter`) and
    hands it to your `LogDelivery`, which stacks it into the current batch.
 4. Once the batch reaches `FlushThreshold` documents, or `FlushInterval` has elapsed since the last
-   transmission (whichever happens first), the batch is sent in one call to the external system.
-5. If a transmission fails, the documents are kept and retried at the next opportunity instead of being
-   lost, without hammering the external system with one attempt per incoming message in the meantime.
+   transmission (whichever happens first), the batch is handed off to its own virtual thread for
+   transmission, and the background thread immediately resumes accumulating the next batch: it never waits
+   for the network call to complete. Up to 4 batches can be transmitted concurrently this way; beyond that,
+   the background thread waits for one to complete before handing off the next one, so the downstream
+   system is never overwhelmed with unbounded concurrent requests.
+5. If a transmission fails, its documents are put back in front of the current batch and retried at the
+   next opportunity instead of being lost, without hammering the external system with one attempt per
+   incoming message in the meantime.
 
-All of this (steps 2 to 5) happens on the same single background thread, so batches are always sent in
-the order the corresponding logs were received, and your `LogDelivery` implementation never needs to
-worry about concurrent calls to `send()`/`flush()`.
+Steps 2 and 3 (batching) always happen on the same single background thread, so your `LogDelivery`
+implementation never needs to worry about concurrent calls to `send()`/`flush()`. Step 4 (transmission)
+may run concurrently across several virtual threads, so `sendBulk()` (see below) must be safe to run
+concurrently with itself if you keep any mutable state of your own in your `LogDelivery` implementation;
+retried batches may also be redelivered in a different relative order after a failure, which is usually
+fine given each document already carries its own timestamp.
 
 ## Creating your own appender
 
@@ -181,11 +194,16 @@ appender implementation typically exposes them as its own plugin attributes, see
   external system stays unavailable for a long time, the queue of pending events keeps growing in memory:
   size your `FlushThreshold`/`FlushInterval` and monitor the application accordingly if this is a concern
   for your use case.
+- **Concurrent transmissions:** up to 4 batches can be transmitted at the same time (see step 4 above),
+  each on its own virtual thread, so network latency does not throttle how fast new batches are formed.
+  This only ever adds backpressure to the internal background thread (never to the application thread): if
+  4 transmissions are already in flight, forming the next batch briefly waits for one of them to finish.
 - **Shutdown:** when the appender is stopped, it stops accepting new logs, waits (up to the given
   timeout) for already-accepted logs to be processed, and only then flushes and closes the delivery
-  handler, so that logs emitted just before shutdown are not lost. This requires a non-zero shutdown
-  timeout to actually wait: set the `shutdownTimeout` attribute (in milliseconds) on the root
-  `<Configuration>` element of your Log4j2 configuration, as it otherwise defaults to not waiting at all.
+  handler, waiting for that final transmission to complete as well, so that logs emitted just before
+  shutdown are not lost. This requires a non-zero shutdown timeout to actually wait: set the
+  `shutdownTimeout` attribute (in milliseconds) on the root `<Configuration>` element of your Log4j2
+  configuration, as it otherwise defaults to not waiting at all.
 - **Failures:** if `sendBulk` returns `false`, the batch is kept and retried later instead of being lost.
   Any exception thrown while converting or sending a log is reported through Log4j2's `StatusLogger`
   (visible with `-Dlog4j2.debug` or a `<StatusListener>`) instead of being silently swallowed.

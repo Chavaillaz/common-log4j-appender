@@ -22,8 +22,10 @@ import org.apache.logging.log4j.core.config.Property;
  * <p>
  * The {@link #append(LogEvent)} method never performs any blocking or costly operation on the calling
  * (application) thread: it only converts the event to an immutable snapshot and hands it off to a single
- * background thread, which is responsible for the actual conversion task execution, batching and transmission.
- * This guarantees that logging calls made by the application never wait on network I/O.
+ * background thread, which is responsible for converting and batching events (see {@link LogConverter} and
+ * {@link AbstractBatchLogDelivery}). The actual network transmission of a batch may then run concurrently
+ * on a separate virtual thread, so that a slow transmission never delays the accumulation of the next
+ * batch either. This guarantees that logging calls made by the application never wait on network I/O.
  *
  * @param <C> The configuration type
  */
