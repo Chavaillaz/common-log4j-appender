@@ -387,7 +387,14 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 // this narrows the window during which it could still call into a handler being closed
                 // concurrently. A task that ignores interruption isn't helped, but one that honors it is
                 // stopped instead of finishing on its own after the handler is already gone.
-                workerExecutor.shutdownNow();
+                // Every task still sitting in the queue at this point (as opposed to the one actively
+                // running, if any) never even started, so it can still be reported instead of vanishing
+                // silently: shutdownNow() only removes them from the queue, it does not run them.
+                for (Runnable abandoned : workerExecutor.shutdownNow()) {
+                    if (abandoned instanceof EventTask task) {
+                        reportDropped(task.event(), "appender stopped before the event could be processed");
+                    }
+                }
             }
         } catch (InterruptedException e) {
             error("Thread interrupted during termination", e);

@@ -488,6 +488,44 @@ class AbstractLogDeliveryAppenderTest {
             assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted after the timeout");
         }
 
+        @Test
+        @DisplayName("Reports events still queued behind a stuck task as dropped instead of losing them silently")
+        void testStopReportsQueuedEventsDroppedAfterTimeout() throws Exception {
+            // given: a delivery task that blocks forever unless interrupted (occupying the single worker
+            // thread), and two more events queued behind it that never even get a chance to run before the
+            // shutdown timeout elapses and shutdownNow() discards them from the queue
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var interrupted = new CountDownLatch(1);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, interrupted);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                    droppedReasons.add(reason);
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent()); // occupies the worker thread forever
+            appender.append(realLogEvent("queued-1")); // never gets to run
+            appender.append(realLogEvent("queued-2")); // never gets to run
+            appender.stop(200, MILLISECONDS);
+
+            // then: both queued (never started) events were reported dropped, instead of vanishing without
+            // a trace once shutdownNow() discarded them from the queue
+            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted after the timeout");
+            assertEquals(2, dropped.size());
+            assertEquals(List.of("queued-1", "queued-2"), dropped.stream().map(d -> d.get("logmessage")).toList());
+            assertTrue(droppedReasons.stream().allMatch(reason -> reason.contains("stop")),
+                    "Reason should mention the appender stopping: " + droppedReasons);
+        }
+
     }
 
     @Nested
