@@ -16,6 +16,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import lombok.Getter;
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
@@ -48,6 +49,11 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * application thread), applying the same {@link BoundedTrim} policy {@link AbstractBatchLogDelivery}'s own
  * pending batch is bounded by, and reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}
  * so this data loss is never silent.
+ * <p>
+ * An event at least as severe as {@link LogConfiguration#getFlushLevel()} (disabled by default) triggers an
+ * immediate flush of the whole current batch right after it, instead of waiting for
+ * {@link LogConfiguration#getFlushThreshold()} or {@link LogConfiguration#getFlushInterval()} as usual, so
+ * an occasional severe event is not held hostage behind settings otherwise tuned for throughput.
  *
  * @param <C> The configuration type
  */
@@ -241,8 +247,27 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
+     * Whether the given event's severity is at least as severe as {@link LogConfiguration#getFlushLevel()},
+     * meaning it should trigger an immediate flush (see {@link #append(LogEvent)}) rather than wait for
+     * {@link LogConfiguration#getFlushThreshold()} or {@link LogConfiguration#getFlushInterval()} as usual.
+     * Always {@code false} while that setting is left at its default of {@code null} (disabled), or for an
+     * event carrying no level at all.
+     *
+     * @param event The logging event to check
+     * @return {@code true} if this event should trigger an immediate flush
+     */
+    private boolean isUrgent(LogEvent event) {
+        Level flushLevel = logConfiguration.getFlushLevel();
+        Level eventLevel = event.getLevel();
+        return flushLevel != null && eventLevel != null && eventLevel.isMoreSpecificThan(flushLevel);
+    }
+
+    /**
      * Hands a flush over to {@link #workerExecutor}, so it still only ever runs on the single background
-     * thread, even though triggered by the (otherwise idle) {@link #flushScheduler} thread. Routed through
+     * thread, even though triggered by the (otherwise idle) {@link #flushScheduler} thread, or by
+     * {@link #append(LogEvent)} itself for an urgent event (see {@link #isUrgent(LogEvent)}); queuing it
+     * right after that event's own task guarantees it is already part of the batch by the time this flush
+     * runs, since both only ever run on this same single background thread. Routed through
      * {@link #executeLogDeliveryTask(Runnable)} like every other task, so an exception from a misbehaving
      * {@link LogDelivery#flush()} is reported consistently instead of only reaching the worker thread's
      * default uncaught exception handler.
@@ -302,6 +327,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             // can never propagate to the application thread.
             Runnable task = createLogDeliveryTask(immutableEvent);
             workerExecutor.execute(new EventTask(immutableEvent, () -> executeLogDeliveryTask(task)));
+            if (isUrgent(immutableEvent)) {
+                triggerFlush();
+            }
         } catch (RejectedExecutionException e) {
             // A full queue is now handled internally by DiscardOldestEventPolicy, so this is reached only
             // because the appender is stopping (or, rarely, a race lost even after that policy already

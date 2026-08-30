@@ -240,13 +240,14 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `Environment`   | Name of the environment the application is running in, included in every document.                         |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. `1` sends every log individually (no batching). |
 | `FlushInterval` | Maximum time between two transmissions, so a partial batch isn't delayed indefinitely under low traffic. Only relevant when `FlushThreshold` is above `1`. |
+| `FlushLevel` | Minimum severity (e.g. `WARN`) that triggers an immediate flush of the whole current batch right after that event, instead of waiting for `FlushThreshold`/`FlushInterval`. Defaults to unset, disabling this behavior. |
 | `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`; must be at least `1`, or every transmission would wait forever. |
 | `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory; oldest discarded past that (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`; `0` or less discards every document immediately, disabling this delivery. |
 | `MaxRequestDocuments` | Maximum documents sent together in a single request; a bigger batch is split into chunks of that size (see step 4 above), each retried independently. Defaults to unbounded (no chunking); set to match a downstream system's per-request limit. |
 | `MaxConsecutiveFailures` | Maximum consecutive failed attempts for the same request before it is discarded instead of retried again (see step 5 above). Defaults to `5`; `0` or less retries indefinitely. |
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; oldest discarded past that to make room for a new one, mirroring `MaxPendingDocuments`. Defaults to `10'000`. |
 
-These five are default methods on `LogConfiguration` itself (rather than plugin attributes), so they're
+These six are default methods on `LogConfiguration` itself (rather than plugin attributes), so they're
 available even if the appender implementation you use doesn't expose them as configuration; override them
 in your own configuration class if needed.
 

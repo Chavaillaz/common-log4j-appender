@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -49,11 +50,22 @@ class AbstractLogDeliveryAppenderTest {
         return logEvent;
     }
 
+    private LogEvent mockLogEvent(Level level) {
+        var logEvent = mock(LogEvent.class);
+        when(logEvent.toImmutable()).thenReturn(logEvent);
+        when(logEvent.getLevel()).thenReturn(level);
+        return logEvent;
+    }
+
     private LogEvent realLogEvent(String message) {
+        return realLogEvent(message, Level.INFO);
+    }
+
+    private LogEvent realLogEvent(String message, Level level) {
         return Log4jLogEvent.newBuilder()
                 .setMessage(new SimpleMessage(message))
                 .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
-                .setLevel(Level.INFO)
+                .setLevel(level)
                 .build();
     }
 
@@ -120,9 +132,11 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             appender.append(logEvent);
+            sleep(100); // gives the background thread time to process the event before asserting on it
 
-            // then
-            assertEquals(0, appender.getCountTaskExecuted().get());
+            // then: the event itself was processed, but well below the flush threshold and before the
+            // flush interval elapsed, no flush was triggered
+            assertEquals(1, appender.getCountTaskExecuted().get());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
 
             // when
@@ -228,6 +242,79 @@ class AbstractLogDeliveryAppenderTest {
             // then
             verify(appender.getLogDeliveryHandler()).close();
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Severity-triggered flush")
+    class SeverityTriggeredFlush {
+
+        @Test
+        @DisplayName("Triggers an immediate flush right after an event at least as severe as FlushLevel")
+        void testUrgentEventTriggersImmediateFlush() throws Exception {
+            // given: a threshold high enough, and no periodic flush due for a long time, that only the
+            // severity trigger itself could possibly cause a flush within the test
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .flushLevel(Level.WARN).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent(Level.ERROR));
+
+            // then: ERROR is more severe than the configured WARN threshold
+            verify(appender.getLogDeliveryHandler(), timeout(1_000)).flush();
+
+            // cleanup
+            appender.stop();
+        }
+
+        @Test
+        @DisplayName("Does not flush for an event less severe than FlushLevel")
+        void testEventBelowFlushLevelDoesNotTriggerFlush() throws Exception {
+            // given
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .flushLevel(Level.WARN).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent(Level.INFO));
+            sleep(100);
+
+            // then: INFO is less severe than the configured WARN threshold, so no immediate flush
+            assertEquals(1, appender.getCountTaskExecuted().get());
+            verify(appender.getLogDeliveryHandler(), never()).flush();
+
+            // cleanup
+            appender.stop();
+        }
+
+        @Test
+        @DisplayName("Never flushes on severity alone while FlushLevel is left disabled")
+        void testFlushLevelDisabledByDefault() throws Exception {
+            // given: FlushLevel left at its default (null)
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent(Level.FATAL));
+            sleep(100);
+
+            // then: no FlushLevel configured, so not even a FATAL event triggers an immediate flush
+            assertEquals(1, appender.getCountTaskExecuted().get());
+            verify(appender.getLogDeliveryHandler(), never()).flush();
+
+            // cleanup
+            appender.stop();
         }
 
     }

@@ -2,6 +2,9 @@ package com.chavaillaz.appender;
 
 import java.time.Duration;
 
+import org.apache.logging.log4j.Level;
+import org.jspecify.annotations.Nullable;
+
 /**
  * Configuration for logs transmission.
  * <p>
@@ -51,6 +54,22 @@ public interface LogConfiguration {
      * @return The flush interval
      */
     Duration getFlushInterval();
+
+    /**
+     * Minimum severity that triggers an immediate flush right after the corresponding event was handed to
+     * the current batch, instead of waiting for {@link #getFlushThreshold()} or {@link #getFlushInterval()}
+     * as usual; every other, less severe event still only counts toward those two as before. Useful so an
+     * occasional severe event (e.g. {@code ERROR}) is shipped promptly even while a high
+     * {@code FlushThreshold} or {@code FlushInterval} otherwise favors throughput over latency for routine
+     * traffic. Compared using {@link Level#isMoreSpecificThan(Level)}, so e.g. a value of {@code WARN} also
+     * triggers on {@code ERROR} and {@code FATAL}. Defaults to {@code null}, disabling this behavior
+     * entirely (every event only triggers a flush the usual way).
+     *
+     * @return The minimum severity that triggers an immediate flush, or {@code null} to disable it
+     */
+    default @Nullable Level getFlushLevel() {
+        return null;
+    }
 
     /**
      * Maximum number of batches a batch-based log delivery transmits concurrently; forming the next batch

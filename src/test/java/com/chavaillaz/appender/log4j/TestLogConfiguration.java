@@ -4,6 +4,8 @@ import java.time.Duration;
 
 import lombok.Builder;
 import lombok.Value;
+import org.apache.logging.log4j.Level;
+import org.jspecify.annotations.Nullable;
 
 import com.chavaillaz.appender.LogConfiguration;
 
@@ -20,6 +22,7 @@ class TestLogConfiguration implements LogConfiguration {
     @Builder.Default String environment = "test-environment";
     @Builder.Default long flushThreshold = 10;
     @Builder.Default Duration flushInterval = Duration.ofSeconds(5);
+    @Builder.Default @Nullable Level flushLevel = null;
     @Builder.Default int maxConcurrentTransmissions = 4;
     @Builder.Default int maxPendingDocuments = 10_000;
     @Builder.Default int maxRequestDocuments = Integer.MAX_VALUE;
