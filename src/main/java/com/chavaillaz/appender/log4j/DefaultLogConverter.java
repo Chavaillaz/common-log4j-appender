@@ -113,8 +113,8 @@ public class DefaultLogConverter implements LogConverter {
         document.put("host", configuration.getHost());
         document.put("environment", configuration.getEnvironment());
         document.put("application", configuration.getApplication());
-        document.put("logger", Optional.ofNullable(event.getLoggerFqcn())
-                .orElse(event.getLoggerName()));
+        document.put("logger", Optional.ofNullable(event.getLoggerName())
+                .orElse(event.getLoggerFqcn()));
         document.put("level", Optional.ofNullable(event.getLevel())
                 .map(Level::toString)
                 .orElse(null));

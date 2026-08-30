@@ -134,16 +134,39 @@ class DefaultLogConverterTest {
         }
 
         @Test
-        @DisplayName("Falls back to the logger name when the fully qualified caller class name is missing")
-        void testConversionFallsBackToLoggerNameWhenFqcnMissing() {
-            // given
+        @DisplayName("Prefers the logger name over the internal fully qualified caller class name")
+        void testConversionPrefersLoggerNameOverFqcn() {
+            // given: loggerFqcn identifies the internal wrapper class Log4j2 uses to locate the caller's
+            // stack frame for %C/%class-style location info (e.g. "org.apache.logging.log4j.spi.AbstractLogger"
+            // for a plain Logger.info() call, or an SLF4J bridge class when going through that facade); it is
+            // not a meaningful logger/category name and must never win over the actual logger name
             var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
-                    .setLoggerFqcn(null)
+                    .setLoggerFqcn("org.apache.logging.log4j.spi.AbstractLogger")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+        }
+
+        @Test
+        @DisplayName("Falls back to the fully qualified caller class name when the logger name is missing")
+        void testConversionFallsBackToFqcnWhenLoggerNameMissing() {
+            // given
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName(null)
+                    .setLoggerFqcn("com.chavaillaz.appender.log4j.MyClass")
                     .build();
 
             // when
