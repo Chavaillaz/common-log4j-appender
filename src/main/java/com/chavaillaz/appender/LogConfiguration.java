@@ -152,15 +152,17 @@ public interface LogConfiguration {
 
     /**
      * Gets the maximum number of logging events that can be queued, waiting to be converted and batched by
-     * the background thread of an appender, before new ones are discarded instead of being accepted. This
-     * bounds the memory that events accepted faster than they can be processed could otherwise use without
-     * limit, for example while every {@link #getMaxConcurrentTransmissions()} transmission slot is stuck on
-     * a downstream system that has become unresponsive for a long time: documents already converted and
-     * handed off to a batch-based log delivery are separately bounded by {@link #getMaxPendingDocuments()};
-     * this limits how many have not even reached that stage yet. Defaults to {@code 10'000}; override to raise
-     * or lower this limit, though not below {@code 1}: a value of {@code 0} or less is clamped up to
-     * {@code 1} instead of disabling the queue outright, since a queue capacity of zero has nowhere to hand
-     * off even a single event.
+     * the background thread of an appender, before the oldest still-queued one is discarded to make room
+     * for a new one. This bounds the memory that events accepted faster than they can be processed could
+     * otherwise use without limit, for example while every {@link #getMaxConcurrentTransmissions()}
+     * transmission slot is stuck on a downstream system that has become unresponsive for a long time:
+     * documents already converted and handed off to a batch-based log delivery are separately bounded by
+     * {@link #getMaxPendingDocuments()}; this limits how many have not even reached that stage yet. Once
+     * full, the queue keeps the most recently received events rather than the new one being rejected,
+     * mirroring the same policy {@link #getMaxPendingDocuments()} already applies to a full pending batch.
+     * Defaults to {@code 10'000}; override to raise or lower this limit, though not below {@code 1}: a
+     * value of {@code 0} or less is clamped up to {@code 1} instead of disabling the queue outright, since a
+     * queue capacity of zero has nowhere to hand off even a single event.
      *
      * @return The maximum number of logging events that can be queued awaiting processing
      */

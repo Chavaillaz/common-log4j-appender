@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -45,10 +46,12 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * always accepts new events immediately regardless of how fast the background thread can process them, an
  * unbounded queue would let memory usage grow without limit for as long as events keep arriving faster than
  * they can be converted and batched (for example while every {@link LogConfiguration#getMaxConcurrentTransmissions()}
- * transmission slot is stuck on an unresponsive downstream system). Once that limit is reached, further
- * events are discarded (never blocking the application thread) and reported through
- * {@link LogDeliveryListener#onDocumentsDropped(List, String)} on the delivery handler's listener, so this
- * data loss is never silent.
+ * transmission slot is stuck on an unresponsive downstream system). Once that limit is reached, the oldest
+ * event still waiting in the queue is discarded to make room for the new one (never blocking the
+ * application thread), mirroring the same "keep the most recently received, most likely still relevant
+ * documents" policy {@link AbstractBatchLogDelivery} already applies to {@link LogConfiguration#getMaxPendingDocuments()}.
+ * Either way, the discarded event is reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}
+ * on the delivery handler's listener, so this data loss is never silent.
  *
  * @param <C> The configuration type
  */
@@ -63,6 +66,65 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private static ThreadFactory namedThreadFactory(String name) {
         return Thread.ofPlatform().name(name).factory();
+    }
+
+    /**
+     * A task queued on {@link #workerExecutor}, carrying the {@link LogEvent} it was created for alongside
+     * the actual work to run, so that {@link DiscardOldestEventPolicy} can still produce a document for it
+     * (through {@link #reportDropped(LogEvent, String)}) if it ends up being evicted from the queue before
+     * ever running. The periodic flush trigger submitted by {@link #triggerFlush()} is deliberately not
+     * wrapped this way, since it is not itself a discardable logging event.
+     *
+     * @param event    The logging event this task was created for
+     * @param delegate The actual work to run
+     */
+    private record EventTask(LogEvent event, Runnable delegate) implements Runnable {
+
+        @Override
+        public void run() {
+            delegate.run();
+        }
+
+    }
+
+    /**
+     * Replaces the default {@code AbortPolicy} of {@link #workerExecutor} (which would simply reject, and by
+     * extension discard, the newest event once the queue is full) so that the queue instead keeps the most
+     * recently received events, the ones most likely still relevant, discarding the oldest one still waiting
+     * to make room instead: see the class documentation for why this mirrors the policy
+     * {@link AbstractBatchLogDelivery} already applies to a full pending batch.
+     * <p>
+     * Falls back to the default reject-the-newest behavior (by throwing, exactly like {@code AbortPolicy}
+     * would) for anything that is not itself a discardable {@link EventTask} (currently only the periodic
+     * flush trigger from {@link #triggerFlush()}, which must never evict a real logging event from the queue
+     * just to make room for itself) or once {@link #workerExecutor} is shutting down, leaving both cases to
+     * be handled exactly as before by their respective callers.
+     */
+    private final class DiscardOldestEventPolicy implements RejectedExecutionHandler {
+
+        @Override
+        public void rejectedExecution(Runnable task, ThreadPoolExecutor executor) {
+            if (executor.isShutdown() || !(task instanceof EventTask newTask)) {
+                throw new RejectedExecutionException("Task " + task + " rejected from " + executor);
+            }
+
+            // Evicts the oldest still-queued event (if any: a race against the worker thread dequeuing it
+            // at the very same moment is harmless, it simply means there is nothing left to evict) to free
+            // up the room this new event needs.
+            if (executor.getQueue().poll() instanceof EventTask evictedTask) {
+                error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
+                reportDropped(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
+            }
+
+            if (!executor.getQueue().offer(newTask)) {
+                // Lost a race against another concurrently submitted event refilling the slot just freed
+                // above: falls back to discarding this new event instead, the same outcome the default
+                // policy would already have produced for it.
+                error("Log delivery task rejected: the internal queue is full, or the appender is stopping");
+                reportDropped(newTask.event(), "internal queue capacity exceeded, or the appender is stopping");
+            }
+        }
+
     }
 
     /**
@@ -117,9 +179,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Creates the single-thread executor backing {@link #workerExecutor}, with its queue bounded to the
      * given capacity instead of the unbounded one a plain {@code Executors.newSingleThreadExecutor()} would
-     * use (see the class documentation for why this queue is bounded at all). Once full, further submitted
-     * tasks are rejected with a {@link RejectedExecutionException} (the default policy of
-     * {@link ThreadPoolExecutor}), which {@link #append(LogEvent)} already handles gracefully.
+     * use (see the class documentation for why this queue is bounded at all), and {@link DiscardOldestEventPolicy}
+     * in place of the default {@code AbortPolicy} so a full queue discards its oldest pending event instead
+     * of rejecting the newest one.
      *
      * @param queueCapacity The maximum number of tasks the queue can hold, clamped to at least {@code 1}
      *                      since {@link LinkedBlockingQueue}'s constructor rejects a non-positive capacity
@@ -127,10 +189,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      *                      buffer instead of crashing the appender at construction time
      * @return The executor to use for {@link #workerExecutor}
      */
-    private static ExecutorService newWorkerExecutor(int queueCapacity) {
+    private ExecutorService newWorkerExecutor(int queueCapacity) {
         int capacity = Math.max(1, queueCapacity);
         return new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS,
-                new LinkedBlockingQueue<>(capacity), namedThreadFactory("log-delivery-worker"));
+                new LinkedBlockingQueue<>(capacity), namedThreadFactory("log-delivery-worker"), new DiscardOldestEventPolicy());
     }
 
     @Override
@@ -247,12 +309,14 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             // can never propagate to the application thread, which would otherwise break the guarantee
             // that logging calls never fail or block because of this appender.
             Runnable task = createLogDeliveryTask(immutableEvent);
-            workerExecutor.execute(() -> executeLogDeliveryTask(task));
+            workerExecutor.execute(new EventTask(immutableEvent, () -> executeLogDeliveryTask(task)));
         } catch (RejectedExecutionException e) {
-            // Happens either because the queue feeding the worker thread is full (see MaxQueuedEvents) or
-            // because a log is emitted while the appender is stopping: either way, the event is discarded
-            // instead of being propagated to the calling application thread, but still reported through the
-            // delivery's listener so this data loss is not silent.
+            // A full queue is now handled internally by DiscardOldestEventPolicy instead of reaching this
+            // catch block (see its own documentation), so this is reached only because a log is emitted
+            // while the appender is stopping (or, exceedingly rarely, a race lost against another
+            // concurrent event even after that policy already evicted the oldest one to make room): either
+            // way, the event is discarded instead of being propagated to the calling application thread,
+            // but still reported through the delivery's listener so this data loss is not silent.
             error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
             reportDropped(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
         } catch (Throwable e) {

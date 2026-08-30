@@ -46,6 +46,14 @@ class AbstractLogDeliveryAppenderTest {
         return logEvent;
     }
 
+    private LogEvent realLogEvent(String message) {
+        return Log4jLogEvent.newBuilder()
+                .setMessage(new SimpleMessage(message))
+                .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                .setLevel(Level.INFO)
+                .build();
+    }
+
     private ErrorHandler recordingErrorHandler(List<Throwable> errors) {
         return new ErrorHandler() {
             @Override
@@ -256,11 +264,14 @@ class AbstractLogDeliveryAppenderTest {
     class BoundedWorkerQueue {
 
         @Test
-        @DisplayName("Rejects further events without blocking once the queue capacity is exceeded, reporting them as dropped")
+        @DisplayName("Discards an event without blocking once the queue capacity is exceeded, reporting it as dropped")
         void testQueueCapacityExceededReportsDroppedEvents() throws Exception {
             // given: a queue capacity of 1 and a delivery task that blocks forever until released, so the
             // first appended event occupies the worker thread and the second fills the one-slot queue,
-            // leaving no room for a third
+            // leaving no room for a third (which discards the second instead, see
+            // testQueueCapacityExceededDiscardsOldestQueuedEvent() below for that distinction; every event
+            // here carries identical content, so this test only cares that exactly one of the three was
+            // discarded without blocking, and reported as such)
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(10);
             configuration.setFlushInterval(Duration.ofSeconds(10));
@@ -293,7 +304,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(loggingEvent); // occupies the worker thread (blocked on releaseTask)
             appender.append(loggingEvent); // fills the one-slot queue
             var start = System.nanoTime();
-            appender.append(loggingEvent); // must be rejected instead of blocking
+            appender.append(loggingEvent); // discards the previously queued one instead of blocking
             var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then
@@ -301,11 +312,50 @@ class AbstractLogDeliveryAppenderTest {
             assertEquals(1, dropped.size());
             assertEquals("would have been dropped", dropped.get(0).get("logmessage"));
             assertTrue(droppedReasons.get(0).contains("queue"), "Reason should mention the queue: " + droppedReasons.get(0));
-            assertFalse(errors.isEmpty(), "The rejection should also have been reported through the error handler");
+            assertFalse(errors.isEmpty(), "The discard should also have been reported through the error handler");
 
             // cleanup
             releaseTask.countDown();
             appender.stop(2, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Discards the oldest queued event to make room for the newest instead of rejecting it")
+        void testQueueCapacityExceededDiscardsOldestQueuedEvent() throws Exception {
+            // given: a queue capacity of 1 and a delivery task that only blocks on its very first
+            // invocation until released, so event A occupies the worker thread, event B fills the
+            // one-slot queue, and event C then evicts B (the oldest still-queued event) to take its place
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ofSeconds(10));
+            configuration.setMaxQueuedEvents(1);
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new RecordingBlockingLogDeliveryAppender(
+                    "appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                    droppedReasons.add(reason);
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+            appender.append(realLogEvent("C")); // evicts B, the oldest queued event, taking its place
+            releaseFirstTask.countDown();
+            appender.stop(2, SECONDS); // waits for every accepted task (A, then C) to complete
+
+            // then: B was discarded and never processed, while A and C both were, in that order
+            assertEquals(List.of("A", "C"), appender.getProcessedMessages());
+            assertEquals(1, dropped.size());
+            assertEquals("B", dropped.get(0).get("logmessage"));
+            assertTrue(droppedReasons.get(0).contains("queue"), "Reason should mention the queue: " + droppedReasons.get(0));
         }
 
         @Test
@@ -579,6 +629,45 @@ class AbstractLogDeliveryAppenderTest {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
+            };
+        }
+
+    }
+
+    @Getter
+    static class RecordingBlockingLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        LogDelivery logDeliveryHandler = mock(LogDelivery.class);
+        CountDownLatch releaseFirstTask;
+        List<String> processedMessages = new CopyOnWriteArrayList<>();
+
+        protected RecordingBlockingLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+                                                         CountDownLatch releaseFirstTask) {
+            super(name, filter, layout, configuration);
+            this.releaseFirstTask = releaseFirstTask;
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            // The message is read here, on the calling (application) thread, matching how a real
+            // implementation would capture whatever it needs from the event before deferring to the
+            // returned Runnable (see this method's own javadoc)
+            String message = loggingEvent.getMessage().getFormattedMessage();
+            return () -> {
+                try {
+                    // Only ever blocks the very first task: releaseFirstTask.await() returns immediately
+                    // once the latch has already reached zero, so every task submitted afterward proceeds
+                    // without waiting
+                    releaseFirstTask.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                processedMessages.add(message);
             };
         }
 

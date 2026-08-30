@@ -237,7 +237,7 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `MaxPendingDocuments` | Maximum number of documents a pending batch can hold in memory while waiting to be (re)transmitted, discarding the oldest ones past that point (see step 5 above). This bounds memory only, independent of how many documents end up in a single request; see `MaxRequestDocuments` for that. Defaults to `10'000`; `0` or a negative value discards every document as soon as it would be added, effectively disabling this delivery. |
 | `MaxRequestDocuments` | Maximum number of documents sent together in a single request. A pending batch bigger than this is split into chunks of at most this size before transmission (see step 4 above), each retried independently on failure. Defaults to unbounded (no chunking); set it to match a downstream system's own per-request limit. |
 | `MaxConsecutiveFailures` | Maximum number of consecutive failed attempts allowed for the same request (a whole batch, or one chunk of it) before it is discarded instead of retried again (see step 5 above). Defaults to `5`; `0` or a negative value disables this limit and retries indefinitely instead. |
-| `MaxQueuedEvents` | Maximum number of logging events that can be queued, waiting to be converted and batched by the background thread, before new ones are discarded instead of being accepted (see below). Defaults to `10'000`. |
+| `MaxQueuedEvents` | Maximum number of logging events that can be queued, waiting to be converted and batched by the background thread, before the oldest one still queued is discarded to make room for a new one (see below). Defaults to `10'000`. |
 
 These five are implemented as default methods on `LogConfiguration` itself (rather than plugin
 attributes), so they are available even if the appender implementation you use does not explicitly expose
@@ -254,9 +254,11 @@ class in the meantime.
 - **Bounded queue:** that queue is capped at `MaxQueuedEvents` (10'000 by default) so it cannot grow
   memory usage without limit if the external system stays unavailable for a long time (once every
   `MaxConcurrentTransmissions` slot is stuck, events keep arriving faster than they can be processed).
-  `append()` still never blocks: once the limit is reached, further events are discarded instead of being
-  queued, and reported through your `LogDeliveryListener` (see below) if one is configured, so this data
-  loss is never silent. Raise this limit if your traffic legitimately bursts past the default.
+  `append()` still never blocks: once the limit is reached, the oldest event still waiting in the queue is
+  discarded to make room for the new one, keeping the most recently received (and therefore most likely
+  still relevant) events, the same policy `MaxPendingDocuments` already applies to a full pending batch.
+  Either way, the discard is reported through your `LogDeliveryListener` (see below) if one is configured,
+  so this data loss is never silent. Raise this limit if your traffic legitimately bursts past the default.
 - **Concurrent transmissions:** up to `MaxConcurrentTransmissions` requests (4 by default) can be
   transmitted at the same time (see step 4 above), each on its own virtual thread, so network latency does
   not throttle how fast new batches are formed. This only ever adds backpressure to the internal
