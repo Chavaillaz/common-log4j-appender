@@ -602,7 +602,7 @@ class AbstractBatchLogDeliveryTest {
         @Test
         @DisplayName("Sends the whole batch as a single request by default (no chunking)")
         void testDoesNotChunkByDefault() throws Exception {
-            // given: MaxRequestSize left at its default (unbounded)
+            // given: MaxRequestDocuments left at its default (unbounded)
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(20);
             var logDelivery = new TestLogDelivery(configuration);
@@ -618,14 +618,14 @@ class AbstractBatchLogDeliveryTest {
             assertEquals(20, logDelivery.lastBulkSize.get());
         }
 
-        @ParameterizedTest(name = "maxRequestSize = {0}")
+        @ParameterizedTest(name = "maxRequestDocuments = {0}")
         @ValueSource(ints = {0, -1})
-        @DisplayName("Does not chunk when MaxRequestSize is zero or negative, treating it as disabled")
-        void testNonPositiveMaxRequestSizeDisablesChunking(int maxRequestSize) throws Exception {
+        @DisplayName("Does not chunk when MaxRequestDocuments is zero or negative, treating it as disabled")
+        void testNonPositiveMaxRequestDocumentsDisablesChunking(int maxRequestDocuments) throws Exception {
             // given
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(5);
-            configuration.setMaxRequestSize(maxRequestSize);
+            configuration.setMaxRequestDocuments(maxRequestDocuments);
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -640,12 +640,12 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Splits a batch larger than MaxRequestSize into several requests, none exceeding it")
-        void testSplitsBatchLargerThanMaxRequestSize() throws Exception {
+        @DisplayName("Splits a batch larger than MaxRequestDocuments into several requests, none exceeding it")
+        void testSplitsBatchLargerThanMaxRequestDocuments() throws Exception {
             // given
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(10);
-            configuration.setMaxRequestSize(4);
+            configuration.setMaxRequestDocuments(4);
             var logDelivery = new TestLogDelivery(configuration);
             List<Map<String, Object>> documents = new ArrayList<>();
             for (int i = 0; i < 10; i++) {
@@ -659,7 +659,7 @@ class AbstractBatchLogDeliveryTest {
             // then: split into 3 requests (4 + 4 + 2), none exceeding the configured limit
             assertEquals(3, logDelivery.countBulkSent.get());
             for (List<Map<String, Object>> chunk : logDelivery.allBulkDocuments) {
-                assertTrue(chunk.size() <= 4, "No chunk should exceed MaxRequestSize, was " + chunk.size());
+                assertTrue(chunk.size() <= 4, "No chunk should exceed MaxRequestDocuments, was " + chunk.size());
             }
 
             // then: every document was sent exactly once across the chunks (order between chunks is not
@@ -678,7 +678,7 @@ class AbstractBatchLogDeliveryTest {
             // given: a batch of 4 split into 4 chunks of 1, each transmission taking 200ms
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(4);
-            configuration.setMaxRequestSize(1);
+            configuration.setMaxRequestDocuments(1);
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(200));
 
             // when
@@ -700,7 +700,7 @@ class AbstractBatchLogDeliveryTest {
             // given: a batch of 4 split into two chunks of 2; only the chunk containing id=0 fails
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(4);
-            configuration.setMaxRequestSize(2);
+            configuration.setMaxRequestDocuments(2);
             var attempts = new CopyOnWriteArrayList<List<Map<String, Object>>>();
             var logDelivery = new TestLogDelivery(configuration) {
                 @Override

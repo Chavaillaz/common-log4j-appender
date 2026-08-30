@@ -22,8 +22,8 @@ class TestLogConfiguration implements LogConfiguration {
     private Duration flushInterval = Duration.ofSeconds(5);
     private int maxConcurrentTransmissions = 4;
     private int maxPendingDocuments = 10_000;
-    private int maxRequestSize = Integer.MAX_VALUE;
+    private int maxRequestDocuments = Integer.MAX_VALUE;
     private int maxConsecutiveFailures = 5;
-    private int maxPendingEvents = 10_000;
+    private int maxQueuedEvents = 10_000;
 
 }

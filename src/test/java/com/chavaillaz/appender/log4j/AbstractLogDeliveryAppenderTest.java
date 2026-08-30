@@ -264,7 +264,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(10);
             configuration.setFlushInterval(Duration.ofSeconds(10));
-            configuration.setMaxPendingEvents(1);
+            configuration.setMaxQueuedEvents(1);
             var releaseTask = new CountDownLatch(1);
             var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
@@ -309,11 +309,11 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
-        @DisplayName("Does not crash construction when MaxPendingEvents is zero or negative")
-        void testNonPositiveMaxPendingEventsDoesNotThrow() throws Exception {
+        @DisplayName("Does not crash construction when MaxQueuedEvents is zero or negative")
+        void testNonPositiveMaxQueuedEventsDoesNotThrow() throws Exception {
             // given: the worker executor (and its bounded queue) is created at construction time
             var configuration = new TestLogConfiguration();
-            configuration.setMaxPendingEvents(-1);
+            configuration.setMaxQueuedEvents(-1);
 
             // when / then
             var appender = assertDoesNotThrow(

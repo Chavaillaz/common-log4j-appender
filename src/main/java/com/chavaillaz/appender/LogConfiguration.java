@@ -103,8 +103,8 @@ public interface LogConfiguration {
      * disabling this delivery.
      * <p>
      * This bounds memory only: it says nothing about how many documents are sent together in a single
-     * request, which {@link #getMaxRequestSize()} controls instead. A pending batch bigger than
-     * {@code MaxRequestSize} is still held here in full, and split into several requests at transmission
+     * request, which {@link #getMaxRequestDocuments()} controls instead. A pending batch bigger than
+     * {@code MaxRequestDocuments} is still held here in full, and split into several requests at transmission
      * time.
      *
      * @return The maximum number of documents a pending batch can hold in memory
@@ -131,7 +131,7 @@ public interface LogConfiguration {
      *
      * @return The maximum number of documents sent together in a single request
      */
-    default int getMaxRequestSize() {
+    default int getMaxRequestDocuments() {
         return Integer.MAX_VALUE;
     }
 
@@ -164,7 +164,7 @@ public interface LogConfiguration {
      *
      * @return The maximum number of logging events that can be queued awaiting processing
      */
-    default int getMaxPendingEvents() {
+    default int getMaxQueuedEvents() {
         return 10_000;
     }
 

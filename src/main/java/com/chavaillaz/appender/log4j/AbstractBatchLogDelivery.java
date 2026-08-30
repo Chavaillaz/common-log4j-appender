@@ -59,12 +59,12 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * to being logged), so this data loss is never silent.
  * <p>
  * A pending batch due for (re)transmission is not necessarily sent as a single request: if it holds more
- * than {@link LogConfiguration#getMaxRequestSize()} documents, it is first split into consecutive chunks of
+ * than {@link LogConfiguration#getMaxRequestDocuments()} documents, it is first split into consecutive chunks of
  * at most that size, each then dispatched independently (see {@link #dispatch(List, int)}). Chunks of the
  * same batch may therefore be transmitted concurrently, subject to the same
  * {@link LogConfiguration#getMaxConcurrentTransmissions()} bound as any other request, and each is retried
  * on its own failure without holding up its siblings. This is disabled by default (an unbounded
- * {@code MaxRequestSize} never splits anything), and only matters for a downstream system with its own limit
+ * {@code MaxRequestDocuments} never splits anything), and only matters for a downstream system with its own limit
  * on how many documents (or how large a payload) it can accept per request.
  *
  * @param <C> The configuration type
@@ -178,7 +178,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * most recently received (and therefore most likely still relevant) documents.
      * <p>
      * This bounds memory only, independent of how many documents end up in a single request once
-     * transmitted (see {@link #getMaxRequestSize()} for that).
+     * transmitted (see {@link #getMaxRequestDocuments()} for that).
      * <p>
      * Defaults to {@link LogConfiguration#getMaxPendingDocuments()}; can be overridden here instead if the
      * limit should depend on more than just the configuration.
@@ -195,13 +195,13 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * {@link #dispatch(List, int)}), so that a downstream system with its own limit on request size is never
      * handed more than it can accept in one call to {@link #sendBulk(List)}.
      * <p>
-     * Defaults to {@link LogConfiguration#getMaxRequestSize()} (unbounded, i.e. no chunking); can be
+     * Defaults to {@link LogConfiguration#getMaxRequestDocuments()} (unbounded, i.e. no chunking); can be
      * overridden here instead if the limit should depend on more than just the configuration.
      *
      * @return The maximum number of documents sent together in a single request
      */
-    protected int getMaxRequestSize() {
-        return configuration.getMaxRequestSize();
+    protected int getMaxRequestDocuments() {
+        return configuration.getMaxRequestDocuments();
     }
 
     /**
@@ -469,7 +469,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * Dispatches the given documents for transmission, splitting them into consecutive chunks of at most
-     * {@link #getMaxRequestSize()} first if needed, each chunk then handed to {@link #dispatchChunk(List, int)}
+     * {@link #getMaxRequestDocuments()} first if needed, each chunk then handed to {@link #dispatchChunk(List, int)}
      * independently (see the class documentation for what that means for concurrency and retries).
      *
      * @param documents     The documents to dispatch, possibly more than one request's worth
@@ -477,9 +477,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      *                      transmitted, inherited by every chunk split off from it
      */
     private void dispatch(List<Map<String, Object>> documents, int failureStreak) {
-        int maxRequestSize = getMaxRequestSize();
-        if (maxRequestSize > 0 && documents.size() > maxRequestSize) {
-            for (List<Map<String, Object>> chunk : chunk(documents, maxRequestSize)) {
+        int maxRequestDocuments = getMaxRequestDocuments();
+        if (maxRequestDocuments > 0 && documents.size() > maxRequestDocuments) {
+            for (List<Map<String, Object>> chunk : chunk(documents, maxRequestDocuments)) {
                 dispatchChunk(chunk, failureStreak);
             }
         } else {
@@ -504,7 +504,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Dispatches a single chunk (at most {@link #getMaxRequestSize()} documents) for transmission on its own
+     * Dispatches a single chunk (at most {@link #getMaxRequestDocuments()} documents) for transmission on its own
      * virtual thread, bounded by {@link #transmissionPermits} like any other request. Acquiring a permit may
      * block the caller (see the class documentation on {@link LogConfiguration#getMaxConcurrentTransmissions()}
      * for why that is an accepted trade-off), but the actual transmission never does.

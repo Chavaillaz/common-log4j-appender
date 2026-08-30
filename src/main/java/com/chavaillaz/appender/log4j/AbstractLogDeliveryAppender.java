@@ -41,7 +41,7 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * once per log event; a separate, otherwise idle, single-thread scheduler is only used to periodically hand
  * a flush trigger over to that same background thread, so batching still always happens on it alone.
  * <p>
- * That queue is bounded to {@link LogConfiguration#getMaxPendingEvents()}: since {@link #append(LogEvent)}
+ * That queue is bounded to {@link LogConfiguration#getMaxQueuedEvents()}: since {@link #append(LogEvent)}
  * always accepts new events immediately regardless of how fast the background thread can process them, an
  * unbounded queue would let memory usage grow without limit for as long as events keep arriving faster than
  * they can be converted and batched (for example while every {@link LogConfiguration#getMaxConcurrentTransmissions()}
@@ -67,7 +67,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * The single background thread converting and batching events (see the class documentation), fed by a
-     * queue bounded to {@link LogConfiguration#getMaxPendingEvents()} (see {@link #newWorkerExecutor(int)}).
+     * queue bounded to {@link LogConfiguration#getMaxQueuedEvents()} (see {@link #newWorkerExecutor(int)}).
      */
     private final ExecutorService workerExecutor;
 
@@ -110,7 +110,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     protected AbstractLogDeliveryAppender(String name, Filter filter, Layout<?> layout, C configuration) {
         super(name, filter, layout, true, Property.EMPTY_ARRAY);
         this.logConfiguration = configuration;
-        this.workerExecutor = newWorkerExecutor(configuration.getMaxPendingEvents());
+        this.workerExecutor = newWorkerExecutor(configuration.getMaxQueuedEvents());
         this.fallbackConverter.configure(configuration);
     }
 
@@ -200,7 +200,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         try {
             workerExecutor.execute(() -> executeLogDeliveryTask(logDeliveryHandler::flush));
         } catch (RejectedExecutionException e) {
-            // Either the worker's queue is momentarily full (see MaxPendingEvents) or the worker is
+            // Either the worker's queue is momentarily full (see MaxQueuedEvents) or the worker is
             // shutting down; in both cases this cycle's flush is simply skipped rather than reported as
             // dropped data, since (unlike a discarded event in append()) nothing irrecoverable is lost:
             // the next periodic flush, or the one triggered by close(), will pick up whatever is pending.
@@ -249,7 +249,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             Runnable task = createLogDeliveryTask(immutableEvent);
             workerExecutor.execute(() -> executeLogDeliveryTask(task));
         } catch (RejectedExecutionException e) {
-            // Happens either because the queue feeding the worker thread is full (see MaxPendingEvents) or
+            // Happens either because the queue feeding the worker thread is full (see MaxQueuedEvents) or
             // because a log is emitted while the appender is stopping: either way, the event is discarded
             // instead of being propagated to the calling application thread, but still reported through the
             // delivery's listener so this data loss is not silent.
