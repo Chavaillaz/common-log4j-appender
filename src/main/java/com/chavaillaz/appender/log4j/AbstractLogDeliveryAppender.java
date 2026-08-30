@@ -23,6 +23,7 @@ import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.BoundedTrim;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -44,9 +45,9 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * they can be processed (e.g. while every {@link LogConfiguration#getMaxConcurrentTransmissions()}
  * transmission slot is stuck on an unresponsive downstream system) cannot grow memory usage without limit.
  * Once full, the oldest queued event is discarded to make room for the new one (never blocking the
- * application thread), mirroring the policy {@link AbstractBatchLogDelivery} applies to a full pending
- * batch, and reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} so this data
- * loss is never silent.
+ * application thread), applying the same {@link BoundedTrim} policy {@link AbstractBatchLogDelivery}'s own
+ * pending batch is bounded by, and reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}
+ * so this data loss is never silent.
  *
  * @param <C> The configuration type
  */
@@ -84,8 +85,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Replaces {@link #workerExecutor}'s default {@code AbortPolicy} (which would reject, and discard, the
      * newest event once the queue is full) so a full queue instead discards its oldest still-queued event to
-     * make room, keeping the most recently received ones — mirroring the policy
-     * {@link AbstractBatchLogDelivery} applies to a full pending batch.
+     * make room, keeping the most recently received ones — the same {@link BoundedTrim} policy
+     * {@link AbstractBatchLogDelivery} applies to a full pending batch, applied here through the queue's own
+     * O(1) {@code poll()}/{@code offer()} (see below) rather than a call to {@link BoundedTrim#trim(List, int)}
+     * itself, since this queue can only ever be one event over capacity at a time and materializing its full
+     * contents on every eviction would be wasteful under sustained overload.
      * <p>
      * Falls back to the default reject-the-newest behavior for anything that is not itself a discardable
      * {@link EventTask} (currently only the periodic flush trigger, which must never evict a real event to

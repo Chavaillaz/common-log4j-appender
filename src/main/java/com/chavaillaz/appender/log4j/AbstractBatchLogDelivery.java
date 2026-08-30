@@ -14,6 +14,7 @@ import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.BoundedTrim;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -36,8 +37,9 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * <p>
  * Two safety nets bound the cost of a struggling downstream system, or of a single "poison document" it can
  * never accept, so neither can grow memory without bound or wedge the pipeline forever: the pending batch
- * is capped at {@link LogConfiguration#getMaxPendingDocuments()} (oldest documents discarded past that,
- * both while accumulating and while requeuing after a failure), and a batch that fails
+ * is capped at {@link LogConfiguration#getMaxPendingDocuments()} via the shared {@link BoundedTrim} policy
+ * (oldest documents discarded past that, both while accumulating and while requeuing after a failure, the
+ * same policy {@link AbstractLogDeliveryAppender}'s own pending event queue applies), and a batch that fails
  * {@link LogConfiguration#getMaxConsecutiveFailures()} times in a row (tracked per batch, not delivery-wide,
  * so an unrelated batch succeeding concurrently can never reset it) is discarded instead of retried
  * indefinitely. Both are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}, so
@@ -276,7 +278,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             // Enforces the same cap as requeue() here too, so MaxPendingDocuments bounds memory even when
             // FlushThreshold is set higher (or effectively unbounded) and nothing is actually failing.
             maxPendingDocuments = getMaxPendingDocuments();
-            Trimmed trimmed = trimToMaxPendingDocuments(batch, maxPendingDocuments);
+            BoundedTrim.Trimmed<Map<String, Object>> trimmed = BoundedTrim.trim(batch, maxPendingDocuments);
             batch = trimmed.kept();
             discarded = trimmed.discarded();
 
@@ -328,39 +330,6 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * The result of {@link #trimToMaxPendingDocuments(List, int)}.
-     *
-     * @param kept      The given documents, with the oldest ones in excess of the cap removed (the same
-     *                  list instance as given if nothing was discarded)
-     * @param discarded The documents discarded to honor the cap, or {@code null} if none were
-     */
-    private record Trimmed(List<Map<String, Object>> kept, @Nullable List<Map<String, Object>> discarded) {
-
-    }
-
-    /**
-     * Trims the given list (oldest first) down to at most {@code maxPendingDocuments} elements, discarding
-     * the oldest ones in excess so the most recently received documents are kept. Shared by
-     * {@link #stackAndSend(List)} and {@link #requeue(List, int)} so the pending batch can never grow past
-     * this cap regardless of which path pushed it over.
-     *
-     * @param documents           The documents to trim, oldest first
-     * @param maxPendingDocuments The maximum to keep, clamped to {@code [0, documents.size()]} so an
-     *                            unexpected value (zero, negative, or an overridden getter returning one)
-     *                            degrades gracefully instead of making {@code subList()} throw
-     * @return The trimmed list and whatever was discarded, if anything
-     */
-    private static Trimmed trimToMaxPendingDocuments(List<Map<String, Object>> documents, int maxPendingDocuments) {
-        int overflow = Math.min(documents.size(), Math.max(0, documents.size() - maxPendingDocuments));
-        if (overflow == 0) {
-            return new Trimmed(documents, null);
-        }
-        List<Map<String, Object>> discarded = List.copyOf(documents.subList(0, overflow));
-        List<Map<String, Object>> kept = new ArrayList<>(documents.subList(overflow, documents.size()));
-        return new Trimmed(kept, discarded);
-    }
-
-    /**
      * Puts back the documents of a failed (or not attempted) transmission at the front of the current
      * batch, so they are retried before any newer document, discarding the oldest documents in excess if
      * this would grow the batch past {@link #getMaxPendingDocuments()}.
@@ -379,7 +348,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             merged.addAll(batch);
 
             maxPendingDocuments = getMaxPendingDocuments();
-            Trimmed trimmed = trimToMaxPendingDocuments(merged, maxPendingDocuments);
+            BoundedTrim.Trimmed<Map<String, Object>> trimmed = BoundedTrim.trim(merged, maxPendingDocuments);
             batch = trimmed.kept();
             discarded = trimmed.discarded();
 
