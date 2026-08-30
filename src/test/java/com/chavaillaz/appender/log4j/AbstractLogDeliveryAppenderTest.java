@@ -171,6 +171,28 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Reports an error and does not schedule a periodic flush when FlushInterval overflows Duration#toMillis()")
+        void testWithThreadPool_OverflowingFlushInterval() throws Exception {
+            // given: a Duration so large that Duration#toMillis() itself throws ArithmeticException,
+            // which would otherwise propagate straight out of start() instead of being reported cleanly
+            // like every other invalid FlushInterval
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ofSeconds(Long.MAX_VALUE / 500));
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when / then
+            assertDoesNotThrow(appender::start);
+            assertFalse(errors.isEmpty(), "The overflowing FlushInterval should have been reported");
+            verify(appender.getLogDeliveryHandler(), never()).flush();
+
+            // cleanup
+            appender.stop();
+        }
+
+        @Test
         @DisplayName("Does not schedule a periodic flush when the flush threshold disables batching")
         void testWithoutThreadPool() throws Exception {
             // given

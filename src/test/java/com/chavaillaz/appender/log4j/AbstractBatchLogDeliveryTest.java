@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import com.chavaillaz.appender.LogDeliveryListener;
 
@@ -417,6 +418,39 @@ class AbstractBatchLogDeliveryTest {
             // then the pipeline is not stuck: the new document is delivered normally
             assertEquals(4, logDelivery.countBulkSent.get());
             assertEquals(1, logDelivery.lastBulkSize.get());
+        }
+
+        @ParameterizedTest(name = "maxConsecutiveFailures = {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Never gives up when MaxConsecutiveFailures is zero or negative, retrying indefinitely instead")
+        void testNonPositiveMaxConsecutiveFailuresDisablesTheLimit(int maxConsecutiveFailures) throws Exception {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10); // Only flush() (below) triggers a (re)transmission
+            configuration.setMaxConsecutiveFailures(maxConsecutiveFailures);
+            var listener = new RecordingListener();
+            var logDelivery = new TestLogDelivery(configuration, listener);
+            logDelivery.bulkResult = false;
+            logDelivery.send(Map.of("id", "poison"));
+
+            // when retrying well past the number of attempts that would otherwise trigger a give-up
+            for (int i = 0; i < 10; i++) {
+                logDelivery.flush();
+                logDelivery.awaitPendingTransmissions();
+            }
+
+            // then it was retried every single time instead of ever being given up on
+            assertEquals(10, logDelivery.countBulkSent.get());
+            assertEquals(0, listener.dropped.size());
+
+            // when the backend eventually recovers
+            logDelivery.bulkResult = true;
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then the original document is still delivered, having never been discarded
+            assertEquals(11, logDelivery.countBulkSent.get());
+            assertEquals(List.of(Map.of("id", "poison")), logDelivery.lastBulkDocuments);
         }
 
         @Test

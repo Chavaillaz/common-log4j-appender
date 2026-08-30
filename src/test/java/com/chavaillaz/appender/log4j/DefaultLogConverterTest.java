@@ -16,6 +16,8 @@ import org.apache.logging.log4j.message.SimpleMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("DefaultLogConverter")
 class DefaultLogConverterTest {
@@ -215,6 +217,39 @@ class DefaultLogConverterTest {
 
             // then
             assertFalse(document.get("stacktrace").toString().contains("truncated"));
+        }
+
+        @ParameterizedTest(name = "maxStackTraceLength = {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Disables truncation entirely when the configured maximum length is zero or negative")
+        void testNonPositiveMaxStackTraceLengthDisablesTruncation(int maxStackTraceLength) {
+            // given: a deliberately deep (and therefore long) cause chain, which would normally exceed
+            // the default limit and be truncated
+            var configuration = new TestLogConfiguration();
+            var converter = new DefaultLogConverter() {
+                @Override
+                protected int getMaxStackTraceLength() {
+                    return maxStackTraceLength;
+                }
+            };
+            converter.configure(configuration);
+            Throwable exception = new RuntimeException("innermost");
+            for (int i = 0; i < 200; i++) {
+                exception = new RuntimeException("wrapper-" + i, exception);
+            }
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(exception)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            String stacktrace = document.get("stacktrace").toString();
+            assertFalse(stacktrace.contains("truncated"));
+            assertTrue(stacktrace.contains("innermost"), "The full (untruncated) cause chain should be present");
         }
 
         @Test

@@ -138,26 +138,53 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         startLogDeliveryHandler();
 
         if (logDeliveryHandler != null && logConfiguration.getFlushThreshold() > 1) {
-            Duration flushInterval = logConfiguration.getFlushInterval();
-            if (flushInterval == null) {
-                error("FlushInterval is not set although FlushThreshold is greater than 1, "
-                        + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
-            } else if (flushInterval.toMillis() <= 0) {
-                // ScheduledExecutorService#scheduleWithFixedDelay requires a strictly positive delay (once
-                // rounded down to milliseconds, the unit it is called with below) and would otherwise throw
-                // IllegalArgumentException straight out of this method, which (unlike the other error paths
-                // of this class) would abort starting the appender entirely instead of being reported
-                // cleanly like every other misconfiguration.
-                error("FlushInterval must be at least 1ms once rounded down but was " + flushInterval + ", "
-                        + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
-            } else {
-                long interval = flushInterval.toMillis();
+            Long intervalMillis = validateFlushInterval(logConfiguration.getFlushInterval());
+            if (intervalMillis != null) {
                 flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
-                flushScheduler.scheduleWithFixedDelay(this::triggerFlush, interval, interval, MILLISECONDS);
+                flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
             }
         }
 
         super.start();
+    }
+
+    /**
+     * Validates the given flush interval, reporting a clear error through this appender's {@code ErrorHandler}
+     * (like every other misconfiguration in this class) instead of letting an exception propagate straight
+     * out of {@link #start()} for either of the two ways a {@link Duration} can fail
+     * {@link Duration#toMillis()} rather than just yield a non-positive result: overflowing it (one so
+     * large that {@code toMillis()} itself throws {@link ArithmeticException}) or, like a merely
+     * non-positive one, rounding down to {@code 0} once expressed in milliseconds (the unit
+     * {@link ScheduledExecutorService#scheduleWithFixedDelay} is called with below, which requires a
+     * strictly positive delay).
+     *
+     * @param flushInterval The interval to validate, as returned by {@link LogConfiguration#getFlushInterval()}
+     * @return The interval in milliseconds, or {@code null} if it is invalid and no periodic flush should
+     *         be scheduled
+     */
+    private @Nullable Long validateFlushInterval(@Nullable Duration flushInterval) {
+        if (flushInterval == null) {
+            error("FlushInterval is not set although FlushThreshold is greater than 1, "
+                    + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
+            return null;
+        }
+
+        long millis;
+        try {
+            millis = flushInterval.toMillis();
+        } catch (ArithmeticException e) {
+            error("FlushInterval is too large to be expressed in milliseconds (" + flushInterval + "), "
+                    + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
+            return null;
+        }
+
+        if (millis <= 0) {
+            error("FlushInterval must be at least 1ms once rounded down but was " + flushInterval + ", "
+                    + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
+            return null;
+        }
+
+        return millis;
     }
 
     /**
