@@ -7,12 +7,17 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.Map;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.impl.JdkMapAdapterStringMap;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.SimpleMessage;
+import org.apache.logging.log4j.util.BiConsumer;
+import org.apache.logging.log4j.util.ReadOnlyStringMap;
+import org.apache.logging.log4j.util.StringMap;
+import org.apache.logging.log4j.util.TriConsumer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -298,6 +303,30 @@ class DefaultLogConverterTest {
             assertFalse(document.containsKey("stacktrace"));
         }
 
+        @Test
+        @DisplayName("Falls back to omitting MDC fields instead of losing the whole document when context data fails to be read")
+        void testConversionToleratesThrowingContextData() {
+            // given: a custom ReadOnlyStringMap (unlike the one bundled with Log4j2) whose forEach() throws,
+            // which must not prevent every other field, already written before writeMDC() runs, from being
+            // captured
+            var configuration = new TestLogConfiguration();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .setContextData(new ThrowingContextData())
+                    .build();
+
+            // when
+            var document = assertDoesNotThrow(() -> converter.convert(event));
+
+            // then
+            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+            assertEquals("INFO", document.get("level"));
+        }
+
     }
 
     private static class ThrowingMessage implements Message {
@@ -324,6 +353,75 @@ class DefaultLogConverterTest {
         @Override
         public String getMessage() {
             throw new RuntimeException("Simulated getMessage failure");
+        }
+
+    }
+
+    private static class ThrowingContextData implements StringMap {
+
+        @Override
+        public Map<String, String> toMap() {
+            return Map.of();
+        }
+
+        @Override
+        public boolean containsKey(String key) {
+            return false;
+        }
+
+        @Override
+        public <V> void forEach(BiConsumer<String, ? super V> action) {
+            throw new RuntimeException("Simulated context data failure");
+        }
+
+        @Override
+        public <V, S> void forEach(TriConsumer<String, ? super V, S> action, S state) {
+            throw new RuntimeException("Simulated context data failure");
+        }
+
+        @Override
+        public <V> V getValue(String key) {
+            return null;
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return false;
+        }
+
+        @Override
+        public int size() {
+            return 0;
+        }
+
+        @Override
+        public void clear() {
+            // Unused by this test
+        }
+
+        @Override
+        public void freeze() {
+            // Unused by this test
+        }
+
+        @Override
+        public boolean isFrozen() {
+            return false;
+        }
+
+        @Override
+        public void putAll(ReadOnlyStringMap source) {
+            // Unused by this test
+        }
+
+        @Override
+        public void putValue(String key, Object value) {
+            // Unused by this test
+        }
+
+        @Override
+        public void remove(String key) {
+            // Unused by this test
         }
 
     }

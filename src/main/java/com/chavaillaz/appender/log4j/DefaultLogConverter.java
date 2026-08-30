@@ -137,8 +137,17 @@ public class DefaultLogConverter implements LogConverter {
      * @param event    The logging event
      */
     protected void writeMDC(Map<String, Object> document, LogEvent event) {
-        if (event.getContextData() != null) {
+        if (event.getContextData() == null) {
+            return;
+        }
+        try {
             event.getContextData().forEach(document::putIfAbsent);
+        } catch (Exception e) {
+            // A custom ContextDataProvider/ReadOnlyStringMap implementation (unlike the one bundled with
+            // Log4j2) could throw while being iterated; losing only the MDC fields instead of the whole
+            // document (as an uncaught exception here would, since this is called from convert()) still
+            // leaves every other field written so far usable.
+            log.warn("Unable to read the MDC context data of a logging event, it will be omitted", e);
         }
     }
 
