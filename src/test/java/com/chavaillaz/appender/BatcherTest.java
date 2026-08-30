@@ -1,12 +1,15 @@
 package com.chavaillaz.appender;
 
+import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
@@ -19,7 +22,8 @@ import org.junit.jupiter.api.Test;
  * accumulate/backpressure/retry behavior through the {@code Map<String,Object>}/Log4j2-flavored facade,
  * this class exercises {@link Batcher} directly, with a non-document element type and no Log4j2 concept in
  * sight, plus the supplier-based dynamic limits that facade relies on to preserve its own overridable
- * {@code getMaxPendingDocuments()}-style hooks.
+ * {@code getMaxPendingDocuments()}-style hooks, and the {@link TransmissionResult} contract (including
+ * {@link TransmissionResult.PartialFailure} and a transport completing asynchronously).
  */
 @DisplayName("Batcher")
 class BatcherTest {
@@ -29,7 +33,7 @@ class BatcherTest {
     void testRejectsNonPositiveMaxConcurrentTransmissions() {
         assertThrows(IllegalArgumentException.class,
                 () -> new Batcher<>(() -> 1L, () -> 10, () -> 10, () -> 5, 0, "batcher-test-", "element",
-                        elements -> true, BatcherListener.noop()));
+                        elements -> completedFuture(TransmissionResult.success()), BatcherListener.noop()));
     }
 
     @Test
@@ -39,8 +43,8 @@ class BatcherTest {
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = batcher(2, elements -> {
             transmitted.add(elements);
-            return true;
-        }, BatcherListener.<String>noop());
+            return completedFuture(TransmissionResult.success());
+        }, BatcherListener.noop());
 
         // when
         batcher.add(List.of("a"));
@@ -68,7 +72,11 @@ class BatcherTest {
         // given
         var attempts = new AtomicInteger();
         var succeed = new AtomicInteger(-1); // becomes true only once this many attempts have been made
-        Batcher<String> batcher = batcher(1, elements -> attempts.incrementAndGet() > succeed.get(), BatcherListener.noop());
+        Batcher<String> batcher = batcher(1,
+                elements -> completedFuture(attempts.incrementAndGet() > succeed.get()
+                        ? TransmissionResult.success()
+                        : TransmissionResult.failure(null)),
+                BatcherListener.noop());
         succeed.set(1);
 
         // when
@@ -96,7 +104,7 @@ class BatcherTest {
         };
         int maxConsecutiveFailures = 2;
         Batcher<String> batcher = new Batcher<>(() -> 10L, () -> 10, () -> Integer.MAX_VALUE, () -> maxConsecutiveFailures, 4,
-                "batcher-test-", "element", elements -> false, listener);
+                "batcher-test-", "element", elements -> completedFuture(TransmissionResult.failure(null)), listener);
         batcher.add(List.of("poison"));
 
         // when: retried (via flush(), since the flush threshold of 10 is never reached on its own) until
@@ -125,7 +133,7 @@ class BatcherTest {
             }
         };
         Batcher<String> batcher = new Batcher<>(() -> 100L, maxPending::get, () -> Integer.MAX_VALUE, () -> 5, 4,
-                "batcher-test-", "element", elements -> true, listener);
+                "batcher-test-", "element", elements -> completedFuture(TransmissionResult.success()), listener);
 
         // when: accumulating under the initial generous limit
         batcher.add(List.of("a", "b", "c"));
@@ -143,7 +151,74 @@ class BatcherTest {
         assertEquals(3, dropped.size());
     }
 
-    private static Batcher<String> batcher(long flushThreshold, Function<List<String>, Boolean> transport, BatcherListener<String> listener) {
+    @Test
+    @DisplayName("Retries only the rejected elements of a PartialFailure, reporting the rest as succeeded")
+    void testPartialFailureRetriesOnlyRejectedElements() throws Exception {
+        // given: "b" is rejected every attempt, "a" and "c" are accepted the very first time
+        var succeeded = new CopyOnWriteArrayList<Integer>();
+        var attempts = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = new Batcher<>(() -> 3L, () -> 10, () -> Integer.MAX_VALUE, () -> 5, 4,
+                "batcher-test-", "element", elements -> {
+                    attempts.add(elements);
+                    List<String> rejected = elements.stream().filter("b"::equals).toList();
+                    return completedFuture(rejected.isEmpty()
+                            ? TransmissionResult.success()
+                            : TransmissionResult.partialFailure(rejected, null));
+                }, new BatcherListener<>() {
+                    @Override
+                    public void onSucceeded(int count, long durationMillis) {
+                        succeeded.add(count);
+                    }
+                });
+
+        // when: the first attempt rejects "b" only
+        batcher.add(List.of("a", "b", "c"));
+        batcher.awaitPendingTransmissions();
+
+        // then: "a" and "c" were reported succeeded (2), only "b" is pending for retry
+        assertEquals(List.of(2), succeeded);
+        assertEquals(List.of(List.of("a", "b", "c")), attempts);
+
+        // when: retried
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: only "b" (not "a" or "c" again) was retried, and it still fails every time
+        assertEquals(List.of(List.of("a", "b", "c"), List.of("b")), attempts);
+    }
+
+    @Test
+    @DisplayName("Does not block the calling thread on a transport that completes its future asynchronously")
+    void testDoesNotBlockOnAsynchronousTransport() throws Exception {
+        // given: a transport whose future is completed later, from a separate thread, rather than before
+        // the transport function itself returns
+        var releaseTransport = new CompletableFuture<Void>();
+        var transmitted = new AtomicBoolean();
+        Batcher<String> batcher = batcher(1, elements -> {
+            var future = new CompletableFuture<TransmissionResult<String>>();
+            releaseTransport.thenRun(() -> {
+                transmitted.set(true);
+                future.complete(TransmissionResult.success());
+            });
+            return future;
+        }, BatcherListener.noop());
+
+        // when
+        var start = System.nanoTime();
+        batcher.add(List.of("a"));
+        var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+        // then: add() returned promptly without waiting for the (still incomplete) transport future
+        assertTrue(elapsedMillis < 500, "add() should not block on an incomplete transport future, took " + elapsedMillis + "ms");
+        assertTrue(!transmitted.get(), "The transport should not have completed yet");
+
+        // cleanup
+        releaseTransport.complete(null);
+        batcher.awaitPendingTransmissions();
+    }
+
+    private static Batcher<String> batcher(long flushThreshold,
+            Function<List<String>, CompletableFuture<TransmissionResult<String>>> transport, BatcherListener<String> listener) {
         return new Batcher<>(() -> flushThreshold, () -> 10_000, () -> Integer.MAX_VALUE, () -> 5, 4,
                 "batcher-test-", "element", transport, listener);
     }

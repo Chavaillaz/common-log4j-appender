@@ -5,6 +5,7 @@ import static java.util.Collections.singletonList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
@@ -15,6 +16,7 @@ import com.chavaillaz.appender.BatcherListener;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
+import com.chavaillaz.appender.TransmissionResult;
 
 /**
  * Abstract implementation of logs transmission by batches.
@@ -256,11 +258,22 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * Sends the given list of documents representing logs.
+     * <p>
+     * The returned future may be completed synchronously (before this method even returns) or
+     * asynchronously from another thread once the transmission actually completes; either way, this method
+     * itself is not expected to block on the transmission. Use {@link TransmissionResult#success()} when
+     * every document was accepted, {@link TransmissionResult#failure(Throwable)} when none were (letting the
+     * whole batch be retried or eventually discarded together), or
+     * {@link TransmissionResult#partialFailure(List, Throwable)} when only some were rejected (e.g. one
+     * malformed document in an otherwise-successful bulk response) so only those, not the accepted ones
+     * alongside them, are retried or counted toward {@link LogConfiguration#getMaxConsecutiveFailures()}. A
+     * synchronously thrown exception, a future completed exceptionally, or a future completed with
+     * {@code null} are all treated the same as {@link TransmissionResult#failure(Throwable)}.
      *
      * @param documents The list of record data
-     * @return {@code true} if the transmission was successful, {@code false} otherwise
+     * @return A future completed with the outcome of the transmission
      */
-    protected abstract boolean sendBulk(List<Map<String, Object>> documents);
+    protected abstract CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents);
 
     /**
      * Flushes the current batch and waits for every pending transmission (including that final one) to

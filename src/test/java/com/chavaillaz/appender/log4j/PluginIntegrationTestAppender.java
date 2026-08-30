@@ -5,6 +5,7 @@ import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLa
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.core.Appender;
@@ -18,6 +19,7 @@ import org.apache.logging.log4j.core.config.plugins.PluginBuilderAttribute;
 import org.apache.logging.log4j.core.config.plugins.PluginBuilderFactory;
 
 import com.chavaillaz.appender.LogDelivery;
+import com.chavaillaz.appender.TransmissionResult;
 
 /**
  * A minimal, real Log4j2 plugin appender, used only by {@link PluginIntegrationTest} to exercise this
@@ -82,9 +84,9 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
     public LogDelivery createLogDeliveryHandler() {
         return new AbstractBatchLogDelivery<>(getLogConfiguration()) {
             @Override
-            protected boolean sendBulk(List<Map<String, Object>> documents) {
+            protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
                 RECEIVED_DOCUMENTS.addAll(documents);
-                return true;
+                return CompletableFuture.completedFuture(TransmissionResult.success());
             }
         };
     }

@@ -1,5 +1,6 @@
 package com.chavaillaz.appender.log4j;
 
+import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -13,9 +14,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -34,6 +37,7 @@ import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import com.chavaillaz.appender.LogDeliveryListener;
+import com.chavaillaz.appender.TransmissionResult;
 
 @Slf4j
 @DisplayName("AbstractBatchLogDelivery")
@@ -602,16 +606,16 @@ class AbstractBatchLogDeliveryTest {
             var poisonAttempts = new AtomicInteger();
             var logDelivery = new TestLogDelivery(configuration, listener) {
                 @Override
-                protected boolean sendBulk(List<Map<String, Object>> documents) {
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
                     boolean poison = documents.stream().anyMatch(document -> document.containsKey("poison"));
                     if (poison) {
                         poisonAttempts.incrementAndGet();
                         poisonEntered.get().countDown();
                         await(releasePoison.get());
-                        return false;
+                        return completedFuture(TransmissionResult.failure(null));
                     }
                     cleanSucceeded.incrementAndGet();
-                    return true;
+                    return completedFuture(TransmissionResult.success());
                 }
             };
 
@@ -782,10 +786,10 @@ class AbstractBatchLogDeliveryTest {
             var attempts = new CopyOnWriteArrayList<List<Map<String, Object>>>();
             var logDelivery = new TestLogDelivery(configuration) {
                 @Override
-                protected boolean sendBulk(List<Map<String, Object>> documents) {
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
                     attempts.add(documents);
                     boolean poison = documents.stream().anyMatch(document -> document.get("id").equals(0));
-                    return !poison;
+                    return completedFuture(poison ? TransmissionResult.failure(null) : TransmissionResult.success());
                 }
             };
 
@@ -808,6 +812,46 @@ class AbstractBatchLogDeliveryTest {
             // sibling that had already succeeded
             assertEquals(3, attempts.size());
             assertEquals(failedChunk, attempts.get(2));
+        }
+
+        @Test
+        @DisplayName("Retries only the rejected documents of a PartialFailure, reporting the accepted ones as succeeded")
+        void testPartialFailureRetriesOnlyRejectedDocuments() throws Exception {
+            // given: a single chunk of 3 documents where id=1 is rejected but id=0 and id=2 are accepted
+            var configuration = TestLogConfiguration.builder().flushThreshold(3).build();
+            var listener = new RecordingListener();
+            var attempts = new CopyOnWriteArrayList<List<Map<String, Object>>>();
+            var logDelivery = new TestLogDelivery(configuration, listener) {
+                @Override
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                    attempts.add(documents);
+                    List<Map<String, Object>> rejected = documents.stream()
+                            .filter(document -> document.get("id").equals(1))
+                            .toList();
+                    return completedFuture(rejected.isEmpty()
+                            ? TransmissionResult.success()
+                            : TransmissionResult.partialFailure(rejected, null));
+                }
+            };
+
+            // when
+            logDelivery.send(List.of(Map.of("id", 0), Map.of("id", 1), Map.of("id", 2)));
+            logDelivery.awaitPendingTransmissions();
+
+            // then: the 2 accepted documents were reported succeeded and the 1 rejected one failed,
+            // through two separate listener notifications rather than one all-or-nothing outcome
+            assertEquals(1, listener.succeeded.size());
+            assertEquals(2, listener.succeeded.get(0).documentCount());
+            assertEquals(1, listener.failed.size());
+            assertEquals(1, listener.failed.get(0).documentCount());
+
+            // when retried
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then: only the rejected document (id=1) was retried, not the two already-accepted ones
+            assertEquals(2, attempts.size());
+            assertEquals(List.of(Map.of("id", 1)), attempts.get(1));
         }
 
     }
@@ -1072,6 +1116,42 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
         }
 
+        @Test
+        @DisplayName("Does not block the transmitting thread when sendBulk() completes its future asynchronously")
+        void testDoesNotBlockOnAsynchronousSendBulk() throws Exception {
+            // given: a sendBulk() whose future is completed later, from a separate thread, rather than
+            // before sendBulk() itself returns, proving the virtual thread handling the transmission is
+            // freed immediately instead of blocking on the network the way a boolean-returning sendBulk()
+            // would have forced it to
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
+            var releaseTransmission = new CompletableFuture<Void>();
+            var transmitted = new AtomicBoolean();
+            var logDelivery = new TestLogDelivery(configuration) {
+                @Override
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                    var future = new CompletableFuture<TransmissionResult<Map<String, Object>>>();
+                    releaseTransmission.thenRun(() -> {
+                        transmitted.set(true);
+                        future.complete(TransmissionResult.success());
+                    });
+                    return future;
+                }
+            };
+
+            // when
+            var start = System.nanoTime();
+            logDelivery.send(Map.of("id", 1));
+            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then: send() returned promptly without waiting for the still-incomplete sendBulk() future
+            assertTrue(elapsedMillis < 500, "send() should not block on an incomplete sendBulk() future, took " + elapsedMillis + "ms");
+            assertTrue(!transmitted.get(), "The transport should not have completed yet");
+
+            // cleanup
+            releaseTransmission.complete(null);
+            logDelivery.awaitPendingTransmissions();
+        }
+
         private void await(CountDownLatch latch) {
             try {
                 latch.await();
@@ -1101,7 +1181,7 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Override
-        protected boolean sendBulk(List<Map<String, Object>> documents) {
+        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
             countBulkSent.incrementAndGet();
             lastBulkSize.set(documents.size());
             lastBulkDocuments = documents;
@@ -1112,7 +1192,7 @@ class AbstractBatchLogDeliveryTest {
             if (bulkResult) {
                 totalDocumentsSent.addAndGet(documents.size());
             }
-            return bulkResult;
+            return completedFuture(bulkResult ? TransmissionResult.success() : TransmissionResult.failure(null));
         }
 
     }
@@ -1163,14 +1243,14 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Override
-        protected boolean sendBulk(List<Map<String, Object>> documents) {
+        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
             countBulkSent.incrementAndGet();
-            return true;
+            return completedFuture(TransmissionResult.success());
         }
 
     }

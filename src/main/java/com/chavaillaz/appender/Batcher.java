@@ -1,7 +1,12 @@
 package com.chavaillaz.appender;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -11,6 +16,7 @@ import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 
 import lombok.extern.log4j.Log4j2;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Generic accumulate-batch-transmit-retry engine: elements are stacked until a threshold is reached (or
@@ -41,6 +47,14 @@ import lombok.extern.log4j.Log4j2;
  * A batch due for (re)transmission bigger than {@code maxRequestElements} is first split into chunks of at
  * most that size, each dispatched, retried and (subject to {@code maxConcurrentTransmissions}) transmitted
  * independently.
+ * <p>
+ * The transport function returns a {@code CompletableFuture<TransmissionResult<T>>} rather than blocking:
+ * it may complete it synchronously, or kick off asynchronous I/O and complete it later from another thread,
+ * without tying up one of the (bounded) virtual threads this engine dispatches on for the whole duration of
+ * the transmission. A {@link TransmissionResult.PartialFailure} lets it report that only some elements of a
+ * chunk were rejected; only those are requeued for retry and counted toward
+ * {@code maxConsecutiveFailures}, instead of the whole chunk being retried (or given up on) over a single
+ * bad element.
  *
  * @param <T> The type of element accumulated and transmitted
  */
@@ -57,7 +71,7 @@ public class Batcher<T> {
     private final IntSupplier maxRequestElements;
     private final IntSupplier maxConsecutiveFailures;
     private final String elementNoun;
-    private final Function<List<T>, Boolean> transport;
+    private final Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport;
     private final BatcherListener<T> listener;
 
     /**
@@ -117,13 +131,15 @@ public class Batcher<T> {
      * @param elementNoun                Singular noun describing one element (e.g. {@code "document"}), used
      *                                    only to phrase log messages and the reason string reported to
      *                                    {@code listener} on a discard
-     * @param transport                  The transport function, called with a batch (or chunk) to transmit,
-     *                                    returning whether it succeeded
+     * @param transport                  The transport function, called with a batch (or chunk) to transmit;
+     *                                    may complete the returned future synchronously or asynchronously,
+     *                                    and is not expected to block the calling thread either way
      * @param listener                   The listener notified of the outcome of every transmission attempt
      */
     public Batcher(LongSupplier flushThreshold, IntSupplier maxPendingElements, IntSupplier maxRequestElements,
             IntSupplier maxConsecutiveFailures, int maxConcurrentTransmissions, String transmissionThreadPrefix,
-            String elementNoun, Function<List<T>, Boolean> transport, BatcherListener<T> listener) {
+            String elementNoun, Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport,
+            BatcherListener<T> listener) {
         if (maxConcurrentTransmissions < 1) {
             // A value of 0 or less would give the semaphore below no permits to ever hand out, so every
             // dispatch() would block forever instead of merely lowering throughput.
@@ -357,34 +373,131 @@ public class Batcher<T> {
         }
     }
 
+    /**
+     * Calls the transport function and, once its returned future completes (synchronously or not — see the
+     * class documentation), handles the result. Never blocks the calling (virtual) thread on the actual
+     * transmission: only the handoff to the transport function itself runs here, the rest happens in
+     * whatever thread completes the future.
+     *
+     * @param elements      The chunk to transmit
+     * @param failureStreak The number of consecutive times this exact content has already failed to be
+     *                      transmitted
+     */
     private void transmit(List<T> elements, int failureStreak) {
         long start = System.nanoTime();
+        CompletableFuture<TransmissionResult<T>> future;
         try {
-            boolean success;
-            Exception failure = null;
+            CompletableFuture<TransmissionResult<T>> applied = transport.apply(elements);
+            future = applied != null ? applied : CompletableFuture.completedFuture(null);
+        } catch (Exception e) {
+            future = CompletableFuture.failedFuture(e);
+        }
+        future.whenComplete((result, throwable) -> {
             try {
-                success = transport.apply(elements);
-            } catch (Exception e) {
-                log.warn("Unhandled exception while transmitting a batch of {} {}(s)", elements.size(), elementNoun, e);
-                success = false;
-                failure = e;
+                long durationMillis = (System.nanoTime() - start) / 1_000_000;
+                handleResult(elements, failureStreak, normalizeResult(elements, result, throwable), durationMillis);
+            } finally {
+                transmissionPermits.release();
             }
+        });
+    }
 
-            long durationMillis = (System.nanoTime() - start) / 1_000_000;
-            transmissionFailed = !success;
-            if (success) {
+    /**
+     * Turns whatever the transport function's future completed with into a non-{@code null}
+     * {@link TransmissionResult}, treating an exceptional completion or a {@code null} result (either a
+     * misbehaving transport, since neither is a valid {@link TransmissionResult}) as a plain
+     * {@link TransmissionResult.Failure} instead of letting either propagate and skip the
+     * retry/give-up handling in {@link #handleResult(List, int, TransmissionResult, long)}.
+     *
+     * @param elements  The chunk that was transmitted, only used to phrase the warning logged for either
+     *                  case
+     * @param result    The result the future completed with, or {@code null} if it completed exceptionally
+     *                  or with {@code null} itself
+     * @param throwable The exception the future completed with, or {@code null} if it completed normally
+     * @return A non-{@code null} result
+     */
+    private TransmissionResult<T> normalizeResult(List<T> elements, @Nullable TransmissionResult<T> result, @Nullable Throwable throwable) {
+        if (throwable != null) {
+            // A future completed via completeExceptionally() (or failedFuture(), as used above for a
+            // synchronously-thrown exception) delivers that exact exception here; one derived from a
+            // transport's own internal composition (e.g. its own thenApply()) may instead wrap it in a
+            // CompletionException, which is unwrapped here so the reported cause is the original failure.
+            Throwable cause = throwable instanceof CompletionException && throwable.getCause() != null
+                    ? throwable.getCause() : throwable;
+            log.warn("Unhandled exception while transmitting a batch of {} {}(s)", elements.size(), elementNoun, cause);
+            return TransmissionResult.failure(cause);
+        }
+        if (result == null) {
+            log.warn("Transport returned a null result for a batch of {} {}(s), treating it as a failure",
+                    elements.size(), elementNoun);
+            return TransmissionResult.failure(null);
+        }
+        return result;
+    }
+
+    /**
+     * Handles a (normalized, non-{@code null}) transmission result: notifies {@link #listener} of what
+     * succeeded and/or failed, and requeues or gives up on whatever failed via
+     * {@link #onTransmissionFailure(List, int)} — for a {@link TransmissionResult.PartialFailure}, scoped
+     * to only the rejected elements, matched back against {@code elements} by reference identity (see
+     * {@link TransmissionResult} for why), so the elements accepted alongside them are never retried or
+     * counted toward {@code maxConsecutiveFailures}.
+     *
+     * @param elements       The chunk that was transmitted
+     * @param failureStreak  The number of consecutive times this exact content had already failed before
+     *                       this attempt
+     * @param result         The (normalized) result of the attempt
+     * @param durationMillis The time the transmission took, in milliseconds
+     */
+    private void handleResult(List<T> elements, int failureStreak, TransmissionResult<T> result, long durationMillis) {
+        switch (result) {
+            case TransmissionResult.Success<T> success -> {
+                transmissionFailed = false;
                 notifyListener(() -> listener.onSucceeded(elements.size(), durationMillis));
-            } else {
-                Exception cause = failure;
-                notifyListener(() -> listener.onFailed(elements.size(), cause));
+            }
+            case TransmissionResult.Failure<T> failure -> {
+                transmissionFailed = true;
+                notifyListener(() -> listener.onFailed(elements.size(), failure.cause()));
                 // Runs regardless of whether the notification above threw: a misbehaving listener must
                 // never skip the retry/give-up handling below, or the failed elements would be lost
                 // silently.
                 onTransmissionFailure(elements, failureStreak);
             }
-        } finally {
-            transmissionPermits.release();
+            case TransmissionResult.PartialFailure<T> partial -> {
+                List<T> rejected = partial.rejected();
+                transmissionFailed = !rejected.isEmpty();
+                List<T> accepted = withoutIdentity(elements, rejected);
+                if (!accepted.isEmpty()) {
+                    notifyListener(() -> listener.onSucceeded(accepted.size(), durationMillis));
+                }
+                if (!rejected.isEmpty()) {
+                    notifyListener(() -> listener.onFailed(rejected.size(), partial.cause()));
+                    onTransmissionFailure(rejected, failureStreak);
+                }
+            }
         }
+    }
+
+    /**
+     * Returns the elements of {@code elements} not present in {@code excluded}, matched by reference
+     * identity rather than {@code equals()} (see {@link TransmissionResult} for why: content-identical but
+     * distinct elements, e.g. repeated heartbeat log messages, are common, and equals-based matching would
+     * silently misattribute which ones are excluded).
+     *
+     * @param elements The elements to filter
+     * @param excluded The elements to exclude, by reference identity
+     * @return The elements of {@code elements} not identical to any element of {@code excluded}
+     */
+    private static <T> List<T> withoutIdentity(List<T> elements, List<T> excluded) {
+        Set<T> excludedIdentity = Collections.newSetFromMap(new IdentityHashMap<>(excluded.size()));
+        excludedIdentity.addAll(excluded);
+        List<T> remaining = new ArrayList<>(elements.size() - excluded.size());
+        for (T element : elements) {
+            if (!excludedIdentity.contains(element)) {
+                remaining.add(element);
+            }
+        }
+        return remaining;
     }
 
     /**

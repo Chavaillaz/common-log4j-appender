@@ -105,8 +105,10 @@ public class MyConfiguration implements LogConfiguration {
 
 ### 2. Delivery
 
-Extend `AbstractBatchLogDelivery` and implement `sendBulk(List<Map<String, Object>>)`, returning
-`true` on success and `false` on failure (so the batch is retried later instead of being dropped):
+Extend `AbstractBatchLogDelivery` and implement `sendBulk(List<Map<String, Object>>)`, returning a
+`CompletableFuture<TransmissionResult<Map<String, Object>>>` completed with the outcome. The future may be
+completed synchronously (as below) or later from another thread by an asynchronous client, without
+blocking the caller either way:
 
 ```java
 public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
@@ -116,17 +118,23 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
     }
 
     @Override
-    protected boolean sendBulk(List<Map<String, Object>> documents) {
+    protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
         try {
             myClient.send(documents);
-            return true;
+            return CompletableFuture.completedFuture(TransmissionResult.success());
         } catch (Exception e) {
             log.warn("Unable to send bulk of {} documents", documents.size(), e);
-            return false;
+            return CompletableFuture.completedFuture(TransmissionResult.failure(e));
         }
     }
 }
 ```
+
+If your client can tell you that only *some* documents were rejected (e.g. one malformed document in an
+otherwise-successful bulk response), return `TransmissionResult.partialFailure(rejected, cause)` instead:
+only the rejected documents (matched back against the ones you were given by reference identity, not
+`equals()`) are retried or eventually discarded, while the rest are reported delivered — so one bad
+document in a large batch no longer holds up, or gets redelivered alongside, everything else in it.
 
 To release resources (e.g. an HTTP client), override `close()`, calling `super.close()` first so the
 current batch is flushed before they're released.
@@ -172,7 +180,7 @@ fields:
 | `host`        | Taken from the configuration                                                         |
 | `environment` | Taken from the configuration                                                         |
 | `application` | Taken from the configuration                                                         |
-| `logger`      | Fully qualified caller class name, falling back to the logger name if not available  |
+| `logger`      | Logger name, falling back to the fully qualified caller class name if not available  |
 | `level`       | Level of the logging event (e.g. `INFO`, `ERROR`)                                    |
 | `logmessage`  | Formatted message of the logging event                                               |
 | `thread`      | Name of the thread that created the logging event                                    |
@@ -249,10 +257,12 @@ in your own configuration class if needed.
   final transmission too, so logs emitted just before shutdown aren't lost. This needs a non-zero shutdown
   timeout to actually wait: set the `shutdownTimeout` attribute (in milliseconds) on the root
   `<Configuration>` element of your Log4j2 configuration, as it otherwise defaults to not waiting at all.
-- **Failures:** if `sendBulk` returns `false` (or throws), the batch is kept and retried later instead of
-  lost, up to the safety limits above. Any exception thrown while converting or sending a log is reported
-  through Log4j2's `StatusLogger` (visible with `-Dlog4j2.debug` or a `<StatusListener>`) instead of being
-  silently swallowed, in addition to your `LogDeliveryListener` if configured.
+- **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
+  the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
+  safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected
+  documents. Any exception thrown while converting or sending a log is reported through Log4j2's
+  `StatusLogger` (visible with `-Dlog4j2.debug` or a `<StatusListener>`) instead of being silently
+  swallowed, in addition to your `LogDeliveryListener` if configured.
 
 ## Example implementations
 
