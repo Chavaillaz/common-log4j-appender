@@ -30,6 +30,9 @@ import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.message.SimpleMessage;
+import org.apache.logging.log4j.status.StatusData;
+import org.apache.logging.log4j.status.StatusListener;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -370,6 +373,50 @@ class AbstractLogDeliveryAppenderTest {
             assertDoesNotThrow(appender::start);
 
             // cleanup
+            appender.stop(2, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Warns when MaxQueuedEvents is zero or negative before clamping it up to 1")
+        void testNonPositiveMaxQueuedEventsWarns() throws Exception {
+            // given: the worker executor (and its bounded queue) is created at construction time, before
+            // this appender instance exists to call setHandler() on (see recordingErrorHandler() elsewhere
+            // in this class), so the warning is only observable through Log4j2's own StatusLogger, the same
+            // sink the default ErrorHandler reports to
+            var configuration = TestLogConfiguration.builder().maxQueuedEvents(0).build();
+            var statusMessages = new CopyOnWriteArrayList<String>();
+            var statusListener = new StatusListener() {
+                @Override
+                public void log(StatusData data) {
+                    statusMessages.add(data.getFormattedStatus());
+                }
+
+                @Override
+                public Level getStatusLevel() {
+                    return Level.WARN;
+                }
+
+                @Override
+                public void close() {
+                    // Nothing to release
+                }
+            };
+            StatusLogger.getLogger().registerListener(statusListener);
+
+            // when
+            LogDeliveryAppender appender;
+            try {
+                appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            } finally {
+                StatusLogger.getLogger().removeListener(statusListener);
+            }
+
+            // then
+            assertTrue(statusMessages.stream().anyMatch(message -> message.contains("MaxQueuedEvents")),
+                    "Expected a status message mentioning MaxQueuedEvents, got: " + statusMessages);
+
+            // cleanup
+            assertDoesNotThrow(appender::start);
             appender.stop(2, SECONDS);
         }
 

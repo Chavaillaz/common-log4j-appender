@@ -177,6 +177,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private ExecutorService newWorkerExecutor(int queueCapacity) {
         int capacity = Math.max(1, queueCapacity);
+        if (queueCapacity < 1) {
+            error("MaxQueuedEvents is " + queueCapacity + " (below 1), clamped up to 1: a queue of zero has "
+                    + "nowhere to hand off even a single event");
+        }
         return new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS,
                 new LinkedBlockingQueue<>(capacity), namedThreadFactory("log-delivery-worker"), new DiscardOldestEventPolicy());
     }

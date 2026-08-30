@@ -20,6 +20,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import lombok.extern.slf4j.Slf4j;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Appender;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -185,6 +191,94 @@ class AbstractBatchLogDeliveryTest {
                 }
                 Thread.sleep(5);
             }
+        }
+
+        @ParameterizedTest(name = "maxPendingDocuments = {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Warns when MaxPendingDocuments is 0 or less, since it disables this delivery")
+        void testWarnsOnNonPositiveMaxPendingDocuments(int maxPendingDocuments) {
+            // given
+            var configuration = TestLogConfiguration.builder().maxPendingDocuments(maxPendingDocuments).build();
+
+            // when
+            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
+
+            // then
+            assertTrue(warnings.stream().anyMatch(message -> message.contains("MaxPendingDocuments")),
+                    "Expected a warning mentioning MaxPendingDocuments, got: " + warnings);
+        }
+
+        @ParameterizedTest(name = "maxRequestDocuments = {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Warns when MaxRequestDocuments is 0 or less, since it disables chunking")
+        void testWarnsOnNonPositiveMaxRequestDocuments(int maxRequestDocuments) {
+            // given
+            var configuration = TestLogConfiguration.builder().maxRequestDocuments(maxRequestDocuments).build();
+
+            // when
+            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
+
+            // then
+            assertTrue(warnings.stream().anyMatch(message -> message.contains("MaxRequestDocuments")),
+                    "Expected a warning mentioning MaxRequestDocuments, got: " + warnings);
+        }
+
+        @ParameterizedTest(name = "maxConsecutiveFailures = {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Warns when MaxConsecutiveFailures is 0 or less, since it retries indefinitely")
+        void testWarnsOnNonPositiveMaxConsecutiveFailures(int maxConsecutiveFailures) {
+            // given
+            var configuration = TestLogConfiguration.builder().maxConsecutiveFailures(maxConsecutiveFailures).build();
+
+            // when
+            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
+
+            // then
+            assertTrue(warnings.stream().anyMatch(message -> message.contains("MaxConsecutiveFailures")),
+                    "Expected a warning mentioning MaxConsecutiveFailures, got: " + warnings);
+        }
+
+        @Test
+        @DisplayName("Does not warn when every configuration value is within its normal range")
+        void testNoWarningsForDefaultConfiguration() {
+            // given
+            var configuration = TestLogConfiguration.builder().build();
+
+            // when
+            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
+
+            // then
+            assertEquals(List.of(), warnings);
+        }
+
+        /**
+         * Runs the given action while a temporary appender is attached to the root logger, capturing every
+         * formatted message logged (at any level) during that time, then detaches it. Used to assert that a
+         * degraded-but-tolerated configuration value actually gets warned about, not just that construction
+         * does not throw.
+         *
+         * @param action The action to run while capturing
+         * @return The formatted message of every log event captured while running {@code action}
+         */
+        private List<String> captureWarnings(Runnable action) {
+            var context = (LoggerContext) LogManager.getContext(false);
+            var loggerConfig = context.getConfiguration().getLoggerConfig(AbstractBatchLogDelivery.class.getName());
+            List<String> messages = new CopyOnWriteArrayList<>();
+            Appender capturing = new AbstractAppender("capturing-configuration-validation", null, null, true, Property.EMPTY_ARRAY) {
+                @Override
+                public void append(LogEvent event) {
+                    messages.add(event.getMessage().getFormattedMessage());
+                }
+            };
+            capturing.start();
+            loggerConfig.addAppender(capturing, null, null);
+            try {
+                action.run();
+            } finally {
+                loggerConfig.removeAppender(capturing.getName());
+                capturing.stop();
+            }
+            return messages;
         }
 
     }

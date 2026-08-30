@@ -134,10 +134,39 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     "MaxConcurrentTransmissions must be at least 1, but was " + concurrentTransmissions);
         }
         this.configuration = configuration;
+        warnAboutDegradedConfiguration(configuration);
         this.batch = newBatch();
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
         this.maxConcurrentTransmissions = concurrentTransmissions;
         this.transmissionPermits = new Semaphore(maxConcurrentTransmissions);
+    }
+
+    /**
+     * Warns about configuration values that degrade this delivery's functionality instead of leaving it
+     * fully working, so a misconfiguration is visible at startup instead of only showing up later as
+     * unexplained data loss or runaway retries. Unlike {@code MaxConcurrentTransmissions} below {@code 1}
+     * (checked above, and thrown rather than warned about), none of these leave the pipeline stuck: a
+     * request never blocks waiting for one, so they are deliberately still allowed, only reported.
+     *
+     * @param configuration The configuration to inspect
+     */
+    private void warnAboutDegradedConfiguration(C configuration) {
+        int maxPendingDocuments = configuration.getMaxPendingDocuments();
+        if (maxPendingDocuments <= 0) {
+            log.warn("MaxPendingDocuments is {} (0 or less), every document will be discarded immediately, "
+                    + "effectively disabling this delivery", maxPendingDocuments);
+        }
+
+        int maxRequestDocuments = configuration.getMaxRequestDocuments();
+        if (maxRequestDocuments <= 0) {
+            log.warn("MaxRequestDocuments is {} (0 or less), request chunking is disabled", maxRequestDocuments);
+        }
+
+        int maxConsecutiveFailures = configuration.getMaxConsecutiveFailures();
+        if (maxConsecutiveFailures <= 0) {
+            log.warn("MaxConsecutiveFailures is {} (0 or less), failed batches will be retried indefinitely "
+                    + "instead of eventually discarded", maxConsecutiveFailures);
+        }
     }
 
     /**
