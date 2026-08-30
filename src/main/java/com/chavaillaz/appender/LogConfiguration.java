@@ -96,8 +96,11 @@ public interface LogConfiguration {
     /**
      * Gets the maximum number of documents a pending batch can hold while waiting to be (re)transmitted by
      * a batch-based log delivery. Once exceeded, the oldest documents in excess are discarded so that a
-     * struggling downstream system cannot grow memory usage without bound. Defaults to {@code 10'000};
-     * override to raise or lower this limit.
+     * struggling downstream system cannot grow memory usage without bound; this applies equally while
+     * accumulating new documents and while merging failed ones back in for a retry. Defaults to
+     * {@code 10'000}; override to raise or lower this limit, down to {@code 0} (or a negative value, treated
+     * the same way) to discard every document as soon as it would be added to the batch, effectively
+     * disabling this delivery.
      *
      * @return The maximum number of documents a pending batch can hold
      */
@@ -110,7 +113,9 @@ public interface LogConfiguration {
      * batch before it is discarded instead of being retried again, by a batch-based log delivery. Without
      * this limit, a single document that can never be accepted by the downstream system (a "poison
      * document") would cause the batch containing it to fail forever, blocking every document accumulated
-     * behind it from ever being delivered. Defaults to {@code 5}; override to allow more or fewer attempts.
+     * behind it from ever being delivered. Defaults to {@code 5}; override to allow more or fewer attempts,
+     * or to {@code 0} (or a negative value, treated the same way) to disable this limit entirely and retry
+     * indefinitely instead of ever giving up on a batch.
      *
      * @return The maximum number of consecutive failed attempts allowed
      */
@@ -126,7 +131,9 @@ public interface LogConfiguration {
      * a downstream system that has become unresponsive for a long time: documents already converted and
      * handed off to a batch-based log delivery are separately bounded by {@link #getMaxBatchSize()}; this
      * limits how many have not even reached that stage yet. Defaults to {@code 10'000}; override to raise
-     * or lower this limit.
+     * or lower this limit, though not below {@code 1}: a value of {@code 0} or less is clamped up to
+     * {@code 1} instead of disabling the queue outright, since a queue capacity of zero has nowhere to hand
+     * off even a single event.
      *
      * @return The maximum number of logging events that can be queued awaiting processing
      */
