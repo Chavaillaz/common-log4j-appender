@@ -257,6 +257,14 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
+     * {@inheritDoc}
+     */
+    @Override
+    public boolean isHealthy() {
+        return !batcher.isTransmissionFailing();
+    }
+
+    /**
      * Sends the given list of documents representing logs.
      * <p>
      * The returned future may be completed synchronously (before this method even returns) or

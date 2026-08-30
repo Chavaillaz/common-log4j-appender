@@ -129,8 +129,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * The single background thread converting and batching events (see the class documentation), fed by a
      * queue bounded to {@link LogConfiguration#getMaxQueuedEvents()} (see {@link #newWorkerExecutor(int)}).
+     * Kept typed as {@link ThreadPoolExecutor} (rather than the narrower {@link ExecutorService}) so
+     * {@link #isBackpressured()} can inspect its queue directly.
      */
-    private final ExecutorService workerExecutor;
+    private final ThreadPoolExecutor workerExecutor;
 
     /**
      * The scheduler periodically triggering a flush on {@link #workerExecutor}, created only when batching
@@ -181,7 +183,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      *                      outright
      * @return The executor to use for {@link #workerExecutor}
      */
-    private ExecutorService newWorkerExecutor(int queueCapacity) {
+    private ThreadPoolExecutor newWorkerExecutor(int queueCapacity) {
         int capacity = Math.max(1, queueCapacity);
         if (queueCapacity < 1) {
             error("MaxQueuedEvents is " + queueCapacity + " (below 1), clamped up to 1: a queue of zero has "
@@ -384,6 +386,35 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return The runnable to execute
      */
     public abstract Runnable createLogDeliveryTask(LogEvent loggingEvent);
+
+    /**
+     * Whether {@link #logDeliveryHandler}'s most recently completed transmission attempt succeeded (see
+     * {@link LogDelivery#isHealthy()}), exposed here since an application typically holds a reference to
+     * this appender rather than the handler itself. {@code true} if the handler failed to start, or hasn't
+     * started yet, since there is nothing to be unhealthy about in that case (already reported separately
+     * through this appender's {@code ErrorHandler}).
+     *
+     * @return The current health of the log delivery pipeline
+     */
+    public boolean isHealthy() {
+        LogDelivery handler = logDeliveryHandler;
+        return handler == null || handler.isHealthy();
+    }
+
+    /**
+     * Whether the internal queue feeding {@link #workerExecutor} (bounded to
+     * {@link LogConfiguration#getMaxQueuedEvents()}) is currently full, meaning the very next logging event
+     * would cause the oldest queued one to be discarded (see {@link DiscardOldestEventPolicy}) rather than
+     * merely accumulating pending work. A simple backpressure signal an application can poll (e.g. for a
+     * readiness/liveness endpoint, or to throttle its own logging) before data loss actually starts,
+     * instead of only reacting to {@link LogDeliveryListener#onDocumentsDropped(List, String)} after the
+     * fact.
+     *
+     * @return {@code true} if the queue is currently full
+     */
+    public boolean isBackpressured() {
+        return workerExecutor.getQueue().remainingCapacity() == 0;
+    }
 
     /**
      * Stops accepting new logging events, waits (up to the given timeout) for already-accepted ones to be

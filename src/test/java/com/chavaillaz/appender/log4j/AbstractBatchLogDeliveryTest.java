@@ -4,6 +4,7 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -437,6 +438,41 @@ class AbstractBatchLogDeliveryTest {
 
             // then
             assertEquals(3, logDelivery.countBulkSent.get());
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Health signal")
+    class HealthSignal {
+
+        @Test
+        @DisplayName("Reports healthy before any transmission, unhealthy after a failure, healthy again once retried successfully")
+        void testIsHealthyReflectsLastTransmissionAttempt() throws Exception {
+            // given
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
+            var logDelivery = new TestLogDelivery(configuration);
+
+            // then: nothing attempted yet
+            assertTrue(logDelivery.isHealthy());
+
+            // when: the only attempt so far fails
+            logDelivery.bulkResult = false;
+            logDelivery.send(Map.of());
+            logDelivery.send(Map.of());
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertFalse(logDelivery.isHealthy());
+
+            // when: retried (via the next flush, since the documents are kept pending after the failure)
+            // and this time succeeds
+            logDelivery.bulkResult = true;
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertTrue(logDelivery.isHealthy());
         }
 
     }

@@ -648,6 +648,65 @@ class AbstractLogDeliveryAppenderTest {
     }
 
     @Nested
+    @DisplayName("Health and backpressure signal")
+    class HealthAndBackpressure {
+
+        @Test
+        @DisplayName("isHealthy() is true before the handler is created, then delegates to it")
+        void testIsHealthyDelegatesToHandler() throws Exception {
+            // given
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+
+            // then: nothing created yet, nothing to be unhealthy about
+            assertTrue(appender.isHealthy());
+
+            // when
+            appender.start();
+            when(appender.getLogDeliveryHandler().isHealthy()).thenReturn(false);
+
+            // then
+            assertFalse(appender.isHealthy());
+
+            // cleanup
+            appender.stop();
+        }
+
+        @Test
+        @DisplayName("isBackpressured() reflects whether the internal queue is currently full")
+        void testIsBackpressuredReflectsQueueFullness() throws Exception {
+            // given: a queue capacity of 1 and a delivery task that blocks forever until released, so the
+            // first appended event occupies the worker thread and the second fills the one-slot queue
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+
+            // when
+            appender.start();
+
+            // then: nothing queued yet
+            assertFalse(appender.isBackpressured());
+
+            // when: A occupies the worker thread (blocked), B fills the one-slot queue
+            appender.append(mockLogEvent());
+            appender.append(mockLogEvent());
+
+            // then
+            assertTrue(appender.isBackpressured());
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+        }
+
+    }
+
+    @Nested
     @DisplayName("Error handling")
     class ErrorHandling {
 

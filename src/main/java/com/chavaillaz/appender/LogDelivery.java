@@ -43,4 +43,19 @@ public interface LogDelivery extends AutoCloseable {
         return LogDeliveryListener.NOOP;
     }
 
+    /**
+     * Whether this delivery's most recently completed transmission attempt succeeded, exposed as a simple
+     * health signal a caller can poll directly (e.g. for a readiness/liveness endpoint) instead of only
+     * reacting to {@link LogDeliveryListener} callbacks. Not necessarily fatal when {@code false}: unless
+     * elements have also been reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)},
+     * they are simply being retried.
+     * <p>
+     * Defaults to {@code true} for an implementation that does not track this.
+     *
+     * @return {@code true} if the last completed transmission attempt succeeded, or none was attempted yet
+     */
+    default boolean isHealthy() {
+        return true;
+    }
+
 }

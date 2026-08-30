@@ -108,7 +108,8 @@ public class Batcher<T> {
 
     /**
      * Whether the last completed transmission attempt failed, used to avoid retrying on every single new
-     * element received while batching is enabled and the transport is unavailable or failing.
+     * element received while batching is enabled and the transport is unavailable or failing. Also exposed
+     * through {@link #isTransmissionFailing()} as a simple health signal.
      */
     private volatile boolean transmissionFailed;
 
@@ -203,6 +204,18 @@ public class Batcher<T> {
         if (snapshot != null) {
             dispatch(snapshot.elements(), snapshot.failureStreak());
         }
+    }
+
+    /**
+     * Whether the most recently completed transmission attempt failed (see {@link #transmissionFailed}),
+     * exposed as a simple health signal a caller can poll directly (e.g. for a readiness/liveness endpoint)
+     * instead of only reacting to {@link BatcherListener} callbacks.
+     *
+     * @return {@code true} if the last completed transmission attempt failed and its elements are currently
+     *         being retried, {@code false} if it succeeded or none was attempted yet
+     */
+    public boolean isTransmissionFailing() {
+        return transmissionFailed;
     }
 
     /**

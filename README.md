@@ -239,6 +239,16 @@ new FileDeadLetterListener(Path.of("/var/log/myapp/dead-letters.ndjson"));
 
 Use it as-is, or compose it with your own listener (e.g. one that also records metrics) if you need both.
 
+Two methods also let you poll the current state of the pipeline directly, e.g. from a readiness/liveness
+endpoint, instead of only reacting to listener callbacks:
+
+- `AbstractLogDeliveryAppender#isHealthy()` — `false` once the most recent transmission attempt failed
+  (documents are not necessarily lost yet, just being retried); delegates to the `LogDelivery`'s own
+  `isHealthy()`, itself backed by `Batcher#isTransmissionFailing()`.
+- `AbstractLogDeliveryAppender#isBackpressured()` — `true` once the internal queue feeding the background
+  thread (bounded by `MaxQueuedEvents`) is full, meaning the very next logging event would evict the oldest
+  queued one — an early warning before `onDocumentsDropped` actually fires.
+
 ## Configuration reference
 
 These settings are defined by `LogConfiguration` and used regardless of the delivery mechanism (each

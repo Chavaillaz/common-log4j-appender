@@ -3,6 +3,7 @@ package com.chavaillaz.appender;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -89,6 +90,34 @@ class BatcherTest {
         // above, since threshold 1 alone would otherwise not retry a failing batch on every new element)
         // succeeded
         assertEquals(2, attempts.get());
+    }
+
+    @Test
+    @DisplayName("Reports itself as failing after a failed transmission, and healthy again once one succeeds")
+    void testIsTransmissionFailingReflectsLastAttempt() throws Exception {
+        // given: fails until told to succeed
+        var succeeding = new AtomicBoolean(false);
+        Batcher<String> batcher = batcher(1,
+                elements -> completedFuture(succeeding.get() ? TransmissionResult.success() : TransmissionResult.failure(null)),
+                BatcherListener.noop());
+
+        // then: nothing attempted yet
+        assertFalse(batcher.isTransmissionFailing());
+
+        // when: the only attempt so far fails
+        batcher.add(List.of("poison"));
+        batcher.awaitPendingTransmissions();
+
+        // then
+        assertTrue(batcher.isTransmissionFailing());
+
+        // when: retried and this time succeeds
+        succeeding.set(true);
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then
+        assertFalse(batcher.isTransmissionFailing());
     }
 
     @Test
