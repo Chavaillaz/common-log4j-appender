@@ -45,8 +45,8 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * can never accept, a so-called "poison document") can cost, so that neither can grow memory usage without
  * bound or wedge the pipeline forever:
  * <ul>
- *     <li>The pending batch is never allowed to grow past {@link LogConfiguration#getMaxBatchSize()}, be it
- *     while accumulating normally or while merging documents back in after a failed transmission: once
+ *     <li>The pending batch is never allowed to grow past {@link LogConfiguration#getMaxPendingDocuments()},
+ *     be it while accumulating normally or while merging documents back in after a failed transmission: once
  *     exceeded, the oldest documents in excess are discarded.</li>
  *     <li>A batch that fails {@link LogConfiguration#getMaxConsecutiveFailures()} times in a row is
  *     discarded entirely instead of being retried indefinitely. This streak is tracked per pending batch
@@ -57,6 +57,15 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * </ul>
  * Both cases are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} (in addition
  * to being logged), so this data loss is never silent.
+ * <p>
+ * A pending batch due for (re)transmission is not necessarily sent as a single request: if it holds more
+ * than {@link LogConfiguration#getMaxRequestSize()} documents, it is first split into consecutive chunks of
+ * at most that size, each then dispatched independently (see {@link #dispatch(List, int)}). Chunks of the
+ * same batch may therefore be transmitted concurrently, subject to the same
+ * {@link LogConfiguration#getMaxConcurrentTransmissions()} bound as any other request, and each is retried
+ * on its own failure without holding up its siblings. This is disabled by default (an unbounded
+ * {@code MaxRequestSize} never splits anything), and only matters for a downstream system with its own limit
+ * on how many documents (or how large a payload) it can accept per request.
  *
  * @param <C> The configuration type
  */
@@ -164,22 +173,35 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Gets the maximum number of documents a pending batch can hold while waiting to be (re)transmitted.
+     * Gets the maximum number of documents a pending batch can hold in memory while waiting to be
+     * (re)transmitted. Once exceeded, the oldest documents in excess are discarded, favoring keeping the
+     * most recently received (and therefore most likely still relevant) documents.
      * <p>
-     * This bounds the memory used by documents awaiting transmission, and keeps a single bulk request from
-     * growing so large that it is more likely to be rejected outright by the downstream system because of
-     * its own request size limits (which would only make the underlying issue worse, since the resulting
-     * failed batch would be even bigger on the next attempt). Once exceeded, the oldest documents in excess
-     * are discarded, favoring keeping the most recently received (and therefore most likely still relevant)
-     * documents.
+     * This bounds memory only, independent of how many documents end up in a single request once
+     * transmitted (see {@link #getMaxRequestSize()} for that).
      * <p>
-     * Defaults to {@link LogConfiguration#getMaxBatchSize()}; can be overridden here instead if the limit
-     * should depend on more than just the configuration.
+     * Defaults to {@link LogConfiguration#getMaxPendingDocuments()}; can be overridden here instead if the
+     * limit should depend on more than just the configuration.
      *
-     * @return The maximum number of documents a pending batch can hold
+     * @return The maximum number of documents a pending batch can hold in memory
      */
-    protected int getMaxBatchSize() {
-        return configuration.getMaxBatchSize();
+    protected int getMaxPendingDocuments() {
+        return configuration.getMaxPendingDocuments();
+    }
+
+    /**
+     * Gets the maximum number of documents sent together in a single request. A pending batch bigger than
+     * this is split into consecutive chunks of at most this size before being dispatched (see
+     * {@link #dispatch(List, int)}), so that a downstream system with its own limit on request size is never
+     * handed more than it can accept in one call to {@link #sendBulk(List)}.
+     * <p>
+     * Defaults to {@link LogConfiguration#getMaxRequestSize()} (unbounded, i.e. no chunking); can be
+     * overridden here instead if the limit should depend on more than just the configuration.
+     *
+     * @return The maximum number of documents sent together in a single request
+     */
+    protected int getMaxRequestSize() {
+        return configuration.getMaxRequestSize();
     }
 
     /**
@@ -271,17 +293,17 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     private void stackAndSend(List<Map<String, Object>> data) {
         PendingBatch snapshot = null;
         List<Map<String, Object>> discarded;
-        int maxBatchSize;
+        int maxPendingDocuments;
         synchronized (this) {
             batch.addAll(data);
             log.trace("Stacking batch {}/{}", batch.size(), configuration.getFlushThreshold());
 
             // Enforces the same cap as requeue() on this path too: without it, a FlushThreshold set higher
-            // than MaxBatchSize (or effectively unbounded, e.g. relying only on FlushInterval to flush)
-            // would let the batch grow without limit while nothing is actually failing, defeating the whole
-            // point of MaxBatchSize as a memory safety net rather than just a retry-specific one.
-            maxBatchSize = getMaxBatchSize();
-            Trimmed trimmed = trimToMaxBatchSize(batch, maxBatchSize);
+            // than MaxPendingDocuments (or effectively unbounded, e.g. relying only on FlushInterval to
+            // flush) would let the batch grow without limit while nothing is actually failing, defeating the
+            // whole point of MaxPendingDocuments as a memory safety net rather than just a retry-specific one.
+            maxPendingDocuments = getMaxPendingDocuments();
+            Trimmed trimmed = trimToMaxPendingDocuments(batch, maxPendingDocuments);
             batch = trimmed.kept();
             discarded = trimmed.discarded();
 
@@ -300,9 +322,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         // too via notifyDropped() keeps a slow listener from stalling it, which would otherwise back up
         // every log event across the whole application behind this one notification.
         if (discarded != null) {
-            log.warn("Discarding {} oldest document(s) after exceeding the maximum batch size of {} while accumulating",
-                    discarded.size(), maxBatchSize);
-            notifyDropped(discarded, "maximum batch size exceeded");
+            log.warn("Discarding {} oldest document(s) after exceeding the maximum pending documents of {} while accumulating",
+                    discarded.size(), maxPendingDocuments);
+            notifyDropped(discarded, "maximum pending documents exceeded");
         }
         if (snapshot != null) {
             dispatch(snapshot.documents(), snapshot.failureStreak());
@@ -338,7 +360,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * The result of {@link #trimToMaxBatchSize(List, int)}.
+     * The result of {@link #trimToMaxPendingDocuments(List, int)}.
      *
      * @param kept      The given documents, with the oldest ones in excess of the cap removed (the same
      *                  list instance as given if nothing was discarded)
@@ -349,22 +371,22 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Trims the given list (oldest documents first) down to at most {@code maxBatchSize} elements,
+     * Trims the given list (oldest documents first) down to at most {@code maxPendingDocuments} elements,
      * discarding the oldest ones in excess so that the most recently received (and therefore most likely
      * still relevant) documents are the ones kept. Shared by {@link #stackAndSend(List)} (the normal
      * accumulation path) and {@link #requeue(List, int)} (the failed-transmission retry path), so the
      * pending batch can never grow past this cap regardless of which of the two ever pushed it over.
      *
-     * @param documents    The documents to trim, oldest first
-     * @param maxBatchSize The maximum number of documents to keep, clamped to {@code [0, documents.size()]}
-     *                     so that an unexpected value (0, negative, or simply overridden by a subclass to
-     *                     return one of those) can never make {@code subList()} below throw, instead
-     *                     degrading gracefully to discarding nothing (a size larger than the batch) or
-     *                     everything (a size of 0 or less)
+     * @param documents           The documents to trim, oldest first
+     * @param maxPendingDocuments The maximum number of documents to keep, clamped to
+     *                            {@code [0, documents.size()]} so that an unexpected value (0, negative, or
+     *                            simply overridden by a subclass to return one of those) can never make
+     *                            {@code subList()} below throw, instead degrading gracefully to discarding
+     *                            nothing (a size larger than the batch) or everything (a size of 0 or less)
      * @return The trimmed list and whatever was discarded to produce it, if anything
      */
-    private static Trimmed trimToMaxBatchSize(List<Map<String, Object>> documents, int maxBatchSize) {
-        int overflow = Math.min(documents.size(), Math.max(0, documents.size() - maxBatchSize));
+    private static Trimmed trimToMaxPendingDocuments(List<Map<String, Object>> documents, int maxPendingDocuments) {
+        int overflow = Math.min(documents.size(), Math.max(0, documents.size() - maxPendingDocuments));
         if (overflow == 0) {
             return new Trimmed(documents, null);
         }
@@ -376,7 +398,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     /**
      * Puts back the documents of a failed (or not attempted) transmission at the front of the current
      * batch, so they are retried before any newer document, discarding the oldest documents in excess if
-     * this would grow the batch past {@link #getMaxBatchSize()}.
+     * this would grow the batch past {@link #getMaxPendingDocuments()}.
      *
      * @param documents     The documents to put back
      * @param failureStreak The number of consecutive times this exact content has already failed to be
@@ -385,14 +407,14 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     private void requeue(List<Map<String, Object>> documents, int failureStreak) {
         List<Map<String, Object>> discarded;
-        int maxBatchSize;
+        int maxPendingDocuments;
         synchronized (this) {
             List<Map<String, Object>> merged = new ArrayList<>(documents.size() + batch.size());
             merged.addAll(documents);
             merged.addAll(batch);
 
-            maxBatchSize = getMaxBatchSize();
-            Trimmed trimmed = trimToMaxBatchSize(merged, maxBatchSize);
+            maxPendingDocuments = getMaxPendingDocuments();
+            Trimmed trimmed = trimToMaxPendingDocuments(merged, maxPendingDocuments);
             batch = trimmed.kept();
             discarded = trimmed.discarded();
 
@@ -412,9 +434,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         // reached directly from dispatch() (an interrupted or rejected transmission handoff), those are
         // shutdown-adjacent edge cases already outside the hot path this guarantee is really about.
         if (discarded != null) {
-            log.warn("Discarding {} oldest document(s) after exceeding the maximum batch size of {} while retrying",
-                    discarded.size(), maxBatchSize);
-            listener.onDocumentsDropped(discarded, "maximum batch size exceeded");
+            log.warn("Discarding {} oldest document(s) after exceeding the maximum pending documents of {} while retrying",
+                    discarded.size(), maxPendingDocuments);
+            listener.onDocumentsDropped(discarded, "maximum pending documents exceeded");
         }
     }
 
@@ -445,7 +467,53 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         }
     }
 
+    /**
+     * Dispatches the given documents for transmission, splitting them into consecutive chunks of at most
+     * {@link #getMaxRequestSize()} first if needed, each chunk then handed to {@link #dispatchChunk(List, int)}
+     * independently (see the class documentation for what that means for concurrency and retries).
+     *
+     * @param documents     The documents to dispatch, possibly more than one request's worth
+     * @param failureStreak The number of consecutive times this exact content has already failed to be
+     *                      transmitted, inherited by every chunk split off from it
+     */
     private void dispatch(List<Map<String, Object>> documents, int failureStreak) {
+        int maxRequestSize = getMaxRequestSize();
+        if (maxRequestSize > 0 && documents.size() > maxRequestSize) {
+            for (List<Map<String, Object>> chunk : chunk(documents, maxRequestSize)) {
+                dispatchChunk(chunk, failureStreak);
+            }
+        } else {
+            dispatchChunk(documents, failureStreak);
+        }
+    }
+
+    /**
+     * Splits the given list into consecutive, independent chunks of at most {@code chunkSize} elements each
+     * (the last one possibly smaller), preserving order.
+     *
+     * @param documents The documents to split
+     * @param chunkSize The maximum size of each chunk, guaranteed positive by the only caller
+     * @return The list of chunks, in original order
+     */
+    private static List<List<Map<String, Object>>> chunk(List<Map<String, Object>> documents, int chunkSize) {
+        List<List<Map<String, Object>>> chunks = new ArrayList<>((documents.size() + chunkSize - 1) / chunkSize);
+        for (int i = 0; i < documents.size(); i += chunkSize) {
+            chunks.add(List.copyOf(documents.subList(i, Math.min(i + chunkSize, documents.size()))));
+        }
+        return chunks;
+    }
+
+    /**
+     * Dispatches a single chunk (at most {@link #getMaxRequestSize()} documents) for transmission on its own
+     * virtual thread, bounded by {@link #transmissionPermits} like any other request. Acquiring a permit may
+     * block the caller (see the class documentation on {@link LogConfiguration#getMaxConcurrentTransmissions()}
+     * for why that is an accepted trade-off), but the actual transmission never does.
+     *
+     * @param documents     The chunk to dispatch
+     * @param failureStreak The number of consecutive times this exact content has already failed to be
+     *                      transmitted
+     */
+    private void dispatchChunk(List<Map<String, Object>> documents, int failureStreak) {
         try {
             transmissionPermits.acquire();
         } catch (InterruptedException e) {

@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -161,15 +162,16 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Tolerates a negative maximum batch size by discarding instead of failing")
-        void testNegativeMaxBatchSizeDoesNotThrow() throws Exception {
-            // given: a negative maxBatchSize, the value that would otherwise make trimToMaxBatchSize()
-            // compute an out-of-bounds sublist range; caught as soon as the document is accumulated (a
-            // batch capacity of "less than zero" discards on arrival, before ever attempting a transmission
-            // doomed to be undone anyway), so bulkResult/countBulkSent are not exercised by this test
+        @DisplayName("Tolerates a negative maximum pending documents by discarding instead of failing")
+        void testNegativeMaxPendingDocumentsDoesNotThrow() throws Exception {
+            // given: a negative maxPendingDocuments, the value that would otherwise make
+            // trimToMaxPendingDocuments() compute an out-of-bounds sublist range; caught as soon as the
+            // document is accumulated (a capacity of "less than zero" discards on arrival, before ever
+            // attempting a transmission doomed to be undone anyway), so bulkResult/countBulkSent are not
+            // exercised by this test
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(1);
-            configuration.setMaxBatchSize(-1);
+            configuration.setMaxPendingDocuments(-1);
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
 
@@ -361,14 +363,14 @@ class AbstractBatchLogDeliveryTest {
     class SafetyLimits {
 
         @Test
-        @DisplayName("Discards the oldest documents once a retried batch exceeds the maximum batch size")
-        void testBatchSizeCapDiscardsOldestDocuments() throws Exception {
+        @DisplayName("Discards the oldest documents once a retried batch exceeds the maximum pending documents")
+        void testPendingDocumentsCapDiscardsOldestDocuments() throws Exception {
             // given: batching disabled (threshold of 1) so every send() dispatches immediately and
-            // deterministically, and a maximum batch size small enough to be reached by 4 documents,
+            // deterministically, and a maximum pending documents small enough to be reached by 4 documents,
             // both configured through LogConfiguration rather than by subclassing the delivery
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(1);
-            configuration.setMaxBatchSize(3);
+            configuration.setMaxPendingDocuments(3);
             configuration.setMaxConsecutiveFailures(1_000); // effectively disabled, tested separately below
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
@@ -384,7 +386,7 @@ class AbstractBatchLogDeliveryTest {
             // content was reported (not just a count), and the reason explains why
             assertEquals(1, listener.dropped.size());
             assertEquals(List.of(Map.of("id", 0)), listener.dropped.get(0).documents());
-            assertTrue(listener.dropped.get(0).reason().contains("batch size"));
+            assertTrue(listener.dropped.get(0).reason().contains("pending documents"));
 
             // when the backend recovers and the batch is retried
             logDelivery.bulkResult = true;
@@ -397,15 +399,15 @@ class AbstractBatchLogDeliveryTest {
 
         @Test
         @DisplayName("Discards the oldest documents while accumulating, even before any transmission is attempted")
-        void testBatchSizeCapEnforcedWhileAccumulating() throws Exception {
+        void testPendingDocumentsCapEnforcedWhileAccumulating() throws Exception {
             // given: a flush threshold high enough to never be reached by this test on its own (so the
-            // batch keeps growing purely through accumulation) and a maximum batch size small enough to be
-            // exceeded well before that; this exercises the cap being enforced by stackAndSend() itself,
-            // as opposed to testBatchSizeCapDiscardsOldestDocuments() above which only exercises it being
-            // enforced by requeue() after a failed transmission
+            // batch keeps growing purely through accumulation) and a maximum pending documents small enough
+            // to be exceeded well before that; this exercises the cap being enforced by stackAndSend()
+            // itself, as opposed to testPendingDocumentsCapDiscardsOldestDocuments() above which only
+            // exercises it being enforced by requeue() after a failed transmission
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(100);
-            configuration.setMaxBatchSize(3);
+            configuration.setMaxPendingDocuments(3);
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
 
@@ -423,7 +425,7 @@ class AbstractBatchLogDeliveryTest {
             awaitDropped(listener, 1);
             assertEquals(1, listener.dropped.size());
             assertEquals(List.of(Map.of("id", 0)), listener.dropped.get(0).documents());
-            assertTrue(listener.dropped.get(0).reason().contains("batch size"));
+            assertTrue(listener.dropped.get(0).reason().contains("pending documents"));
 
             // when flushing what remains
             logDelivery.flush();
@@ -589,6 +591,145 @@ class AbstractBatchLogDeliveryTest {
                 }
                 Thread.sleep(5);
             }
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Request size chunking")
+    class RequestSizeChunking {
+
+        @Test
+        @DisplayName("Sends the whole batch as a single request by default (no chunking)")
+        void testDoesNotChunkByDefault() throws Exception {
+            // given: MaxRequestSize left at its default (unbounded)
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(20);
+            var logDelivery = new TestLogDelivery(configuration);
+
+            // when
+            for (int i = 0; i < 20; i++) {
+                logDelivery.send(Map.of("id", i));
+            }
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertEquals(1, logDelivery.countBulkSent.get());
+            assertEquals(20, logDelivery.lastBulkSize.get());
+        }
+
+        @ParameterizedTest(name = "maxRequestSize = {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Does not chunk when MaxRequestSize is zero or negative, treating it as disabled")
+        void testNonPositiveMaxRequestSizeDisablesChunking(int maxRequestSize) throws Exception {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(5);
+            configuration.setMaxRequestSize(maxRequestSize);
+            var logDelivery = new TestLogDelivery(configuration);
+
+            // when
+            for (int i = 0; i < 5; i++) {
+                logDelivery.send(Map.of("id", i));
+            }
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertEquals(1, logDelivery.countBulkSent.get());
+            assertEquals(5, logDelivery.lastBulkSize.get());
+        }
+
+        @Test
+        @DisplayName("Splits a batch larger than MaxRequestSize into several requests, none exceeding it")
+        void testSplitsBatchLargerThanMaxRequestSize() throws Exception {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setMaxRequestSize(4);
+            var logDelivery = new TestLogDelivery(configuration);
+            List<Map<String, Object>> documents = new ArrayList<>();
+            for (int i = 0; i < 10; i++) {
+                documents.add(Map.of("id", i));
+            }
+
+            // when
+            logDelivery.send(documents);
+            logDelivery.awaitPendingTransmissions();
+
+            // then: split into 3 requests (4 + 4 + 2), none exceeding the configured limit
+            assertEquals(3, logDelivery.countBulkSent.get());
+            for (List<Map<String, Object>> chunk : logDelivery.allBulkDocuments) {
+                assertTrue(chunk.size() <= 4, "No chunk should exceed MaxRequestSize, was " + chunk.size());
+            }
+
+            // then: every document was sent exactly once across the chunks (order between chunks is not
+            // guaranteed, since they may transmit concurrently, so ids are compared as a set once sorted)
+            List<Integer> sentIds = logDelivery.allBulkDocuments.stream()
+                    .flatMap(List::stream)
+                    .map(document -> (Integer) document.get("id"))
+                    .sorted()
+                    .toList();
+            assertEquals(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), sentIds);
+        }
+
+        @Test
+        @DisplayName("Transmits chunks of the same batch concurrently rather than sequentially")
+        void testChunksTransmitConcurrently() throws Exception {
+            // given: a batch of 4 split into 4 chunks of 1, each transmission taking 200ms
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(4);
+            configuration.setMaxRequestSize(1);
+            var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(200));
+
+            // when
+            var start = System.nanoTime();
+            for (int i = 0; i < 4; i++) {
+                logDelivery.send(Map.of("id", i));
+            }
+            logDelivery.awaitPendingTransmissions();
+            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then: sequential chunking would take at least 4 * 200ms = 800ms
+            assertEquals(4, logDelivery.countBulkSent.get());
+            assertTrue(elapsedMillis < 600, "Chunks should transmit concurrently, took " + elapsedMillis + "ms");
+        }
+
+        @Test
+        @DisplayName("Retries a failed chunk independently, without affecting or duplicating a sibling that succeeded")
+        void testFailedChunkIsRetriedIndependentlyOfSiblings() throws Exception {
+            // given: a batch of 4 split into two chunks of 2; only the chunk containing id=0 fails
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(4);
+            configuration.setMaxRequestSize(2);
+            var attempts = new CopyOnWriteArrayList<List<Map<String, Object>>>();
+            var logDelivery = new TestLogDelivery(configuration) {
+                @Override
+                protected boolean sendBulk(List<Map<String, Object>> documents) {
+                    attempts.add(documents);
+                    boolean poison = documents.stream().anyMatch(document -> document.get("id").equals(0));
+                    return !poison;
+                }
+            };
+
+            // when
+            logDelivery.send(List.of(Map.of("id", 0), Map.of("id", 1), Map.of("id", 2), Map.of("id", 3)));
+            logDelivery.awaitPendingTransmissions();
+
+            // then: both chunks were attempted, exactly one of them failing
+            assertEquals(2, attempts.size());
+            List<Map<String, Object>> failedChunk = attempts.stream()
+                    .filter(chunk -> chunk.stream().anyMatch(document -> document.get("id").equals(0)))
+                    .findFirst()
+                    .orElseThrow();
+
+            // when the pending batch (still holding only the requeued failed chunk) is retried
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then only the previously failed chunk was retried, with its exact original content, not the
+            // sibling that had already succeeded
+            assertEquals(3, attempts.size());
+            assertEquals(failedChunk, attempts.get(2));
         }
 
     }
@@ -768,12 +909,12 @@ class AbstractBatchLogDeliveryTest {
         @Test
         @DisplayName("Does not block accumulation of the next batch while notifying a slow listener of dropped documents")
         void testSlowListenerDoesNotBlockBatchAccumulation() throws Exception {
-            // given: batching disabled (threshold of 1) and a maximum batch size of 1, so that a second
-            // failed document overflows the batch and triggers a drop notification; the listener blocks
-            // until released, to prove send() does not need to wait for it to return
+            // given: batching disabled (threshold of 1) and a maximum pending documents of 1, so that a
+            // second failed document overflows the batch and triggers a drop notification; the listener
+            // blocks until released, to prove send() does not need to wait for it to return
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(1);
-            configuration.setMaxBatchSize(1);
+            configuration.setMaxPendingDocuments(1);
             var listenerEntered = new CountDownLatch(1);
             var releaseListener = new CountDownLatch(1);
             var listener = new LogDeliveryListener() {
@@ -820,6 +961,7 @@ class AbstractBatchLogDeliveryTest {
         AtomicInteger countBulkSent = new AtomicInteger();
         AtomicInteger lastBulkSize = new AtomicInteger();
         AtomicInteger totalDocumentsSent = new AtomicInteger();
+        List<List<Map<String, Object>>> allBulkDocuments = new CopyOnWriteArrayList<>();
         volatile List<Map<String, Object>> lastBulkDocuments;
         volatile boolean bulkResult = true;
         volatile RuntimeException failureToThrow;
@@ -837,6 +979,7 @@ class AbstractBatchLogDeliveryTest {
             countBulkSent.incrementAndGet();
             lastBulkSize.set(documents.size());
             lastBulkDocuments = documents;
+            allBulkDocuments.add(documents);
             if (failureToThrow != null) {
                 throw failureToThrow;
             }

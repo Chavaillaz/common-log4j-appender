@@ -58,19 +58,22 @@ The flow for a single log event is:
 3. On the background thread, the task converts the event to a document (using your `LogConverter`) and
    hands it to your `LogDelivery`, which stacks it into the current batch.
 4. Once the batch reaches `FlushThreshold` documents, or `FlushInterval` has elapsed since the last
-   transmission (whichever happens first), the batch is handed off to its own virtual thread for
-   transmission, and the background thread immediately resumes accumulating the next batch: it never waits
-   for the network call to complete. Up to 4 batches can be transmitted concurrently this way; beyond that,
-   the background thread waits for one to complete before handing off the next one, so the downstream
-   system is never overwhelmed with unbounded concurrent requests.
-5. If a transmission fails, its documents are put back in front of the current batch and retried at the
-   next opportunity instead of being lost, without hammering the external system with one attempt per
-   incoming message in the meantime. Two safety nets bound how far this can go: a batch is never allowed
-   to grow past `MaxBatchSize` documents (the oldest ones are discarded past that point), and a batch that
-   fails `MaxConsecutiveFailures` times in a row is discarded entirely instead of being retried forever,
-   which would otherwise happen if a single document can never be accepted by the downstream system. Both
-   cases are reported through a `LogDeliveryListener` if one is configured (see
-   [Observability](#observability) below), so this data loss is never silent.
+   transmission (whichever happens first), it is due for transmission: if it holds more than
+   `MaxRequestSize` documents, it is first split into consecutive chunks of at most that size (by default,
+   `MaxRequestSize` is unbounded and nothing is split). Each chunk is then handed off to its own virtual
+   thread, and the background thread immediately resumes accumulating the next batch: it never waits for a
+   network call to complete. Up to 4 requests (whole batches or individual chunks) can be transmitted
+   concurrently this way; beyond that, the background thread waits for one to complete before handing off
+   the next one, so the downstream system is never overwhelmed with unbounded concurrent requests.
+5. If a request fails, its documents are put back in front of the current batch and retried at the next
+   opportunity instead of being lost, without hammering the external system with one attempt per incoming
+   message in the meantime; a chunk retries independently of any sibling chunks from the same original
+   batch, so one failing never holds up or duplicates the others. Two safety nets bound how far this can go:
+   a batch is never allowed to grow past `MaxPendingDocuments` in memory (the oldest ones are discarded past
+   that point), and a request that fails `MaxConsecutiveFailures` times in a row is discarded entirely
+   instead of being retried forever, which would otherwise happen if a single document can never be
+   accepted by the downstream system. Both cases are reported through a `LogDeliveryListener` if one is
+   configured (see [Observability](#observability) below), so this data loss is never silent.
 
 Steps 2 and 3 (batching) always happen on the same single background thread, so your `LogDelivery`
 implementation never needs to worry about concurrent calls to `send()`/`flush()`. Step 4 (transmission)
@@ -230,12 +233,13 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `Environment`   | Name of the environment in which the application is running, included in every document.                   |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. Use `1` to send every log individually (no batching), or a higher value to reduce the number of requests sent to the external system. |
 | `FlushInterval` | Maximum time between two transmissions: even a partially filled batch is sent once this interval elapses, so logs are not delayed indefinitely under low traffic. Only relevant when `FlushThreshold` is greater than `1`. |
-| `MaxConcurrentTransmissions` | Maximum number of batches transmitted at the same time (see step 4 above). Defaults to `4`; raise it for a downstream system that can absorb more concurrent requests, or lower it to as little as `1` to strictly serialize transmissions (a value below `1` is rejected, as it would leave every transmission waiting forever). |
-| `MaxBatchSize` | Maximum number of documents a pending batch can hold while waiting to be (re)transmitted, discarding the oldest ones past that point (see step 5 above). Defaults to `10'000`; `0` or a negative value discards every document as soon as it would be added, effectively disabling this delivery. |
-| `MaxConsecutiveFailures` | Maximum number of consecutive failed attempts allowed for the same batch before it is discarded instead of retried again (see step 5 above). Defaults to `5`; `0` or a negative value disables this limit and retries indefinitely instead. |
+| `MaxConcurrentTransmissions` | Maximum number of requests (whole batches or individual chunks) transmitted at the same time (see step 4 above). Defaults to `4`; raise it for a downstream system that can absorb more concurrent requests, or lower it to as little as `1` to strictly serialize transmissions (a value below `1` is rejected, as it would leave every transmission waiting forever). |
+| `MaxPendingDocuments` | Maximum number of documents a pending batch can hold in memory while waiting to be (re)transmitted, discarding the oldest ones past that point (see step 5 above). This bounds memory only, independent of how many documents end up in a single request; see `MaxRequestSize` for that. Defaults to `10'000`; `0` or a negative value discards every document as soon as it would be added, effectively disabling this delivery. |
+| `MaxRequestSize` | Maximum number of documents sent together in a single request. A pending batch bigger than this is split into chunks of at most this size before transmission (see step 4 above), each retried independently on failure. Defaults to unbounded (no chunking); set it to match a downstream system's own per-request limit. |
+| `MaxConsecutiveFailures` | Maximum number of consecutive failed attempts allowed for the same request (a whole batch, or one chunk of it) before it is discarded instead of retried again (see step 5 above). Defaults to `5`; `0` or a negative value disables this limit and retries indefinitely instead. |
 | `MaxPendingEvents` | Maximum number of logging events that can be queued, waiting to be converted and batched by the background thread, before new ones are discarded instead of being accepted (see below). Defaults to `10'000`. |
 
-These four are implemented as default methods on `LogConfiguration` itself (rather than plugin
+These five are implemented as default methods on `LogConfiguration` itself (rather than plugin
 attributes), so they are available even if the appender implementation you use does not explicitly expose
 them as configuration; ask its maintainer to wire them up, or override them in your own configuration
 class in the meantime.
@@ -253,11 +257,15 @@ class in the meantime.
   `append()` still never blocks: once the limit is reached, further events are discarded instead of being
   queued, and reported through your `LogDeliveryListener` (see below) if one is configured, so this data
   loss is never silent. Raise this limit if your traffic legitimately bursts past the default.
-- **Concurrent transmissions:** up to `MaxConcurrentTransmissions` batches (4 by default) can be
+- **Concurrent transmissions:** up to `MaxConcurrentTransmissions` requests (4 by default) can be
   transmitted at the same time (see step 4 above), each on its own virtual thread, so network latency does
   not throttle how fast new batches are formed. This only ever adds backpressure to the internal
   background thread (never to the application thread): once that many transmissions are in flight, forming
   the next batch briefly waits for one of them to finish.
+- **Chunked requests:** a batch bigger than `MaxRequestSize` (unbounded by default) is split into several
+  requests instead of one, so a downstream system with its own per-request limit is never handed more than
+  it can accept in a single call to `sendBulk()`. Chunks of the same batch may transmit concurrently, and
+  each retries on its own failure without affecting or duplicating its siblings.
 - **Shutdown:** when the appender is stopped, it stops accepting new logs, waits (up to the given
   timeout) for already-accepted logs to be processed, and only then flushes and closes the delivery
   handler, waiting for that final transmission to complete as well, so that logs emitted just before
