@@ -110,8 +110,8 @@ public interface LogConfiguration {
      * without limit; unrelated to {@link #getMaxPendingDocuments()}, which bounds documents that already
      * reached that stage. Once full, the oldest queued event is discarded to make room for the new one,
      * mirroring the policy {@link #getMaxPendingDocuments()} applies to a full pending batch. Defaults to
-     * {@code 10'000}; values below {@code 1} are clamped up to it, since a queue of zero has nowhere to hand
-     * off even a single event.
+     * {@code 10'000}; values below {@code 1} are clamped up to {@code 1}, since a queue of zero has nowhere
+     * to hand off even a single event.
      *
      * @return The maximum number of logging events that can be queued awaiting processing
      */
