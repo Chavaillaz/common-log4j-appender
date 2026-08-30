@@ -256,7 +256,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
             reportDropped(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
         } catch (Throwable e) {
+            // createLogDeliveryTask() itself threw (the only statement above that can throw anything but
+            // RejectedExecutionException, already handled above): the event was never even submitted to
+            // workerExecutor, so it is lost exactly the same way a rejected one is, and must be reported the
+            // same way too instead of only ever reaching the ErrorHandler.
             error("Log delivery task creation error", e);
+            reportDropped(immutableEvent, "log delivery task creation error");
         }
     }
 

@@ -463,16 +463,41 @@ class AbstractLogDeliveryAppenderTest {
             var appender = new FailCreationLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                    droppedReasons.add(reason);
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+
+            // a real (not mocked) event, since the dropped one below is actually converted by a fallback
+            // converter to still produce something for the listener
+            var loggingEvent = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("would have been dropped"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
 
             // when / then
             appender.start();
-            assertDoesNotThrow(() -> appender.append(mockLogEvent()));
+            assertDoesNotThrow(() -> appender.append(loggingEvent));
             appender.append(mockLogEvent());
             appender.stop(2, SECONDS);
 
             // then the second (non-throwing) task creation was still processed by the background thread
             assertEquals(1, appender.getCountTaskExecuted().get());
             assertFalse(errors.isEmpty(), "The exception thrown while creating the task should have been reported");
+
+            // then the event lost to the failed task creation was also reported through the listener,
+            // exactly as any other event discarded before ever reaching the delivery would be, instead of
+            // only ever reaching the ErrorHandler
+            assertEquals(1, dropped.size());
+            assertEquals("would have been dropped", dropped.get(0).get("logmessage"));
+            assertTrue(droppedReasons.get(0).contains("creation"), "Reason should mention task creation: " + droppedReasons.get(0));
         }
 
     }
