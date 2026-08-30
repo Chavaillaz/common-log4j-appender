@@ -163,23 +163,34 @@ class AbstractBatchLogDeliveryTest {
         @Test
         @DisplayName("Tolerates a negative maximum batch size by discarding instead of failing")
         void testNegativeMaxBatchSizeDoesNotThrow() throws Exception {
-            // given: batching disabled (threshold of 1) and every attempt failing, so every send()
-            // goes through requeue(), the method that would otherwise compute an out-of-bounds sublist
-            // range for a negative maxBatchSize
+            // given: a negative maxBatchSize, the value that would otherwise make trimToMaxBatchSize()
+            // compute an out-of-bounds sublist range; caught as soon as the document is accumulated (a
+            // batch capacity of "less than zero" discards on arrival, before ever attempting a transmission
+            // doomed to be undone anyway), so bulkResult/countBulkSent are not exercised by this test
             var configuration = new TestLogConfiguration();
             configuration.setFlushThreshold(1);
             configuration.setMaxBatchSize(-1);
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
-            logDelivery.bulkResult = false;
 
             // when / then
-            assertDoesNotThrow(() -> {
-                logDelivery.send(Map.of("id", 1));
-                logDelivery.awaitPendingTransmissions();
-            });
+            assertDoesNotThrow(() -> logDelivery.send(Map.of("id", 1)));
+            // the notification itself is asynchronous and best-effort (see notifyDropped()'s documentation),
+            // so it is awaited by polling rather than by logDelivery.awaitPendingTransmissions(), which does
+            // not track it
+            awaitDropped(listener, 1);
             assertEquals(1, listener.dropped.size());
             assertEquals(List.of(Map.of("id", 1)), listener.dropped.get(0).documents());
+        }
+
+        private void awaitDropped(RecordingListener listener, int expected) throws InterruptedException {
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+            while (listener.dropped.size() < expected) {
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new AssertionError("Timed out waiting for " + expected + " dropped notification(s)");
+                }
+                Thread.sleep(5);
+            }
         }
 
     }
@@ -385,6 +396,45 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
+        @DisplayName("Discards the oldest documents while accumulating, even before any transmission is attempted")
+        void testBatchSizeCapEnforcedWhileAccumulating() throws Exception {
+            // given: a flush threshold high enough to never be reached by this test on its own (so the
+            // batch keeps growing purely through accumulation) and a maximum batch size small enough to be
+            // exceeded well before that; this exercises the cap being enforced by stackAndSend() itself,
+            // as opposed to testBatchSizeCapDiscardsOldestDocuments() above which only exercises it being
+            // enforced by requeue() after a failed transmission
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(100);
+            configuration.setMaxBatchSize(3);
+            var listener = new RecordingListener();
+            var logDelivery = new TestLogDelivery(configuration, listener);
+
+            // when accumulating 4 documents, one at a time, without ever reaching the flush threshold or
+            // any transmission ever failing (bulkResult defaults to true, and nothing is dispatched yet)
+            for (int i = 0; i < 4; i++) {
+                logDelivery.send(Map.of("id", i));
+            }
+
+            // then the oldest document (id=0) was already discarded once the cap of 3 was exceeded, well
+            // before the flush threshold was ever reached; awaited rather than asserted immediately since
+            // this particular notification is intentionally not tracked by awaitPendingTransmissions() (see
+            // notifyDropped()'s documentation), unlike every other assertion on a listener in this test class
+            assertEquals(0, logDelivery.countBulkSent.get());
+            awaitDropped(listener, 1);
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(Map.of("id", 0)), listener.dropped.get(0).documents());
+            assertTrue(listener.dropped.get(0).reason().contains("batch size"));
+
+            // when flushing what remains
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then only the 3 most recently received documents were ever sent
+            assertEquals(1, logDelivery.countBulkSent.get());
+            assertEquals(List.of(Map.of("id", 1), Map.of("id", 2), Map.of("id", 3)), logDelivery.lastBulkDocuments);
+        }
+
+        @Test
         @DisplayName("Gives up on a batch after too many consecutive failed attempts, unblocking the pipeline")
         void testGivesUpAfterMaxConsecutiveFailures() throws Exception {
             // given: the limit is configured through LogConfiguration rather than by subclassing the delivery
@@ -526,6 +576,16 @@ class AbstractBatchLogDeliveryTest {
             while (counter.get() < expected) {
                 if (System.nanoTime() > deadlineNanos) {
                     throw new AssertionError("Timed out waiting for the counter to reach " + expected);
+                }
+                Thread.sleep(5);
+            }
+        }
+
+        private void awaitDropped(RecordingListener listener, int expected) throws InterruptedException {
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+            while (listener.dropped.size() < expected) {
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new AssertionError("Timed out waiting for " + expected + " dropped notification(s)");
                 }
                 Thread.sleep(5);
             }

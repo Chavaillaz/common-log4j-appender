@@ -41,11 +41,12 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * than they were originally received; this is an accepted trade-off given every document already carries
  * its own timestamp.
  * <p>
- * Two safety nets bound how much a repeatedly failing transmission can cost, so that a struggling or
- * unreachable downstream system (or a single document it can never accept, a so-called "poison document")
- * cannot grow memory usage without bound or wedge the pipeline forever:
+ * Two safety nets bound how much a struggling or unreachable downstream system (or a single document it
+ * can never accept, a so-called "poison document") can cost, so that neither can grow memory usage without
+ * bound or wedge the pipeline forever:
  * <ul>
- *     <li>The pending batch is never allowed to grow past {@link LogConfiguration#getMaxBatchSize()}: once
+ *     <li>The pending batch is never allowed to grow past {@link LogConfiguration#getMaxBatchSize()}, be it
+ *     while accumulating normally or while merging documents back in after a failed transmission: once
  *     exceeded, the oldest documents in excess are discarded.</li>
  *     <li>A batch that fails {@link LogConfiguration#getMaxConsecutiveFailures()} times in a row is
  *     discarded entirely instead of being retried indefinitely. This streak is tracked per pending batch
@@ -269,15 +270,39 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     private void stackAndSend(List<Map<String, Object>> data) {
         PendingBatch snapshot = null;
+        List<Map<String, Object>> discarded;
+        int maxBatchSize;
         synchronized (this) {
             batch.addAll(data);
             log.trace("Stacking batch {}/{}", batch.size(), configuration.getFlushThreshold());
+
+            // Enforces the same cap as requeue() on this path too: without it, a FlushThreshold set higher
+            // than MaxBatchSize (or effectively unbounded, e.g. relying only on FlushInterval to flush)
+            // would let the batch grow without limit while nothing is actually failing, defeating the whole
+            // point of MaxBatchSize as a memory safety net rather than just a retry-specific one.
+            maxBatchSize = getMaxBatchSize();
+            Trimmed trimmed = trimToMaxBatchSize(batch, maxBatchSize);
+            batch = trimmed.kept();
+            discarded = trimmed.discarded();
 
             boolean batchingEnabled = configuration.getFlushThreshold() > 1;
             boolean thresholdReached = batch.size() >= configuration.getFlushThreshold();
             if (thresholdReached && !(batchingEnabled && transmissionFailed)) {
                 snapshot = swapBatch();
             }
+        }
+        // Notified outside the lock above, for the same reason as in requeue(): this instance's monitor is
+        // also needed to accumulate the next batch, and a listener that takes a while must not stall that
+        // unrelated, latency-sensitive path. Unlike requeue()'s own discard (which, on the common path, is
+        // already reached from a virtual thread of transmissionExecutor rather than from the caller of
+        // send()/flush()), this one is reached from stackAndSend() directly on whatever thread called
+        // send() (in practice, the appender's single background worker thread): notifying off that thread
+        // too via notifyDropped() keeps a slow listener from stalling it, which would otherwise back up
+        // every log event across the whole application behind this one notification.
+        if (discarded != null) {
+            log.warn("Discarding {} oldest document(s) after exceeding the maximum batch size of {} while accumulating",
+                    discarded.size(), maxBatchSize);
+            notifyDropped(discarded, "maximum batch size exceeded");
         }
         if (snapshot != null) {
             dispatch(snapshot.documents(), snapshot.failureStreak());
@@ -313,6 +338,42 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
+     * The result of {@link #trimToMaxBatchSize(List, int)}.
+     *
+     * @param kept      The given documents, with the oldest ones in excess of the cap removed (the same
+     *                  list instance as given if nothing was discarded)
+     * @param discarded The documents discarded to honor the cap, or {@code null} if none were
+     */
+    private record Trimmed(List<Map<String, Object>> kept, @Nullable List<Map<String, Object>> discarded) {
+
+    }
+
+    /**
+     * Trims the given list (oldest documents first) down to at most {@code maxBatchSize} elements,
+     * discarding the oldest ones in excess so that the most recently received (and therefore most likely
+     * still relevant) documents are the ones kept. Shared by {@link #stackAndSend(List)} (the normal
+     * accumulation path) and {@link #requeue(List, int)} (the failed-transmission retry path), so the
+     * pending batch can never grow past this cap regardless of which of the two ever pushed it over.
+     *
+     * @param documents    The documents to trim, oldest first
+     * @param maxBatchSize The maximum number of documents to keep, clamped to {@code [0, documents.size()]}
+     *                     so that an unexpected value (0, negative, or simply overridden by a subclass to
+     *                     return one of those) can never make {@code subList()} below throw, instead
+     *                     degrading gracefully to discarding nothing (a size larger than the batch) or
+     *                     everything (a size of 0 or less)
+     * @return The trimmed list and whatever was discarded to produce it, if anything
+     */
+    private static Trimmed trimToMaxBatchSize(List<Map<String, Object>> documents, int maxBatchSize) {
+        int overflow = Math.min(documents.size(), Math.max(0, documents.size() - maxBatchSize));
+        if (overflow == 0) {
+            return new Trimmed(documents, null);
+        }
+        List<Map<String, Object>> discarded = List.copyOf(documents.subList(0, overflow));
+        List<Map<String, Object>> kept = new ArrayList<>(documents.subList(overflow, documents.size()));
+        return new Trimmed(kept, discarded);
+    }
+
+    /**
      * Puts back the documents of a failed (or not attempted) transmission at the front of the current
      * batch, so they are retried before any newer document, discarding the oldest documents in excess if
      * this would grow the batch past {@link #getMaxBatchSize()}.
@@ -323,7 +384,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      *                      transmission permit was interrupted)
      */
     private void requeue(List<Map<String, Object>> documents, int failureStreak) {
-        List<Map<String, Object>> discarded = null;
+        List<Map<String, Object>> discarded;
         int maxBatchSize;
         synchronized (this) {
             List<Map<String, Object>> merged = new ArrayList<>(documents.size() + batch.size());
@@ -331,17 +392,10 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             merged.addAll(batch);
 
             maxBatchSize = getMaxBatchSize();
-            // Clamped to [0, merged.size()] so that an unexpected value of maxBatchSize (0, negative, or
-            // simply overridden by a subclass to return one of those) can never make subList() below throw,
-            // instead degrading gracefully to discarding nothing (a size larger than the batch) or
-            // everything (a size of 0 or less).
-            int overflow = Math.min(merged.size(), Math.max(0, merged.size() - maxBatchSize));
-            if (overflow > 0) {
-                discarded = List.copyOf(merged.subList(0, overflow));
-                merged = new ArrayList<>(merged.subList(overflow, merged.size()));
-            }
+            Trimmed trimmed = trimToMaxBatchSize(merged, maxBatchSize);
+            batch = trimmed.kept();
+            discarded = trimmed.discarded();
 
-            batch = merged;
             // The live batch might already carry forward a streak of its own (from a different failed
             // chunk merged in moments earlier by a concurrent transmission); keeping the higher of the two
             // is the conservative choice, since the merged batch is at least as "tainted" as its worst
@@ -350,11 +404,44 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         }
         // Notified outside the lock above: this instance's monitor is also needed by send()/flush() to
         // accumulate the next batch, and a listener that takes a while (writing to a file, a metrics call
-        // over the network) must not be able to stall that unrelated, latency-sensitive path.
+        // over the network) must not be able to stall that unrelated, latency-sensitive path. Called
+        // directly rather than through notifyDropped() (used by stackAndSend() below for the same kind of
+        // discard): on the far more common path, this method is reached from onTransmissionFailure(), itself
+        // only ever called from transmit() on one of transmissionExecutor's own virtual threads, never from
+        // the application-facing caller of send()/flush(); on the two rarer paths where this method is
+        // reached directly from dispatch() (an interrupted or rejected transmission handoff), those are
+        // shutdown-adjacent edge cases already outside the hot path this guarantee is really about.
         if (discarded != null) {
             log.warn("Discarding {} oldest document(s) after exceeding the maximum batch size of {} while retrying",
                     discarded.size(), maxBatchSize);
             listener.onDocumentsDropped(discarded, "maximum batch size exceeded");
+        }
+    }
+
+    /**
+     * Notifies {@link #listener} of dropped documents on a fresh virtual thread rather than on the calling
+     * thread, so that a listener taking a while to return (writing to a file, a metrics call over the
+     * network) can never stall it. Used only by {@link #stackAndSend(List)}, whose caller (in practice, the
+     * appender's single background worker thread, shared by every log event across the whole application)
+     * is on the hot, latency-sensitive path this guarantee actually matters for; every other discard in this
+     * class is instead notified directly (see the comments at each call site for why that remains safe
+     * there).
+     * <p>
+     * This notification is best-effort: unlike an actual transmission, it is not tracked by
+     * {@link #transmissionPermits}, so neither {@link #awaitPendingTransmissions()} nor, transitively,
+     * {@link #close()} waits for it to complete before returning. Losing it entirely if the executor happens
+     * to already be shutting down (see the {@code catch} below) is preferred over reintroducing the very
+     * risk of blocking the caller that this method exists to avoid.
+     *
+     * @param documents The documents being discarded
+     * @param reason    A short, human-readable explanation of why they were discarded
+     */
+    private void notifyDropped(List<Map<String, Object>> documents, String reason) {
+        try {
+            transmissionExecutor.execute(() -> listener.onDocumentsDropped(documents, reason));
+        } catch (RejectedExecutionException e) {
+            log.warn("Unable to notify the listener of {} dropped document(s), the delivery is shutting down",
+                    documents.size());
         }
     }
 
@@ -415,6 +502,11 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         if (maxConsecutiveFailures > 0 && newFailureStreak >= maxConsecutiveFailures) {
             log.error("Giving up on {} document(s) after {} consecutive failed transmission attempts, they will be discarded",
                     documents.size(), newFailureStreak);
+            // Called directly rather than through notifyDropped(): this is reached from transmit(), already
+            // running on transmissionExecutor's own virtual thread rather than on the application-facing
+            // caller of send()/flush(), so there is no risk of stalling it; it also lets awaitPendingTransmissions()
+            // keep observing this notification through the very permit transmit() still holds at this point
+            // (released only once this method returns), same as it does for the transmission itself.
             listener.onDocumentsDropped(List.copyOf(documents), "maximum consecutive transmission failures exceeded");
         } else {
             requeue(documents, newFailureStreak);
