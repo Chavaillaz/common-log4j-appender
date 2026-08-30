@@ -798,6 +798,62 @@ class AbstractBatchLogDeliveryTest {
             assertSame(exception, listener.failed.get(0).cause());
         }
 
+        @Test
+        @DisplayName("Still requeues failed documents for retry even when onTransmissionFailed() throws")
+        void testFailedDocumentsAreRequeuedDespiteThrowingListener() throws Exception {
+            // given: a listener whose onTransmissionFailed() implementation is broken; without a guard
+            // around this notification, the exception it throws would skip onTransmissionFailure()
+            // entirely, losing the failed document without ever requeuing or reporting it as dropped
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onTransmissionFailed(int documentCount, Throwable cause) {
+                    throw new RuntimeException("Simulated misbehaving listener");
+                }
+            };
+            var logDelivery = new TestLogDelivery(configuration, listener);
+            logDelivery.bulkResult = false;
+
+            // when the first attempt fails (the listener throwing must not prevent the requeue)
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.awaitPendingTransmissions();
+            assertEquals(1, logDelivery.countBulkSent.get());
+
+            // when the backend recovers and the batch is retried
+            logDelivery.bulkResult = true;
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then the document was not lost: it was requeued and eventually delivered
+            assertEquals(2, logDelivery.countBulkSent.get());
+            assertEquals(List.of(Map.of("id", 1)), logDelivery.lastBulkDocuments);
+        }
+
+        @Test
+        @DisplayName("Keeps transmitting further batches even when onTransmissionSucceeded() throws")
+        void testFurtherTransmissionsContinueDespiteThrowingListenerOnSuccess() throws Exception {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onTransmissionSucceeded(int documentCount, long durationMillis) {
+                    throw new RuntimeException("Simulated misbehaving listener");
+                }
+            };
+            var logDelivery = new TestLogDelivery(configuration, listener);
+
+            // when
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.awaitPendingTransmissions();
+            logDelivery.send(Map.of("id", 2));
+            logDelivery.awaitPendingTransmissions();
+
+            // then both transmissions completed normally despite the listener throwing on each one
+            assertEquals(2, logDelivery.countBulkSent.get());
+        }
+
     }
 
     @Nested

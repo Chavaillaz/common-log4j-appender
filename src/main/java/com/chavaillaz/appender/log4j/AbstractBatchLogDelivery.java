@@ -436,7 +436,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         if (discarded != null) {
             log.warn("Discarding {} oldest document(s) after exceeding the maximum pending documents of {} while retrying",
                     discarded.size(), maxPendingDocuments);
-            listener.onDocumentsDropped(discarded, "maximum pending documents exceeded");
+            notifyListener(() -> listener.onDocumentsDropped(discarded, "maximum pending documents exceeded"));
         }
     }
 
@@ -460,7 +460,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     private void notifyDropped(List<Map<String, Object>> documents, String reason) {
         try {
-            transmissionExecutor.execute(() -> listener.onDocumentsDropped(documents, reason));
+            transmissionExecutor.execute(() -> notifyListener(() -> listener.onDocumentsDropped(documents, reason)));
         } catch (RejectedExecutionException e) {
             log.warn("Unable to notify the listener of {} dropped document(s), the delivery is shutting down",
                     documents.size());
@@ -546,13 +546,36 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             long durationMillis = (System.nanoTime() - start) / 1_000_000;
             transmissionFailed = !success;
             if (success) {
-                listener.onTransmissionSucceeded(documents.size(), durationMillis);
+                notifyListener(() -> listener.onTransmissionSucceeded(documents.size(), durationMillis));
             } else {
-                listener.onTransmissionFailed(documents.size(), failure);
+                Exception cause = failure;
+                notifyListener(() -> listener.onTransmissionFailed(documents.size(), cause));
+                // Called unconditionally, regardless of whether the notification above threw: a
+                // misbehaving listener must never be able to skip the retry/give-up handling below, or
+                // the failed documents would be lost silently, contradicting the very guarantee (see the
+                // class documentation) that this kind of data loss is always reported.
                 onTransmissionFailure(documents, failureStreak);
             }
         } finally {
             transmissionPermits.release();
+        }
+    }
+
+    /**
+     * Invokes the given listener notification, tolerating (logging, then swallowing) any exception a
+     * misbehaving {@link LogDeliveryListener} implementation might throw instead of letting it propagate
+     * out of its caller uncaught. This matters most for the notification immediately preceding
+     * {@link #onTransmissionFailure(List, int)} in {@link #transmit(List, int)}: without this guard, an
+     * exception thrown by {@code onTransmissionFailed} would skip that call entirely, losing the failed
+     * documents without ever requeuing or reporting them as dropped.
+     *
+     * @param notification The listener call to perform
+     */
+    private void notifyListener(Runnable notification) {
+        try {
+            notification.run();
+        } catch (Exception e) {
+            log.warn("Unhandled exception thrown by a LogDeliveryListener", e);
         }
     }
 
@@ -575,7 +598,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             // caller of send()/flush(), so there is no risk of stalling it; it also lets awaitPendingTransmissions()
             // keep observing this notification through the very permit transmit() still holds at this point
             // (released only once this method returns), same as it does for the transmission itself.
-            listener.onDocumentsDropped(List.copyOf(documents), "maximum consecutive transmission failures exceeded");
+            notifyListener(() -> listener.onDocumentsDropped(List.copyOf(documents), "maximum consecutive transmission failures exceeded"));
         } else {
             requeue(documents, newFailureStreak);
         }
