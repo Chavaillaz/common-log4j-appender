@@ -13,11 +13,11 @@ import com.chavaillaz.appender.LogConfiguration;
 public interface LogConverter {
 
     /**
-     * Converts a logging event into multiple properties (key/value) to log.
+     * Converts a logging event into properties (key/value) to log.
      *
      * @param event The logging event
-     * @return The {@link Map} containing the properties to send, or {@code null} to skip this event
-     *         (see {@link com.chavaillaz.appender.LogDelivery#send(Map)})
+     * @return The properties to send, or {@code null} to skip this event (see
+     *         {@link com.chavaillaz.appender.LogDelivery#send(Map)})
      */
     @Nullable Map<String, Object> convert(LogEvent event);
 

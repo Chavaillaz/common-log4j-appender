@@ -30,28 +30,23 @@ import com.chavaillaz.appender.LogDeliveryListener;
 /**
  * Abstract appender with basic implementation for transmissions of logs from Log4j2.
  * <p>
- * The {@link #append(LogEvent)} method never performs any blocking or costly operation on the calling
- * (application) thread: it only converts the event to an immutable snapshot and hands it off to a single
- * background thread, which is responsible for converting and batching events (see {@link LogConverter} and
- * {@link AbstractBatchLogDelivery}). The actual network transmission of a batch may then run concurrently
- * on a separate virtual thread, so that a slow transmission never delays the accumulation of the next
- * batch either. This guarantees that logging calls made by the application never wait on network I/O.
+ * {@link #append(LogEvent)} never blocks or performs costly work on the calling (application) thread: it
+ * only snapshots the event and hands it to a single background thread, which converts and batches events
+ * (see {@link LogConverter} and {@link AbstractBatchLogDelivery}); network transmission then runs on its own
+ * virtual thread, so a slow transmission never delays the next batch either.
  * <p>
- * The background thread is fed by a plain FIFO queue (constant-time to enqueue/dequeue) rather than a
- * scheduled executor's queue (logarithmic-time, since it is ordered by delay), as this is the path taken
- * once per log event; a separate, otherwise idle, single-thread scheduler is only used to periodically hand
- * a flush trigger over to that same background thread, so batching still always happens on it alone.
+ * That background thread is fed by a plain FIFO queue rather than a scheduled executor's (logarithmic-time,
+ * delay-ordered) one, since this is the path taken once per log event; a separate, otherwise idle scheduler
+ * thread only hands a flush trigger over to the same queue periodically, so batching still only ever
+ * happens on the one background thread.
  * <p>
- * That queue is bounded to {@link LogConfiguration#getMaxQueuedEvents()}: since {@link #append(LogEvent)}
- * always accepts new events immediately regardless of how fast the background thread can process them, an
- * unbounded queue would let memory usage grow without limit for as long as events keep arriving faster than
- * they can be converted and batched (for example while every {@link LogConfiguration#getMaxConcurrentTransmissions()}
- * transmission slot is stuck on an unresponsive downstream system). Once that limit is reached, the oldest
- * event still waiting in the queue is discarded to make room for the new one (never blocking the
- * application thread), mirroring the same "keep the most recently received, most likely still relevant
- * documents" policy {@link AbstractBatchLogDelivery} already applies to {@link LogConfiguration#getMaxPendingDocuments()}.
- * Either way, the discarded event is reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}
- * on the delivery handler's listener, so this data loss is never silent.
+ * The queue is bounded to {@link LogConfiguration#getMaxQueuedEvents()}, so events arriving faster than
+ * they can be processed (e.g. while every {@link LogConfiguration#getMaxConcurrentTransmissions()}
+ * transmission slot is stuck on an unresponsive downstream system) cannot grow memory usage without limit.
+ * Once full, the oldest queued event is discarded to make room for the new one (never blocking the
+ * application thread), mirroring the policy {@link AbstractBatchLogDelivery} applies to a full pending
+ * batch, and reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} so this data
+ * loss is never silent.
  *
  * @param <C> The configuration type
  */
@@ -69,11 +64,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * A task queued on {@link #workerExecutor}, carrying the {@link LogEvent} it was created for alongside
-     * the actual work to run, so that {@link DiscardOldestEventPolicy} can still produce a document for it
-     * (through {@link #reportDropped(LogEvent, String)}) if it ends up being evicted from the queue before
-     * ever running. The periodic flush trigger submitted by {@link #triggerFlush()} is deliberately not
-     * wrapped this way, since it is not itself a discardable logging event.
+     * A task queued on {@link #workerExecutor}, carrying the {@link LogEvent} it was created for so
+     * {@link DiscardOldestEventPolicy} can still produce a document for it if evicted before running. The
+     * periodic flush trigger from {@link #triggerFlush()} is not wrapped this way, since it is not itself a
+     * discardable logging event.
      *
      * @param event    The logging event this task was created for
      * @param delegate The actual work to run
@@ -88,17 +82,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Replaces the default {@code AbortPolicy} of {@link #workerExecutor} (which would simply reject, and by
-     * extension discard, the newest event once the queue is full) so that the queue instead keeps the most
-     * recently received events, the ones most likely still relevant, discarding the oldest one still waiting
-     * to make room instead: see the class documentation for why this mirrors the policy
-     * {@link AbstractBatchLogDelivery} already applies to a full pending batch.
+     * Replaces {@link #workerExecutor}'s default {@code AbortPolicy} (which would reject, and discard, the
+     * newest event once the queue is full) so a full queue instead discards its oldest still-queued event to
+     * make room, keeping the most recently received ones — mirroring the policy
+     * {@link AbstractBatchLogDelivery} applies to a full pending batch.
      * <p>
-     * Falls back to the default reject-the-newest behavior (by throwing, exactly like {@code AbortPolicy}
-     * would) for anything that is not itself a discardable {@link EventTask} (currently only the periodic
-     * flush trigger from {@link #triggerFlush()}, which must never evict a real logging event from the queue
-     * just to make room for itself) or once {@link #workerExecutor} is shutting down, leaving both cases to
-     * be handled exactly as before by their respective callers.
+     * Falls back to the default reject-the-newest behavior for anything that is not itself a discardable
+     * {@link EventTask} (currently only the periodic flush trigger, which must never evict a real event to
+     * make room for itself) or once {@link #workerExecutor} is shutting down, leaving both to their callers
+     * as before.
      */
     private final class DiscardOldestEventPolicy implements RejectedExecutionHandler {
 
@@ -108,18 +100,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 throw new RejectedExecutionException("Task " + task + " rejected from " + executor);
             }
 
-            // Evicts the oldest still-queued event (if any: a race against the worker thread dequeuing it
-            // at the very same moment is harmless, it simply means there is nothing left to evict) to free
-            // up the room this new event needs.
+            // A race against the worker thread dequeuing the same event is harmless: nothing left to evict.
             if (executor.getQueue().poll() instanceof EventTask evictedTask) {
                 error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
                 reportDropped(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
             }
 
             if (!executor.getQueue().offer(newTask)) {
-                // Lost a race against another concurrently submitted event refilling the slot just freed
-                // above: falls back to discarding this new event instead, the same outcome the default
-                // policy would already have produced for it.
+                // Lost a race against another concurrent event refilling the freed slot first: falls back
+                // to discarding this new one instead, the same outcome the default policy would have produced.
                 error("Log delivery task rejected: the internal queue is full, or the appender is stopping");
                 reportDropped(newTask.event(), "internal queue capacity exceeded, or the appender is stopping");
             }
@@ -139,9 +128,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private @Nullable ScheduledExecutorService flushScheduler;
 
-    /**
-     * The configuration of the logs transmission
-     */
     @Getter
     private final C logConfiguration;
 
@@ -153,11 +139,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private @Nullable LogDelivery logDeliveryHandler;
 
     /**
-     * Used only as a last resort to still produce a document for a logging event discarded before it could
-     * even reach {@link #createLogDeliveryTask(LogEvent)} (see {@link #append(LogEvent)}), so that it can be
-     * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} instead of vanishing
-     * without a trace. Deliberately independent of whatever {@link LogConverter} (if any) a subclass's own
-     * delivery pipeline uses, since that one only ever runs on the very worker thread being bypassed here.
+     * Used only as a last resort to produce a document for a logging event discarded before it could even
+     * reach {@link #createLogDeliveryTask(LogEvent)} (see {@link #append(LogEvent)}), so it can still be
+     * reported instead of vanishing without a trace. Independent of whatever {@link LogConverter} a
+     * subclass's own pipeline uses, since that one only runs on the very worker thread being bypassed here.
      */
     private final DefaultLogConverter fallbackConverter = new DefaultLogConverter();
 
@@ -177,16 +162,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Creates the single-thread executor backing {@link #workerExecutor}, with its queue bounded to the
-     * given capacity instead of the unbounded one a plain {@code Executors.newSingleThreadExecutor()} would
-     * use (see the class documentation for why this queue is bounded at all), and {@link DiscardOldestEventPolicy}
-     * in place of the default {@code AbortPolicy} so a full queue discards its oldest pending event instead
-     * of rejecting the newest one.
+     * Creates the single-thread executor backing {@link #workerExecutor}, its queue bounded to the given
+     * capacity (unlike a plain {@code Executors.newSingleThreadExecutor()}'s unbounded one — see the class
+     * documentation for why), with {@link DiscardOldestEventPolicy} in place of the default {@code AbortPolicy}.
      *
      * @param queueCapacity The maximum number of tasks the queue can hold, clamped to at least {@code 1}
      *                      since {@link LinkedBlockingQueue}'s constructor rejects a non-positive capacity
-     *                      outright, and a misconfigured value should degrade to the smallest possible
-     *                      buffer instead of crashing the appender at construction time
+     *                      outright
      * @return The executor to use for {@link #workerExecutor}
      */
     private ExecutorService newWorkerExecutor(int queueCapacity) {
@@ -195,6 +177,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 new LinkedBlockingQueue<>(capacity), namedThreadFactory("log-delivery-worker"), new DiscardOldestEventPolicy());
     }
 
+    /**
+     * Starts the log delivery handler (see {@link #createLogDeliveryHandler()}) and, if batching is enabled
+     * (a flush threshold greater than {@code 1}), schedules the periodic flush described in the class
+     * documentation.
+     */
     @Override
     public void start() {
         startLogDeliveryHandler();
@@ -212,17 +199,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Validates the given flush interval, reporting a clear error through this appender's {@code ErrorHandler}
-     * (like every other misconfiguration in this class) instead of letting an exception propagate straight
-     * out of {@link #start()} for either of the two ways a {@link Duration} can fail
-     * {@link Duration#toMillis()} rather than just yield a non-positive result: overflowing it (one so
-     * large that {@code toMillis()} itself throws {@link ArithmeticException}) or, like a merely
-     * non-positive one, rounding down to {@code 0} once expressed in milliseconds (the unit
-     * {@link ScheduledExecutorService#scheduleWithFixedDelay} is called with below, which requires a
-     * strictly positive delay).
+     * instead of letting an exception propagate out of {@link #start()}: a {@link Duration} can fail
+     * {@link Duration#toMillis()} either by overflowing it, or (like a non-positive one) by rounding down to
+     * {@code 0}, which {@link ScheduledExecutorService#scheduleWithFixedDelay} rejects.
      *
      * @param flushInterval The interval to validate, as returned by {@link LogConfiguration#getFlushInterval()}
-     * @return The interval in milliseconds, or {@code null} if it is invalid and no periodic flush should
-     *         be scheduled
+     * @return The interval in milliseconds, or {@code null} if invalid and no periodic flush should be
+     *         scheduled
      */
     private @Nullable Long validateFlushInterval(@Nullable Duration flushInterval) {
         if (flushInterval == null) {
@@ -250,22 +233,19 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Hands a flush over to {@link #workerExecutor}, so that it still only ever runs on the same single
-     * background thread as the conversion and batching of events, even though it is triggered by the
-     * (otherwise idle) {@link #flushScheduler} thread. Routed through {@link #executeLogDeliveryTask(Runnable)}
-     * like every other task submitted to that executor, so that an exception thrown by a misbehaving
-     * {@link LogDelivery#flush()} implementation is reported the same consistent way instead of only ever
-     * reaching the worker thread's default uncaught exception handler (typically just a stack trace printed
-     * to the console, bypassing this appender's configured {@code ErrorHandler} entirely).
+     * Hands a flush over to {@link #workerExecutor}, so it still only ever runs on the single background
+     * thread, even though triggered by the (otherwise idle) {@link #flushScheduler} thread. Routed through
+     * {@link #executeLogDeliveryTask(Runnable)} like every other task, so an exception from a misbehaving
+     * {@link LogDelivery#flush()} is reported consistently instead of only reaching the worker thread's
+     * default uncaught exception handler.
      */
     private void triggerFlush() {
         try {
             workerExecutor.execute(() -> executeLogDeliveryTask(logDeliveryHandler::flush));
         } catch (RejectedExecutionException e) {
-            // Either the worker's queue is momentarily full (see MaxQueuedEvents) or the worker is
-            // shutting down; in both cases this cycle's flush is simply skipped rather than reported as
-            // dropped data, since (unlike a discarded event in append()) nothing irrecoverable is lost:
-            // the next periodic flush, or the one triggered by close(), will pick up whatever is pending.
+            // The queue may be momentarily full (see MaxQueuedEvents) or the worker may be shutting down;
+            // either way this cycle's flush is simply skipped, not reported as dropped: nothing
+            // irrecoverable is lost, the next periodic flush (or the one from close()) picks up what's pending.
         }
     }
 
@@ -287,53 +267,50 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     public abstract LogDelivery createLogDeliveryHandler();
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Never blocks or fails the calling thread (see the class documentation): the event is snapshotted and
+     * handed off to the background thread, and any failure along the way is reported through this
+     * appender's {@code ErrorHandler} and, where possible, the delivery handler's
+     * {@link LogDeliveryListener} instead of propagating here.
+     *
+     * @param loggingEvent The logging event to append
+     */
     @Override
     public void append(LogEvent loggingEvent) {
         if (logDeliveryHandler == null) {
-            // createLogDeliveryHandler() failed while starting (already reported once there): log4j still
-            // calls append() on a non-started appender by default (it merely reports it through the error
-            // handler and moves on), so without this check every single log call for the remaining
-            // lifetime of the application would keep paying for a snapshot, a background thread hand-off
-            // and a task execution doomed to fail, instead of this cheap, immediate no-op.
+            // createLogDeliveryHandler() failed while starting (already reported there): log4j still calls
+            // append() on a non-started appender by default, so without this check every log call would
+            // keep paying for a doomed snapshot/hand-off/execution instead of this cheap no-op.
             return;
         }
 
-        // Captures an immutable snapshot of the event on the calling thread, as log4j2 may reuse
-        // (mutate) the given event object once this method returns, which would corrupt the data
-        // read later by the background thread if a mutable reference was kept instead.
+        // Snapshots the event on the calling thread: log4j2 may reuse (mutate) it once this method returns.
         LogEvent immutableEvent = loggingEvent.toImmutable();
         try {
-            // createLogDeliveryTask() itself runs on the calling (application) thread: a subclass is
-            // expected to only capture state there and defer any actual work to the returned Runnable,
-            // but this call is still guarded so that a subclass mistake (or an unexpected null/exception)
-            // can never propagate to the application thread, which would otherwise break the guarantee
-            // that logging calls never fail or block because of this appender.
+            // Guarded so a subclass mistake (or unexpected null/exception) in createLogDeliveryTask() —
+            // expected to only capture state on this thread and defer real work to the returned Runnable —
+            // can never propagate to the application thread.
             Runnable task = createLogDeliveryTask(immutableEvent);
             workerExecutor.execute(new EventTask(immutableEvent, () -> executeLogDeliveryTask(task)));
         } catch (RejectedExecutionException e) {
-            // A full queue is now handled internally by DiscardOldestEventPolicy instead of reaching this
-            // catch block (see its own documentation), so this is reached only because a log is emitted
-            // while the appender is stopping (or, exceedingly rarely, a race lost against another
-            // concurrent event even after that policy already evicted the oldest one to make room): either
-            // way, the event is discarded instead of being propagated to the calling application thread,
-            // but still reported through the delivery's listener so this data loss is not silent.
+            // A full queue is now handled internally by DiscardOldestEventPolicy, so this is reached only
+            // because the appender is stopping (or, rarely, a race lost even after that policy already
+            // evicted an event to make room).
             error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
             reportDropped(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
         } catch (Throwable e) {
-            // createLogDeliveryTask() itself threw (the only statement above that can throw anything but
-            // RejectedExecutionException, already handled above): the event was never even submitted to
-            // workerExecutor, so it is lost exactly the same way a rejected one is, and must be reported the
-            // same way too instead of only ever reaching the ErrorHandler.
+            // createLogDeliveryTask() itself threw: the event never reached workerExecutor, so it is lost
+            // and must be reported the same way as a rejected one.
             error("Log delivery task creation error", e);
             reportDropped(immutableEvent, "log delivery task creation error");
         }
     }
 
     /**
-     * Reports a logging event discarded before it could even be handed off to {@link #workerExecutor}
-     * through the delivery handler's {@link LogDeliveryListener#onDocumentsDropped(List, String)}, using
-     * {@link #fallbackConverter} to still produce a document for it (see its own documentation for why a
-     * dedicated fallback is used here instead of whatever the delivery pipeline itself relies on).
+     * Reports a logging event discarded before it could reach {@link #workerExecutor}, using
+     * {@link #fallbackConverter} to still produce a document for it instead of it vanishing without a trace.
      *
      * @param event  The logging event being discarded
      * @param reason A short, human-readable explanation of why it was discarded
@@ -351,9 +328,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Executes the given log delivery task, making sure any exception it throws is reported instead of
-     * being silently swallowed by the thread pool (which would otherwise happen since tasks are submitted
-     * rather than executed, discarding their result and any exception with it).
+     * Executes the given log delivery task, reporting any exception it throws instead of letting the thread
+     * pool silently swallow it (submitted tasks discard their result, and any exception with it).
      *
      * @param task The log delivery task to execute
      */
@@ -373,13 +349,22 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     public abstract Runnable createLogDeliveryTask(LogEvent loggingEvent);
 
+    /**
+     * Stops accepting new logging events, waits (up to the given timeout) for already-accepted ones to be
+     * processed, then flushes and closes the delivery handler, so logs accepted just before shutdown are
+     * not lost.
+     *
+     * @param timeout  The maximum time to wait for pending events to be processed before giving up (a
+     *                 non-positive value returns immediately without waiting or reporting a timeout error)
+     * @param timeUnit The unit of {@code timeout}
+     * @return Always {@code true}
+     */
     @Override
     public boolean stop(long timeout, TimeUnit timeUnit) {
         try {
-            // Stops any further flush from being triggered first, then stops accepting new tasks and waits
-            // for those already submitted (i.e. log events accepted before this call) to complete, so that
-            // closing the delivery handler below flushes every log received so far instead of racing with
-            // the background thread still processing them.
+            // Stops further flushes first, then stops accepting new tasks and waits for those already
+            // submitted to complete, so closing the delivery handler flushes everything received so far
+            // instead of racing with the background thread.
             if (flushScheduler != null) {
                 flushScheduler.shutdownNow();
             }
@@ -389,13 +374,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 if (timeout > 0) {
                     error("Log delivery thread pool did not terminate within the given timeout, some logs may be lost");
                 }
-                // Best-effort attempt to interrupt whatever task is still stuck (typically blocked on I/O
-                // in sendBulk()) instead of closing the delivery handler out from under it unconditionally
-                // right below: this narrows, even if it cannot fully close, the window during which that
-                // task could still be calling into a handler that is concurrently being closed. A task that
-                // does not respond to interruption (many blocking I/O calls don't) is not helped by this,
-                // but one that does (e.g. one blocked on further permits or I/O that honors it) is stopped
-                // instead of being left to finish on its own after the handler is already gone.
+                // Best-effort attempt to interrupt whatever task is stuck (typically blocked on I/O in
+                // sendBulk()) instead of closing the delivery handler out from under it unconditionally:
+                // this narrows the window during which it could still call into a handler being closed
+                // concurrently. A task that ignores interruption isn't helped, but one that honors it is
+                // stopped instead of finishing on its own after the handler is already gone.
                 workerExecutor.shutdownNow();
             }
         } catch (InterruptedException e) {

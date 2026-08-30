@@ -27,12 +27,11 @@ import com.chavaillaz.appender.LogConfiguration;
  *     <li><strong>logmessage:</strong> Message of the logging event</li>
  *     <li><strong>thread:</strong> Thread that created the logging event</li>
  * </ul>
- * <p>All the MDC fields will also be added as is (only if they do not already exist).</p>
- * <p>In case the event contains an exception, it also includes the fields:</p>
+ * All MDC fields are also added as-is (only if not already present). If the event carries an exception, it
+ * also includes:
  * <ul>
  *     <li><strong>class:</strong> Class of the exception</li>
- *     <li><strong>stacktrace:</strong> Stacktrace of the exception, truncated to
- *     {@link #getMaxStackTraceLength()} characters</li>
+ *     <li><strong>stacktrace:</strong> Stack trace, truncated to {@link #getMaxStackTraceLength()} characters</li>
  * </ul>
  */
 @Log4j2
@@ -48,16 +47,33 @@ public class DefaultLogConverter implements LogConverter {
      */
     private static final int THROWABLE_FIELD_COUNT = 2;
 
-    /**
-     * The configuration of the logs transmission
-     */
     private LogConfiguration configuration;
 
+    /**
+     * Creates a new default log converter. {@link #configure(LogConfiguration)} must be called before
+     * {@link #convert(LogEvent)} is, since {@link #writeBasic(Map, LogEvent)} reads the configuration set
+     * there.
+     */
+    public DefaultLogConverter() {
+        // Nothing to initialize here: configuration is only available once configure() is called
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @param configuration The configuration
+     */
     @Override
     public void configure(LogConfiguration configuration) {
         this.configuration = configuration;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @param event The logging event
+     * @return The properties to send (never {@code null})
+     */
     @Override
     public Map<String, Object> convert(LogEvent event) {
         Map<String, Object> document = new HashMap<>(estimateCapacity(event));
@@ -68,9 +84,8 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Estimates the {@link HashMap} capacity needed to hold the document of the given event without
-     * triggering a resize while it is being populated, based on the number of fields this converter is
-     * expected to write for it.
+     * Estimates the {@link HashMap} capacity needed to hold the document without a resize while populating
+     * it, based on the fields this converter is expected to write.
      *
      * @param event The logging event
      * @return The estimated initial capacity to use for the resulting document
@@ -90,7 +105,7 @@ public class DefaultLogConverter implements LogConverter {
     /**
      * Writes the basic fields of the logging event in the given document.
      *
-     * @param document The document in which writes the fields
+     * @param document The document to write the fields into
      * @param event    The logging event
      */
     protected void writeBasic(Map<String, Object> document, LogEvent event) {
@@ -108,15 +123,14 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Formats the given message, tolerating a {@link Message} implementation (typically a custom one
-     * supplied by the application, since every implementation bundled with Log4j2 already guards its own
-     * formatting) whose {@link Message#getFormattedMessage()} throws instead of letting the exception
-     * propagate out of {@link #convert(LogEvent)}, which would otherwise discard the whole document (and
-     * with it every other field already written for this event) instead of just the message.
+     * Formats the given message, falling back to a placeholder instead of propagating an exception out of
+     * {@link #convert(LogEvent)} if a custom {@link Message} implementation's
+     * {@link Message#getFormattedMessage()} throws (every implementation bundled with Log4j2 already guards
+     * its own formatting).
      *
      * @param message The message to format, or {@code null}
-     * @return The formatted message, {@code null} if the given message was {@code null}, or a short
-     *         placeholder describing the failure if formatting it threw
+     * @return The formatted message, {@code null} if the given message was {@code null}, or a placeholder
+     *         describing the failure if formatting it threw
      */
     private String formatMessage(Message message) {
         if (message == null) {
@@ -131,9 +145,10 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Writes the MDC fields of the logging event in the given document.
+     * Writes the MDC fields of the logging event in the given document, tolerating (losing only the MDC
+     * fields, not the whole document) a custom context data implementation that throws while iterated.
      *
-     * @param document The document in which writes the fields
+     * @param document The document to write the fields into
      * @param event    The logging event
      */
     protected void writeMDC(Map<String, Object> document, LogEvent event) {
@@ -143,18 +158,16 @@ public class DefaultLogConverter implements LogConverter {
         try {
             event.getContextData().forEach(document::putIfAbsent);
         } catch (Exception e) {
-            // A custom ContextDataProvider/ReadOnlyStringMap implementation (unlike the one bundled with
-            // Log4j2) could throw while being iterated; losing only the MDC fields instead of the whole
-            // document (as an uncaught exception here would, since this is called from convert()) still
-            // leaves every other field written so far usable.
             log.warn("Unable to read the MDC context data of a logging event, it will be omitted", e);
         }
     }
 
     /**
-     * Writes the exception passed to the logging event in the given document.
+     * Writes the exception passed to the logging event in the given document, tolerating (losing only this
+     * field, not the whole document) a custom {@link Throwable} subclass whose
+     * {@code getMessage()}/{@code getCause()}/{@code toString()} throws while printing the stack trace.
      *
-     * @param document The document in which writes the fields
+     * @param document The document to write the fields into
      * @param event    The logging event
      */
     protected void writeThrowable(Map<String, Object> document, LogEvent event) {
@@ -164,10 +177,6 @@ public class DefaultLogConverter implements LogConverter {
             try {
                 document.put("stacktrace", getStackTrace(throwable));
             } catch (Exception e) {
-                // A custom Throwable subclass could override getMessage()/getCause()/toString() (all
-                // exercised by printStackTrace()) in a way that itself throws; losing only this one field
-                // instead of the whole document (as an uncaught exception here would, since this is called
-                // from convert()) still leaves every other field written so far usable.
                 log.warn("Unable to compute the stack trace of a logging event, the field will be omitted", e);
             }
         }
@@ -175,9 +184,8 @@ public class DefaultLogConverter implements LogConverter {
 
     /**
      * Gets the stack trace of the given throwable, truncated to {@link #getMaxStackTraceLength()}
-     * characters if needed, so that a deeply nested cause chain (or a recursive one caused by a bug in the
-     * application itself) cannot single-handedly inflate a document (and by extension a whole batch) to a
-     * size more likely to be rejected by the downstream system.
+     * characters so a deep or recursive cause chain cannot inflate a document (and by extension a whole
+     * batch) enough to be rejected by the downstream system.
      *
      * @param throwable The throwable
      * @return The stack trace
@@ -197,9 +205,9 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Gets the maximum length (in characters) of the {@code stacktrace} field written by
-     * {@link #writeThrowable(Map, LogEvent)}. Can be overridden to raise, lower, or disable ({@code 0} or
-     * a negative value) this limit.
+     * Maximum length (in characters) of the {@code stacktrace} field written by
+     * {@link #writeThrowable(Map, LogEvent)}. Override to raise, lower, or disable ({@code 0} or negative)
+     * truncation.
      *
      * @return The maximum length allowed for the stack trace, or a non-positive value to disable truncation
      */

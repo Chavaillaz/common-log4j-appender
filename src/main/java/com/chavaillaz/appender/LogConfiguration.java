@@ -22,70 +22,68 @@ public interface LogConfiguration {
     void setApplication(String application);
 
     /**
-     * Gets the name of the host on which the application is running.
+     * Gets the name of the host the application is running on.
      *
      * @return The host name
      */
     String getHost();
 
     /**
-     * Sets the name of the host on which the application is running.
+     * Sets the name of the host the application is running on.
      *
      * @param host The host name
      */
     void setHost(String host);
 
     /**
-     * Sets the environment in which the application is running.
+     * Gets the name of the environment the application is running in.
      *
      * @return The environment name
      */
     String getEnvironment();
 
     /**
-     * Sets the environment in which the application is running.
+     * Sets the name of the environment the application is running in.
      *
      * @param environment The environment name
      */
     void setEnvironment(String environment);
 
     /**
-     * Gets the threshold number of messages triggering the transmission of the logs.
+     * Gets the number of messages accumulated before triggering a transmission.
      *
-     * @return The threshold number of messages
+     * @return The flush threshold
      */
     long getFlushThreshold();
 
     /**
-     * Sets the threshold number of messages triggering the transmission of the logs.
+     * Sets the number of messages accumulated before triggering a transmission.
      *
-     * @param flushThreshold The threshold number of messages
+     * @param flushThreshold The flush threshold
      */
     void setFlushThreshold(long flushThreshold);
 
     /**
-     * Gets the maximum time interval between two flushes.
-     * After each interval, the transmission of logs is triggered, even if not reaching the threshold number of messages.
+     * Gets the maximum time between two transmissions: past this interval, a transmission is triggered even
+     * if {@link #getFlushThreshold()} was not reached yet.
      *
-     * @return The maximum interval between two flushes
+     * @return The flush interval
      */
     Duration getFlushInterval();
 
     /**
-     * Gets the maximum time interval between two flushes.
-     * After each interval, the transmission of logs is triggered, even if not reaching the threshold number of messages.
+     * Sets the maximum time between two transmissions: past this interval, a transmission is triggered even
+     * if {@link #getFlushThreshold()} was not reached yet.
      *
-     * @param flushInterval The maximum interval between two flushes
+     * @param flushInterval The flush interval
      */
     void setFlushInterval(Duration flushInterval);
 
     /**
-     * Gets the maximum number of batches that can be transmitted concurrently by a batch-based log delivery.
-     * Beyond this limit, forming the next batch waits for one of the current transmissions to complete
-     * before it can be handed over, so that the downstream system is never overwhelmed with unbounded
-     * concurrent requests. Defaults to {@code 4}; override to raise or lower this limit, but never to
-     * less than {@code 1} (a value of {@code 0} or less would leave every transmission waiting forever,
-     * since none could ever be granted permission to run).
+     * Maximum number of batches a batch-based log delivery transmits concurrently; forming the next batch
+     * waits for a slot once this limit is reached, so the downstream system is never overwhelmed with
+     * unbounded concurrent requests. Defaults to {@code 4}; must be at least {@code 1}, or every
+     * transmission would wait forever for a slot that never opens.
      *
      * @return The maximum number of concurrent transmissions, at least {@code 1}
      */
@@ -94,18 +92,12 @@ public interface LogConfiguration {
     }
 
     /**
-     * Gets the maximum number of documents a pending batch can hold in memory while waiting to be
-     * (re)transmitted by a batch-based log delivery. Once exceeded, the oldest documents in excess are
-     * discarded so that a struggling downstream system cannot grow memory usage without bound; this applies
-     * equally while accumulating new documents and while merging failed ones back in for a retry. Defaults
-     * to {@code 10'000}; override to raise or lower this limit, down to {@code 0} (or a negative value,
-     * treated the same way) to discard every document as soon as it would be added to the batch, effectively
-     * disabling this delivery.
-     * <p>
-     * This bounds memory only: it says nothing about how many documents are sent together in a single
-     * request, which {@link #getMaxRequestDocuments()} controls instead. A pending batch bigger than
-     * {@code MaxRequestDocuments} is still held here in full, and split into several requests at transmission
-     * time.
+     * Maximum number of documents a pending batch can hold in memory while waiting to be (re)transmitted by
+     * a batch-based log delivery, across both accumulation and retries; past it, the oldest documents are
+     * discarded so a struggling downstream system cannot grow memory usage without bound. Independent of
+     * {@link #getMaxRequestDocuments()}, which governs how many documents go out per request rather than how
+     * many can be held pending. Defaults to {@code 10'000}; {@code 0} or less discards every document as
+     * soon as it would be added, effectively disabling this delivery.
      *
      * @return The maximum number of documents a pending batch can hold in memory
      */
@@ -114,20 +106,12 @@ public interface LogConfiguration {
     }
 
     /**
-     * Gets the maximum number of documents sent together in a single request by a batch-based log delivery.
-     * Once a pending batch of more than this many documents is due for (re)transmission, it is split into
-     * consecutive chunks of at most this size, each sent as its own independent request (so that chunks of
-     * the same batch may be transmitted concurrently, subject to the same
-     * {@link #getMaxConcurrentTransmissions()} bound as any other request, and a chunk that fails is retried
-     * on its own without holding up its siblings).
-     * <p>
-     * Unlike {@link #getMaxPendingDocuments()} (a memory cap on what can be held at once, independent of how
-     * it is later sent), this exists purely to respect a downstream system's own limit on how many documents
-     * (or how large a payload) it can accept per request; a downstream system without such a limit does not
-     * need this set at all. Defaults to {@link Integer#MAX_VALUE} (no chunking: every pending batch is sent
-     * as a single request, the behavior of every version of this library before this setting existed);
-     * override with a positive value to enable chunking, or leave any non-positive value in place to keep it
-     * disabled.
+     * Maximum number of documents sent together in a single request by a batch-based log delivery; a
+     * pending batch bigger than this is split into chunks of at most this size, each transmitted (and
+     * retried on failure) independently. Exists only to respect a downstream system's own limit on
+     * documents (or payload size) per request; leave unset if it has none. Defaults to
+     * {@link Integer#MAX_VALUE} (no chunking, the behavior of every version of this library before this
+     * setting existed); a non-positive value also disables chunking.
      *
      * @return The maximum number of documents sent together in a single request
      */
@@ -136,13 +120,11 @@ public interface LogConfiguration {
     }
 
     /**
-     * Gets the maximum number of consecutive failed transmission attempts allowed for the same pending
-     * batch before it is discarded instead of being retried again, by a batch-based log delivery. Without
-     * this limit, a single document that can never be accepted by the downstream system (a "poison
-     * document") would cause the batch containing it to fail forever, blocking every document accumulated
-     * behind it from ever being delivered. Defaults to {@code 5}; override to allow more or fewer attempts,
-     * or to {@code 0} (or a negative value, treated the same way) to disable this limit entirely and retry
-     * indefinitely instead of ever giving up on a batch.
+     * Maximum number of consecutive failed transmission attempts allowed for the same pending batch, by a
+     * batch-based log delivery, before it is discarded instead of retried again. Without this limit, a
+     * single document the downstream system can never accept (a "poison document") would fail its batch
+     * forever, blocking everything accumulated behind it. Defaults to {@code 5}; {@code 0} or less disables
+     * this limit and retries indefinitely instead.
      *
      * @return The maximum number of consecutive failed attempts allowed
      */
@@ -151,18 +133,13 @@ public interface LogConfiguration {
     }
 
     /**
-     * Gets the maximum number of logging events that can be queued, waiting to be converted and batched by
-     * the background thread of an appender, before the oldest still-queued one is discarded to make room
-     * for a new one. This bounds the memory that events accepted faster than they can be processed could
-     * otherwise use without limit, for example while every {@link #getMaxConcurrentTransmissions()}
-     * transmission slot is stuck on a downstream system that has become unresponsive for a long time:
-     * documents already converted and handed off to a batch-based log delivery are separately bounded by
-     * {@link #getMaxPendingDocuments()}; this limits how many have not even reached that stage yet. Once
-     * full, the queue keeps the most recently received events rather than the new one being rejected,
-     * mirroring the same policy {@link #getMaxPendingDocuments()} already applies to a full pending batch.
-     * Defaults to {@code 10'000}; override to raise or lower this limit, though not below {@code 1}: a
-     * value of {@code 0} or less is clamped up to {@code 1} instead of disabling the queue outright, since a
-     * queue capacity of zero has nowhere to hand off even a single event.
+     * Maximum number of logging events an appender's background thread can queue awaiting conversion and
+     * batching, bounding the memory events arriving faster than they can be processed could otherwise use
+     * without limit; unrelated to {@link #getMaxPendingDocuments()}, which bounds documents that already
+     * reached that stage. Once full, the oldest queued event is discarded to make room for the new one,
+     * mirroring the policy {@link #getMaxPendingDocuments()} applies to a full pending batch. Defaults to
+     * {@code 10'000}; values below {@code 1} are clamped up to it, since a queue of zero has nowhere to hand
+     * off even a single event.
      *
      * @return The maximum number of logging events that can be queued awaiting processing
      */
