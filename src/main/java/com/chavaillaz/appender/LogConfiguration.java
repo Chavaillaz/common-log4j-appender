@@ -37,7 +37,8 @@ public interface LogConfiguration {
     String getEnvironment();
 
     /**
-     * Gets the number of messages accumulated before triggering a transmission.
+     * Gets the number of messages accumulated before triggering a transmission. A value of {@code 1} or
+     * less disables batching entirely: every message is sent individually, as soon as it arrives.
      *
      * @return The flush threshold
      */
