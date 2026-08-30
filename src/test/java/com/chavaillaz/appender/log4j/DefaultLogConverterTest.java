@@ -11,6 +11,7 @@ import java.time.Instant;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.impl.JdkMapAdapterStringMap;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
+import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -214,6 +215,80 @@ class DefaultLogConverterTest {
 
             // then
             assertFalse(document.get("stacktrace").toString().contains("truncated"));
+        }
+
+        @Test
+        @DisplayName("Falls back to a placeholder instead of losing the whole document when a message fails to format")
+        void testConversionToleratesThrowingMessage() {
+            // given: a custom Message implementation (unlike every one bundled with Log4j2) that throws
+            // while formatting itself, which must not prevent every other field from being captured
+            var configuration = new TestLogConfiguration();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new ThrowingMessage())
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
+
+            // when
+            var document = assertDoesNotThrow(() -> converter.convert(event));
+
+            // then
+            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+            assertEquals("INFO", document.get("level"));
+            assertTrue(document.get("logmessage").toString().contains("unable to format message"));
+        }
+
+        @Test
+        @DisplayName("Falls back to omitting the field instead of losing the whole document when a stack trace fails to compute")
+        void testConversionToleratesThrowingThrowable() {
+            // given: a custom Throwable whose getMessage() throws, which Throwable#printStackTrace()
+            // relies on indirectly (through toString()) while writing every stack frame; this must not
+            // prevent every other field, including "class", from being captured
+            var configuration = new TestLogConfiguration();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(new ThrowingThrowable())
+                    .build();
+
+            // when
+            var document = assertDoesNotThrow(() -> converter.convert(event));
+
+            // then
+            assertEquals(ThrowingThrowable.class.getCanonicalName(), document.get("class"));
+            assertFalse(document.containsKey("stacktrace"));
+        }
+
+    }
+
+    private static class ThrowingMessage implements Message {
+
+        @Override
+        public String getFormattedMessage() {
+            throw new RuntimeException("Simulated formatting failure");
+        }
+
+        @Override
+        public Object[] getParameters() {
+            return new Object[0];
+        }
+
+        @Override
+        public Throwable getThrowable() {
+            return null;
+        }
+
+    }
+
+    private static class ThrowingThrowable extends RuntimeException {
+
+        @Override
+        public String getMessage() {
+            throw new RuntimeException("Simulated getMessage failure");
         }
 
     }

@@ -1,9 +1,11 @@
 package com.chavaillaz.appender.log4j;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
@@ -125,6 +127,57 @@ class AbstractBatchLogDeliveryTest {
 
             // then
             assertEquals(0, logDelivery.countBulkSent.get());
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Configuration validation")
+    class ConfigurationValidation {
+
+        @Test
+        @DisplayName("Rejects a zero maximum number of concurrent transmissions at construction")
+        void testRejectsZeroMaxConcurrentTransmissions() {
+            // given: a value of 0 would leave the internal semaphore with no permits to ever hand out,
+            // so every dispatch() would block forever instead of merely lowering throughput
+            var configuration = new TestLogConfiguration();
+            configuration.setMaxConcurrentTransmissions(0);
+
+            // when / then
+            assertThrows(IllegalArgumentException.class, () -> new TestLogDelivery(configuration));
+        }
+
+        @Test
+        @DisplayName("Rejects a negative maximum number of concurrent transmissions at construction")
+        void testRejectsNegativeMaxConcurrentTransmissions() {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setMaxConcurrentTransmissions(-1);
+
+            // when / then
+            assertThrows(IllegalArgumentException.class, () -> new TestLogDelivery(configuration));
+        }
+
+        @Test
+        @DisplayName("Tolerates a negative maximum batch size by discarding instead of failing")
+        void testNegativeMaxBatchSizeDoesNotThrow() throws Exception {
+            // given: batching disabled (threshold of 1) and every attempt failing, so every send()
+            // goes through requeue(), the method that would otherwise compute an out-of-bounds sublist
+            // range for a negative maxBatchSize
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            configuration.setMaxBatchSize(-1);
+            var listener = new RecordingListener();
+            var logDelivery = new TestLogDelivery(configuration, listener);
+            logDelivery.bulkResult = false;
+
+            // when / then
+            assertDoesNotThrow(() -> {
+                logDelivery.send(Map.of("id", 1));
+                logDelivery.awaitPendingTransmissions();
+            });
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(Map.of("id", 1)), listener.dropped.get(0).documents());
         }
 
     }
@@ -537,6 +590,46 @@ class AbstractBatchLogDeliveryTest {
             // instead of the ~150ms a single wave would take with the default limit of 4
             assertEquals(4, logDelivery.countBulkSent.get());
             assertTrue(elapsedMillis >= 250, "Expected at least two waves given the configured limit of 2, took " + elapsedMillis + "ms");
+        }
+
+        @Test
+        @DisplayName("Does not block accumulation of the next batch while notifying a slow listener of dropped documents")
+        void testSlowListenerDoesNotBlockBatchAccumulation() throws Exception {
+            // given: batching disabled (threshold of 1) and a maximum batch size of 1, so that a second
+            // failed document overflows the batch and triggers a drop notification; the listener blocks
+            // until released, to prove send() does not need to wait for it to return
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            configuration.setMaxBatchSize(1);
+            var listenerEntered = new CountDownLatch(1);
+            var releaseListener = new CountDownLatch(1);
+            var listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    listenerEntered.countDown();
+                    await(releaseListener);
+                }
+            };
+            var logDelivery = new TestLogDelivery(configuration, listener);
+            logDelivery.bulkResult = false;
+
+            // when: the first failed document is requeued without overflowing yet, then a second one
+            // overflows the batch of size 1, triggering a drop whose listener notification blocks
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.awaitPendingTransmissions();
+            logDelivery.send(Map.of("id", 2));
+            assertTrue(listenerEntered.await(2, SECONDS), "The listener should have been entered by now");
+
+            // then: send() must still be able to accumulate a new document promptly, proving it does not
+            // hold (or wait for) the same lock as the still-blocked listener call
+            var start = System.nanoTime();
+            logDelivery.send(Map.of("id", 3));
+            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+            assertTrue(elapsedMillis < 500, "send() should not wait for the listener, took " + elapsedMillis + "ms");
+
+            // cleanup
+            releaseListener.countDown();
+            logDelivery.awaitPendingTransmissions();
         }
 
         private void await(CountDownLatch latch) {

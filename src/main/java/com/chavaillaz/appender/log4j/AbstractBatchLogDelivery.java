@@ -129,10 +129,19 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      *                      {@code null} to not notify any listener
      */
     protected AbstractBatchLogDelivery(C configuration, @Nullable LogDeliveryListener listener) {
+        int concurrentTransmissions = configuration.getMaxConcurrentTransmissions();
+        if (concurrentTransmissions < 1) {
+            // A value of 0 or less would give the semaphore below no permits to ever hand out (and a
+            // negative one makes it even worse), so every dispatch() would block forever waiting for one,
+            // permanently wedging the single thread responsible for batching (and, transitively, the
+            // appender's background thread submitting work to it) instead of merely lowering throughput.
+            throw new IllegalArgumentException(
+                    "MaxConcurrentTransmissions must be at least 1, but was " + concurrentTransmissions);
+        }
         this.configuration = configuration;
         this.batch = newBatch();
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
-        this.maxConcurrentTransmissions = configuration.getMaxConcurrentTransmissions();
+        this.maxConcurrentTransmissions = concurrentTransmissions;
         this.transmissionPermits = new Semaphore(maxConcurrentTransmissions);
     }
 
@@ -288,22 +297,35 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      *
      * @param documents The documents to put back
      */
-    private synchronized void requeue(List<Map<String, Object>> documents) {
-        List<Map<String, Object>> merged = new ArrayList<>(documents.size() + batch.size());
-        merged.addAll(documents);
-        merged.addAll(batch);
+    private void requeue(List<Map<String, Object>> documents) {
+        List<Map<String, Object>> discarded = null;
+        int maxBatchSize;
+        synchronized (this) {
+            List<Map<String, Object>> merged = new ArrayList<>(documents.size() + batch.size());
+            merged.addAll(documents);
+            merged.addAll(batch);
 
-        int maxBatchSize = getMaxBatchSize();
-        int overflow = merged.size() - maxBatchSize;
-        if (overflow > 0) {
-            List<Map<String, Object>> discarded = List.copyOf(merged.subList(0, overflow));
-            log.warn("Discarding {} oldest document(s) after exceeding the maximum batch size of {} while retrying",
-                    overflow, maxBatchSize);
-            listener.onDocumentsDropped(discarded, "maximum batch size exceeded");
-            merged = new ArrayList<>(merged.subList(overflow, merged.size()));
+            maxBatchSize = getMaxBatchSize();
+            // Clamped to [0, merged.size()] so that an unexpected value of maxBatchSize (0, negative, or
+            // simply overridden by a subclass to return one of those) can never make subList() below throw,
+            // instead degrading gracefully to discarding nothing (a size larger than the batch) or
+            // everything (a size of 0 or less).
+            int overflow = Math.min(merged.size(), Math.max(0, merged.size() - maxBatchSize));
+            if (overflow > 0) {
+                discarded = List.copyOf(merged.subList(0, overflow));
+                merged = new ArrayList<>(merged.subList(overflow, merged.size()));
+            }
+
+            batch = merged;
         }
-
-        batch = merged;
+        // Notified outside the lock above: this instance's monitor is also needed by send()/flush() to
+        // accumulate the next batch, and a listener that takes a while (writing to a file, a metrics call
+        // over the network) must not be able to stall that unrelated, latency-sensitive path.
+        if (discarded != null) {
+            log.warn("Discarding {} oldest document(s) after exceeding the maximum batch size of {} while retrying",
+                    discarded.size(), maxBatchSize);
+            listener.onDocumentsDropped(discarded, "maximum batch size exceeded");
+        }
     }
 
     private void dispatch(List<Map<String, Object>> documents) {

@@ -99,6 +99,14 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             if (flushInterval == null) {
                 error("FlushInterval is not set although FlushThreshold is greater than 1, "
                         + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
+            } else if (flushInterval.toMillis() <= 0) {
+                // ScheduledExecutorService#scheduleWithFixedDelay requires a strictly positive delay (once
+                // rounded down to milliseconds, the unit it is called with below) and would otherwise throw
+                // IllegalArgumentException straight out of this method, which (unlike the other error paths
+                // of this class) would abort starting the appender entirely instead of being reported
+                // cleanly like every other misconfiguration.
+                error("FlushInterval must be at least 1ms once rounded down but was " + flushInterval + ", "
+                        + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
             } else {
                 long interval = flushInterval.toMillis();
                 flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
@@ -142,6 +150,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     @Override
     public void append(LogEvent loggingEvent) {
+        if (logDeliveryHandler == null) {
+            // createLogDeliveryHandler() failed while starting (already reported once there): log4j still
+            // calls append() on a non-started appender by default (it merely reports it through the error
+            // handler and moves on), so without this check every single log call for the remaining
+            // lifetime of the application would keep paying for a snapshot, a background thread hand-off
+            // and a task execution doomed to fail, instead of this cheap, immediate no-op.
+            return;
+        }
+
         // Captures an immutable snapshot of the event on the calling thread, as log4j2 may reuse
         // (mutate) the given event object once this method returns, which would corrupt the data
         // read later by the background thread if a mutable reference was kept instead.

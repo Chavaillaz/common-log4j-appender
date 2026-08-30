@@ -118,6 +118,54 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Reports an error and does not schedule a periodic flush when FlushInterval is zero")
+        void testWithThreadPool_ZeroFlushInterval() throws Exception {
+            // given: ScheduledExecutorService#scheduleWithFixedDelay requires a strictly positive delay
+            // and would otherwise throw IllegalArgumentException straight out of start()
+            var logEvent = mockLogEvent();
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ZERO);
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when / then: starting must not throw despite the invalid configuration
+            assertDoesNotThrow(appender::start);
+            assertFalse(errors.isEmpty(), "The invalid FlushInterval should have been reported");
+
+            // when
+            appender.append(logEvent);
+            sleep(100);
+
+            // then: without a scheduler, only the immediate append is processed, never a periodic flush
+            assertEquals(1, appender.getCountTaskExecuted().get());
+            verify(appender.getLogDeliveryHandler(), never()).flush();
+
+            // cleanup
+            appender.stop();
+        }
+
+        @Test
+        @DisplayName("Reports an error and does not schedule a periodic flush when FlushInterval is negative")
+        void testWithThreadPool_NegativeFlushInterval() throws Exception {
+            // given
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ofMillis(-100));
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when / then
+            assertDoesNotThrow(appender::start);
+            assertFalse(errors.isEmpty(), "The invalid FlushInterval should have been reported");
+
+            // cleanup
+            appender.stop();
+        }
+
+        @Test
         @DisplayName("Does not schedule a periodic flush when the flush threshold disables batching")
         void testWithoutThreadPool() throws Exception {
             // given
@@ -219,6 +267,38 @@ class AbstractLogDeliveryAppenderTest {
             // when / then: logging after the appender stopped must never propagate to the application thread
             assertDoesNotThrow(() -> appender.append(mockLogEvent()));
             assertFalse(errors.isEmpty(), "The rejection should still be reported through the error handler");
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Handler creation failure")
+    class HandlerCreationFailure {
+
+        @Test
+        @DisplayName("Reports the failure once and skips processing further events instead of failing on every one")
+        void testAppendIsNoOpAfterHandlerCreationFailed() throws Exception {
+            // given: createLogDeliveryHandler() always fails, so getLogDeliveryHandler() stays null
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var appender = new FailStartLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when
+            appender.start();
+            assertEquals(1, errors.size(), "The startup failure should have been reported exactly once");
+            for (int i = 0; i < 5; i++) {
+                appender.append(mockLogEvent());
+            }
+            appender.stop(2, SECONDS);
+
+            // then: append() never even attempted to create a delivery task for a handler that never
+            // started, instead of paying for a snapshot, a background thread hand-off and a doomed task
+            // on every single one of the 5 events above
+            assertEquals(0, appender.getCountTaskCreated().get());
+            assertEquals(1, errors.size(), "No additional error should have been reported for the skipped events");
         }
 
     }
@@ -373,6 +453,29 @@ class AbstractLogDeliveryAppenderTest {
                     Thread.currentThread().interrupt();
                 }
                 events.add("send");
+            };
+        }
+
+    }
+
+    @Getter
+    static class FailStartLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        AtomicInteger countTaskCreated = new AtomicInteger();
+
+        protected FailStartLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
+            super(name, filter, layout, configuration);
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            throw new RuntimeException("Simulated startup failure");
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            countTaskCreated.incrementAndGet();
+            return () -> {
             };
         }
 

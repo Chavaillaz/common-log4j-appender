@@ -59,9 +59,9 @@ public interface LogConfiguration {
     /**
      * Sets the threshold number of messages triggering the transmission of the logs.
      *
-     * @param messageNumber The threshold number of messages
+     * @param flushThreshold The threshold number of messages
      */
-    void setFlushThreshold(long messageNumber);
+    void setFlushThreshold(long flushThreshold);
 
     /**
      * Gets the maximum time interval between two flushes.
@@ -83,9 +83,11 @@ public interface LogConfiguration {
      * Gets the maximum number of batches that can be transmitted concurrently by a batch-based log delivery.
      * Beyond this limit, forming the next batch waits for one of the current transmissions to complete
      * before it can be handed over, so that the downstream system is never overwhelmed with unbounded
-     * concurrent requests. Defaults to {@code 4}; override to raise or lower this limit.
+     * concurrent requests. Defaults to {@code 4}; override to raise or lower this limit, but never to
+     * less than {@code 1} (a value of {@code 0} or less would leave every transmission waiting forever,
+     * since none could ever be granted permission to run).
      *
-     * @return The maximum number of concurrent transmissions
+     * @return The maximum number of concurrent transmissions, at least {@code 1}
      */
     default int getMaxConcurrentTransmissions() {
         return 4;

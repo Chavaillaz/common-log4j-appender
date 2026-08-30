@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
+import lombok.extern.log4j.Log4j2;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.message.Message;
@@ -34,6 +35,7 @@ import com.chavaillaz.appender.LogConfiguration;
  *     {@link #getMaxStackTraceLength()} characters</li>
  * </ul>
  */
+@Log4j2
 public class DefaultLogConverter implements LogConverter {
 
     /**
@@ -101,10 +103,31 @@ public class DefaultLogConverter implements LogConverter {
         document.put("level", Optional.ofNullable(event.getLevel())
                 .map(Level::toString)
                 .orElse(null));
-        document.put("logmessage", Optional.ofNullable(event.getMessage())
-                .map(Message::getFormattedMessage)
-                .orElse(null));
+        document.put("logmessage", formatMessage(event.getMessage()));
         document.put("thread", event.getThreadName());
+    }
+
+    /**
+     * Formats the given message, tolerating a {@link Message} implementation (typically a custom one
+     * supplied by the application, since every implementation bundled with Log4j2 already guards its own
+     * formatting) whose {@link Message#getFormattedMessage()} throws instead of letting the exception
+     * propagate out of {@link #convert(LogEvent)}, which would otherwise discard the whole document (and
+     * with it every other field already written for this event) instead of just the message.
+     *
+     * @param message The message to format, or {@code null}
+     * @return The formatted message, {@code null} if the given message was {@code null}, or a short
+     *         placeholder describing the failure if formatting it threw
+     */
+    private String formatMessage(Message message) {
+        if (message == null) {
+            return null;
+        }
+        try {
+            return message.getFormattedMessage();
+        } catch (Exception e) {
+            log.warn("Unable to format the message of a logging event, using a placeholder instead", e);
+            return "<unable to format message: " + e + ">";
+        }
     }
 
     /**
@@ -129,7 +152,15 @@ public class DefaultLogConverter implements LogConverter {
         Throwable throwable = event.getThrown();
         if (throwable != null) {
             document.put("class", throwable.getClass().getCanonicalName());
-            document.put("stacktrace", getStackTrace(throwable));
+            try {
+                document.put("stacktrace", getStackTrace(throwable));
+            } catch (Exception e) {
+                // A custom Throwable subclass could override getMessage()/getCause()/toString() (all
+                // exercised by printStackTrace()) in a way that itself throws; losing only this one field
+                // instead of the whole document (as an uncaught exception here would, since this is called
+                // from convert()) still leaves every other field written so far usable.
+                log.warn("Unable to compute the stack trace of a logging event, the field will be omitted", e);
+            }
         }
     }
 

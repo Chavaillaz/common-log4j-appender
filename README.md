@@ -230,7 +230,7 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `Environment`   | Name of the environment in which the application is running, included in every document.                   |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. Use `1` to send every log individually (no batching), or a higher value to reduce the number of requests sent to the external system. |
 | `FlushInterval` | Maximum time between two transmissions: even a partially filled batch is sent once this interval elapses, so logs are not delayed indefinitely under low traffic. Only relevant when `FlushThreshold` is greater than `1`. |
-| `MaxConcurrentTransmissions` | Maximum number of batches transmitted at the same time (see step 4 above). Defaults to `4`; raise it for a downstream system that can absorb more concurrent requests, or lower it (e.g. to `1`) to strictly serialize transmissions. |
+| `MaxConcurrentTransmissions` | Maximum number of batches transmitted at the same time (see step 4 above). Defaults to `4`; raise it for a downstream system that can absorb more concurrent requests, or lower it to as little as `1` to strictly serialize transmissions (a value below `1` is rejected, as it would leave every transmission waiting forever). |
 | `MaxBatchSize` | Maximum number of documents a pending batch can hold while waiting to be (re)transmitted, discarding the oldest ones past that point (see step 5 above). Defaults to `10'000`. |
 | `MaxConsecutiveFailures` | Maximum number of consecutive failed attempts allowed for the same batch before it is discarded instead of retried again (see step 5 above). Defaults to `5`. |
 
