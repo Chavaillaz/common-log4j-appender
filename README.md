@@ -228,6 +228,17 @@ attention in production — it fires only when documents are irrecoverably disca
 above), which should normally never happen and is worth alerting on. It receives the actual documents (an
 unmodifiable list), not just a count, as a last chance to save them.
 
+`FileDeadLetterListener` provides a ready-made `onDocumentsDropped` for the most common case, so you don't
+have to write your own from scratch: it appends every dropped document to a local file, one JSON object per
+line (newline-delimited JSON), wrapped with the reason and a timestamp, so nothing irrecoverably discarded
+is lost outright even without a metrics/alerting setup in place yet.
+
+```java
+new FileDeadLetterListener(Path.of("/var/log/myapp/dead-letters.ndjson"));
+```
+
+Use it as-is, or compose it with your own listener (e.g. one that also records metrics) if you need both.
+
 ## Configuration reference
 
 These settings are defined by `LogConfiguration` and used regardless of the delivery mechanism (each
