@@ -5,16 +5,13 @@ import static java.util.Collections.singletonList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.Semaphore;
 
 import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
 import org.jspecify.annotations.Nullable;
 
-import com.chavaillaz.appender.BoundedTrim;
+import com.chavaillaz.appender.Batcher;
+import com.chavaillaz.appender.BatcherListener;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -37,44 +34,26 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * <p>
  * Two safety nets bound the cost of a struggling downstream system, or of a single "poison document" it can
  * never accept, so neither can grow memory without bound or wedge the pipeline forever: the pending batch
- * is capped at {@link LogConfiguration#getMaxPendingDocuments()} via the shared {@link BoundedTrim} policy
- * (oldest documents discarded past that, both while accumulating and while requeuing after a failure, the
- * same policy {@link AbstractLogDeliveryAppender}'s own pending event queue applies), and a batch that fails
- * {@link LogConfiguration#getMaxConsecutiveFailures()} times in a row (tracked per batch, not delivery-wide,
- * so an unrelated batch succeeding concurrently can never reset it) is discarded instead of retried
- * indefinitely. Both are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}, so
- * this data loss is never silent.
+ * is capped at {@link LogConfiguration#getMaxPendingDocuments()} via the shared {@link com.chavaillaz.appender.BoundedTrim}
+ * policy (oldest documents discarded past that, both while accumulating and while requeuing after a
+ * failure, the same policy {@link AbstractLogDeliveryAppender}'s own pending event queue applies), and a
+ * batch that fails {@link LogConfiguration#getMaxConsecutiveFailures()} times in a row (tracked per batch,
+ * not delivery-wide, so an unrelated batch succeeding concurrently can never reset it) is discarded instead
+ * of retried indefinitely. Both are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)},
+ * so this data loss is never silent.
  * <p>
  * A batch due for (re)transmission bigger than {@link LogConfiguration#getMaxRequestDocuments()} is first
- * split into chunks of at most that size (see {@link #dispatch(List, int)}), each dispatched, retried and
- * (subject to {@link LogConfiguration#getMaxConcurrentTransmissions()}) transmitted independently. Disabled
- * by default; only matters for a downstream system with its own limit on documents or payload size per
- * request.
+ * split into chunks of at most that size, each dispatched, retried and (subject to
+ * {@link LogConfiguration#getMaxConcurrentTransmissions()}) transmitted independently. Disabled by default;
+ * only matters for a downstream system with its own limit on documents or payload size per request.
+ * <p>
+ * The generic accumulate/backpressure/retry machinery itself lives in {@link Batcher}; this class is a thin
+ * adapter wiring it to {@link LogConfiguration}, {@link LogDelivery} and {@link LogDeliveryListener}.
  *
  * @param <C> The configuration type
  */
 @Log4j2
 public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> implements LogDelivery {
-
-    /**
-     * Maximum initial capacity reserved for a new batch, to avoid over-allocating for a large threshold.
-     */
-    private static final int MAX_INITIAL_BATCH_CAPACITY = 1_024;
-
-    /**
-     * The list of logs documents to be sent with the next transmission
-     */
-    private List<Map<String, Object>> batch;
-
-    /**
-     * Number of consecutive times the data currently in {@link #batch} has already failed to be transmitted
-     * (0 if never attempted). Carried forward (keeping the higher of the two when merged) by
-     * {@link #requeue(List, int)}, and reset to {@code 0} when {@link #swapBatch()} swaps in a fresh batch,
-     * since the returned snapshot then owns its own streak through {@link #dispatch(List, int)}.
-     * <p>
-     * Always guarded by the monitor of this instance, like {@link #batch} itself.
-     */
-    private int pendingFailureStreak;
 
     @Getter
     private final C configuration;
@@ -85,29 +64,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     @Getter
     private LogDeliveryListener listener;
 
-    /**
-     * Executor transmitting batches on virtual threads, so that network I/O never blocks the thread
-     * accumulating the next batch.
-     */
-    private final ExecutorService transmissionExecutor = Executors.newThreadPerTaskExecutor(
-            Thread.ofVirtual().name("log-delivery-transmission-", 0).factory());
-
-    /**
-     * The maximum number of batches transmitted concurrently, as given by
-     * {@link LogConfiguration#getMaxConcurrentTransmissions()} at construction time.
-     */
-    private final int maxConcurrentTransmissions;
-
-    /**
-     * Bounds the number of batches transmitted concurrently to {@link #maxConcurrentTransmissions}.
-     */
-    private final Semaphore transmissionPermits;
-
-    /**
-     * Whether the last completed transmission attempt failed, used to avoid retrying on every single new
-     * message received while batching is enabled and the downstream system is unavailable or failing.
-     */
-    private volatile boolean transmissionFailed;
+    private final Batcher<Map<String, Object>> batcher;
 
     /**
      * Creates a new logs delivery handler sending them by batches.
@@ -126,27 +83,43 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      *                      {@code null} to not notify any listener
      */
     protected AbstractBatchLogDelivery(C configuration, @Nullable LogDeliveryListener listener) {
-        int concurrentTransmissions = configuration.getMaxConcurrentTransmissions();
-        if (concurrentTransmissions < 1) {
-            // A value of 0 or less would give the semaphore below no permits to ever hand out, so every
-            // dispatch() would block forever instead of merely lowering throughput.
-            throw new IllegalArgumentException(
-                    "MaxConcurrentTransmissions must be at least 1, but was " + concurrentTransmissions);
-        }
         this.configuration = configuration;
         warnAboutDegradedConfiguration(configuration);
-        this.batch = newBatch();
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
-        this.maxConcurrentTransmissions = concurrentTransmissions;
-        this.transmissionPermits = new Semaphore(maxConcurrentTransmissions);
+        this.batcher = new Batcher<>(
+                configuration::getFlushThreshold,
+                this::getMaxPendingDocuments,
+                this::getMaxRequestDocuments,
+                this::getMaxConsecutiveFailures,
+                configuration.getMaxConcurrentTransmissions(),
+                "log-delivery-transmission-",
+                "document",
+                this::sendBulk,
+                new BatcherListener<>() {
+                    @Override
+                    public void onSucceeded(int count, long durationMillis) {
+                        AbstractBatchLogDelivery.this.listener.onTransmissionSucceeded(count, durationMillis);
+                    }
+
+                    @Override
+                    public void onFailed(int count, @Nullable Throwable cause) {
+                        AbstractBatchLogDelivery.this.listener.onTransmissionFailed(count, cause);
+                    }
+
+                    @Override
+                    public void onDropped(List<Map<String, Object>> dropped, String reason) {
+                        AbstractBatchLogDelivery.this.listener.onDocumentsDropped(dropped, reason);
+                    }
+                });
     }
 
     /**
      * Warns about configuration values that degrade this delivery's functionality instead of leaving it
      * fully working, so a misconfiguration is visible at startup instead of only showing up later as
      * unexplained data loss or runaway retries. Unlike {@code MaxConcurrentTransmissions} below {@code 1}
-     * (checked above, and thrown rather than warned about), none of these leave the pipeline stuck: a
-     * request never blocks waiting for one, so they are deliberately still allowed, only reported.
+     * (validated by {@link Batcher}'s constructor below, which throws rather than warns), none of these
+     * leave the pipeline stuck: a request never blocks waiting for one, so they are deliberately still
+     * allowed, only reported.
      *
      * @param configuration The configuration to inspect
      */
@@ -192,9 +165,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * Maximum number of documents sent together in a single request; a bigger pending batch is split into
-     * chunks of at most this size before dispatch (see {@link #dispatch(List, int)}). Defaults to
-     * {@link LogConfiguration#getMaxRequestDocuments()} (unbounded, no chunking); override if the limit
-     * should depend on more than just the configuration.
+     * chunks of at most this size before dispatch. Defaults to {@link LogConfiguration#getMaxRequestDocuments()}
+     * (unbounded, no chunking); override if the limit should depend on more than just the configuration.
      *
      * @return The maximum number of documents sent together in a single request
      */
@@ -213,12 +185,6 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     protected int getMaxConsecutiveFailures() {
         return configuration.getMaxConsecutiveFailures();
-    }
-
-    private List<Map<String, Object>> newBatch() {
-        long threshold = configuration.getFlushThreshold();
-        int capacity = threshold > 0 ? (int) Math.min(threshold, MAX_INITIAL_BATCH_CAPACITY) : 16;
-        return new ArrayList<>(capacity);
     }
 
     /**
@@ -245,7 +211,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         if (documents != null && !documents.isEmpty()) {
             List<Map<String, Object>> filtered = withoutNullElements(documents);
             if (!filtered.isEmpty()) {
-                stackAndSend(filtered);
+                batcher.add(filtered);
             }
         }
     }
@@ -285,274 +251,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     @Override
     public void flush() {
-        PendingBatch snapshot;
-        synchronized (this) {
-            if (batch.isEmpty()) {
-                return;
-            }
-            log.debug("Sending partial batch of {}/{}", batch.size(), configuration.getFlushThreshold());
-            snapshot = swapBatch();
-        }
-        dispatch(snapshot.documents(), snapshot.failureStreak());
-    }
-
-    private void stackAndSend(List<Map<String, Object>> data) {
-        PendingBatch snapshot = null;
-        List<Map<String, Object>> discarded;
-        int maxPendingDocuments;
-        synchronized (this) {
-            batch.addAll(data);
-            log.trace("Stacking batch {}/{}", batch.size(), configuration.getFlushThreshold());
-
-            // Enforces the same cap as requeue() here too, so MaxPendingDocuments bounds memory even when
-            // FlushThreshold is set higher (or effectively unbounded) and nothing is actually failing.
-            maxPendingDocuments = getMaxPendingDocuments();
-            BoundedTrim.Trimmed<Map<String, Object>> trimmed = BoundedTrim.trim(batch, maxPendingDocuments);
-            batch = trimmed.kept();
-            discarded = trimmed.discarded();
-
-            boolean batchingEnabled = configuration.getFlushThreshold() > 1;
-            boolean thresholdReached = batch.size() >= configuration.getFlushThreshold();
-            if (thresholdReached && !(batchingEnabled && transmissionFailed)) {
-                snapshot = swapBatch();
-            }
-        }
-        // Notified asynchronously (see notifyDropped()) since this runs directly on whatever thread called
-        // send() (in practice, the appender's single background worker thread): a slow listener must not
-        // stall it.
-        if (discarded != null) {
-            log.warn("Discarding {} oldest document(s) after exceeding the maximum pending documents of {} while accumulating",
-                    discarded.size(), maxPendingDocuments);
-            notifyDropped(discarded, "maximum pending documents exceeded");
-        }
-        if (snapshot != null) {
-            dispatch(snapshot.documents(), snapshot.failureStreak());
-        }
-    }
-
-    /**
-     * The content of {@link #batch} at the time it was swapped out, together with the number of times that
-     * same content had already failed to be transmitted (see {@link #pendingFailureStreak}).
-     *
-     * @param documents     The content of the batch prior to the swap
-     * @param failureStreak The failure streak inherited from {@link #pendingFailureStreak} at the time of
-     *                      the swap
-     */
-    private record PendingBatch(List<Map<String, Object>> documents, int failureStreak) {
-
-    }
-
-    /**
-     * Replaces the current batch with a new, fresh (never failed) empty one and returns its previous
-     * content together with the failure streak it had accumulated so far, so accumulation of the next batch
-     * can start immediately while the returned one is being transmitted.
-     * <p>
-     * Must be called while holding the monitor of this instance.
-     *
-     * @return The content of the batch prior to the swap, and its failure streak
-     */
-    private PendingBatch swapBatch() {
-        PendingBatch previous = new PendingBatch(batch, pendingFailureStreak);
-        batch = newBatch();
-        pendingFailureStreak = 0;
-        return previous;
-    }
-
-    /**
-     * Puts back the documents of a failed (or not attempted) transmission at the front of the current
-     * batch, so they are retried before any newer document, discarding the oldest documents in excess if
-     * this would grow the batch past {@link #getMaxPendingDocuments()}.
-     *
-     * @param documents     The documents to put back
-     * @param failureStreak The number of consecutive times this exact content has already failed to be
-     *                      transmitted (0 if it was never actually attempted, e.g. because acquiring a
-     *                      transmission permit was interrupted)
-     */
-    private void requeue(List<Map<String, Object>> documents, int failureStreak) {
-        List<Map<String, Object>> discarded;
-        int maxPendingDocuments;
-        synchronized (this) {
-            List<Map<String, Object>> merged = new ArrayList<>(documents.size() + batch.size());
-            merged.addAll(documents);
-            merged.addAll(batch);
-
-            maxPendingDocuments = getMaxPendingDocuments();
-            BoundedTrim.Trimmed<Map<String, Object>> trimmed = BoundedTrim.trim(merged, maxPendingDocuments);
-            batch = trimmed.kept();
-            discarded = trimmed.discarded();
-
-            // The live batch might already carry forward a streak of its own (from a different failed
-            // chunk merged in moments earlier by a concurrent transmission); keeping the higher of the two
-            // is the conservative choice, since the merged batch is at least as "tainted" as its worst
-            // ingredient.
-            pendingFailureStreak = Math.max(pendingFailureStreak, failureStreak);
-        }
-        // Notified outside the lock: it's also needed to accumulate the next batch, and a slow listener
-        // must not stall that. Called directly (not via notifyDropped()) since this is reached either from
-        // onTransmissionFailure() (already on transmissionExecutor's own thread) or, more rarely, from a
-        // failed dispatch handoff — never from the application-facing caller of send()/flush().
-        if (discarded != null) {
-            log.warn("Discarding {} oldest document(s) after exceeding the maximum pending documents of {} while retrying",
-                    discarded.size(), maxPendingDocuments);
-            notifyListener(() -> listener.onDocumentsDropped(discarded, "maximum pending documents exceeded"));
-        }
-    }
-
-    /**
-     * Notifies {@link #listener} of dropped documents on a fresh virtual thread rather than the calling
-     * one, so a slow listener (writing to a file, a network call) can never stall it. Used only by
-     * {@link #stackAndSend(List)}, reached directly from the caller of {@code send()} (in practice, the
-     * appender's single background worker thread); every other discard in this class is already off that
-     * path and notified directly instead.
-     * <p>
-     * Best-effort: not tracked by {@link #transmissionPermits}, so {@link #awaitPendingTransmissions()} (and
-     * transitively {@link #close()}) does not wait for it; lost entirely if the executor is already
-     * shutting down.
-     *
-     * @param documents The documents being discarded
-     * @param reason    A short, human-readable explanation of why they were discarded
-     */
-    private void notifyDropped(List<Map<String, Object>> documents, String reason) {
-        try {
-            transmissionExecutor.execute(() -> notifyListener(() -> listener.onDocumentsDropped(documents, reason)));
-        } catch (RejectedExecutionException e) {
-            log.warn("Unable to notify the listener of {} dropped document(s), the delivery is shutting down",
-                    documents.size());
-        }
-    }
-
-    /**
-     * Dispatches the given documents for transmission, splitting them into consecutive chunks of at most
-     * {@link #getMaxRequestDocuments()} first if needed, each chunk then handed to
-     * {@link #dispatchChunk(List, int)} independently (see the class documentation for what that means for
-     * concurrency and retries).
-     *
-     * @param documents     The documents to dispatch, possibly more than one request's worth
-     * @param failureStreak The number of consecutive times this exact content has already failed to be
-     *                      transmitted, inherited by every chunk split off from it
-     */
-    private void dispatch(List<Map<String, Object>> documents, int failureStreak) {
-        int maxRequestDocuments = getMaxRequestDocuments();
-        if (maxRequestDocuments > 0 && documents.size() > maxRequestDocuments) {
-            for (List<Map<String, Object>> chunk : chunk(documents, maxRequestDocuments)) {
-                dispatchChunk(chunk, failureStreak);
-            }
-        } else {
-            dispatchChunk(documents, failureStreak);
-        }
-    }
-
-    /**
-     * Splits the given list into consecutive, independent chunks of at most {@code chunkSize} elements each
-     * (the last one possibly smaller), preserving order.
-     *
-     * @param documents The documents to split
-     * @param chunkSize The maximum size of each chunk, guaranteed positive by the only caller
-     * @return The list of chunks, in original order
-     */
-    private static List<List<Map<String, Object>>> chunk(List<Map<String, Object>> documents, int chunkSize) {
-        List<List<Map<String, Object>>> chunks = new ArrayList<>((documents.size() + chunkSize - 1) / chunkSize);
-        for (int i = 0; i < documents.size(); i += chunkSize) {
-            chunks.add(List.copyOf(documents.subList(i, Math.min(i + chunkSize, documents.size()))));
-        }
-        return chunks;
-    }
-
-    /**
-     * Dispatches a single chunk (at most {@link #getMaxRequestDocuments()} documents) for transmission on
-     * its own virtual thread, bounded by {@link #transmissionPermits} like any other request. Acquiring a
-     * permit may block the caller (see the class documentation on
-     * {@link LogConfiguration#getMaxConcurrentTransmissions()} for why that is an accepted trade-off), but
-     * the actual transmission never does.
-     *
-     * @param documents     The chunk to dispatch
-     * @param failureStreak The number of consecutive times this exact content has already failed to be
-     *                      transmitted
-     */
-    private void dispatchChunk(List<Map<String, Object>> documents, int failureStreak) {
-        try {
-            transmissionPermits.acquire();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            requeue(documents, failureStreak);
-            return;
-        }
-
-        try {
-            transmissionExecutor.execute(() -> transmit(documents, failureStreak));
-        } catch (RejectedExecutionException e) {
-            transmissionPermits.release();
-            requeue(documents, failureStreak);
-        }
-    }
-
-    private void transmit(List<Map<String, Object>> documents, int failureStreak) {
-        long start = System.nanoTime();
-        try {
-            boolean success;
-            Exception failure = null;
-            try {
-                success = sendBulk(documents);
-            } catch (Exception e) {
-                log.warn("Unhandled exception while sending a bulk of {} documents", documents.size(), e);
-                success = false;
-                failure = e;
-            }
-
-            long durationMillis = (System.nanoTime() - start) / 1_000_000;
-            transmissionFailed = !success;
-            if (success) {
-                notifyListener(() -> listener.onTransmissionSucceeded(documents.size(), durationMillis));
-            } else {
-                Exception cause = failure;
-                notifyListener(() -> listener.onTransmissionFailed(documents.size(), cause));
-                // Runs regardless of whether the notification above threw: a misbehaving listener must
-                // never skip the retry/give-up handling below, or the failed documents would be lost
-                // silently.
-                onTransmissionFailure(documents, failureStreak);
-            }
-        } finally {
-            transmissionPermits.release();
-        }
-    }
-
-    /**
-     * Invokes the given listener notification, logging and swallowing any exception a misbehaving
-     * {@link LogDeliveryListener} might throw. Matters most before {@link #onTransmissionFailure(List, int)}
-     * in {@link #transmit(List, int)}: without this guard, a throwing {@code onTransmissionFailed} would
-     * skip that call, losing the failed documents without requeuing or reporting them dropped.
-     *
-     * @param notification The listener call to perform
-     */
-    private void notifyListener(Runnable notification) {
-        try {
-            notification.run();
-        } catch (Exception e) {
-            log.warn("Unhandled exception thrown by a LogDeliveryListener", e);
-        }
-    }
-
-    /**
-     * Handles a failed transmission attempt: either discards the given documents once
-     * {@link #getMaxConsecutiveFailures()} has been reached, or puts them back for a later retry.
-     *
-     * @param documents     The documents that failed to be transmitted
-     * @param failureStreak The number of consecutive times this exact content had already failed before
-     *                      this attempt
-     */
-    private void onTransmissionFailure(List<Map<String, Object>> documents, int failureStreak) {
-        int maxConsecutiveFailures = getMaxConsecutiveFailures();
-        int newFailureStreak = failureStreak + 1;
-        if (maxConsecutiveFailures > 0 && newFailureStreak >= maxConsecutiveFailures) {
-            log.error("Giving up on {} document(s) after {} consecutive failed transmission attempts, they will be discarded",
-                    documents.size(), newFailureStreak);
-            // Called directly (not via notifyDropped()): already running on transmissionExecutor's own
-            // thread, and keeping this under the same permit transmit() still holds lets
-            // awaitPendingTransmissions() observe it, same as the transmission itself.
-            notifyListener(() -> listener.onDocumentsDropped(List.copyOf(documents), "maximum consecutive transmission failures exceeded"));
-        } else {
-            requeue(documents, newFailureStreak);
-        }
+        batcher.flush();
     }
 
     /**
@@ -573,15 +272,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     @Override
     public void close() throws Exception {
-        try {
-            flush();
-            awaitPendingTransmissions();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("Interrupted while waiting for pending log transmissions to complete");
-        } finally {
-            transmissionExecutor.shutdown();
-        }
+        batcher.close();
     }
 
     /**
@@ -592,8 +283,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * Also used by tests to deterministically wait for asynchronous transmissions to complete.
      */
     void awaitPendingTransmissions() throws InterruptedException {
-        transmissionPermits.acquire(maxConcurrentTransmissions);
-        transmissionPermits.release(maxConcurrentTransmissions);
+        batcher.awaitPendingTransmissions();
     }
 
 }
