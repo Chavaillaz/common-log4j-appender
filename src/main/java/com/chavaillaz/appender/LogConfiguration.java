@@ -4,6 +4,14 @@ import java.time.Duration;
 
 /**
  * Configuration for logs transmission.
+ * <p>
+ * A read-only contract deliberately without setters: an implementation is expected to be immutable (e.g. a
+ * {@code record}, or a plain class built once via a builder) rather than mutated after being handed to an
+ * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender}/{@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery}
+ * pair, which read it repeatedly (not just once at construction) from a background thread with no
+ * synchronization of their own around these reads. Log4j2's own {@code @PluginBuilderFactory} builder
+ * pattern already produces exactly this shape: mutable fields on the builder, an immutable object out of
+ * its {@code build()}.
  */
 public interface LogConfiguration {
 
@@ -15,25 +23,11 @@ public interface LogConfiguration {
     String getApplication();
 
     /**
-     * Sets the name of the application generating the logs.
-     *
-     * @param application The application name
-     */
-    void setApplication(String application);
-
-    /**
      * Gets the name of the host the application is running on.
      *
      * @return The host name
      */
     String getHost();
-
-    /**
-     * Sets the name of the host the application is running on.
-     *
-     * @param host The host name
-     */
-    void setHost(String host);
 
     /**
      * Gets the name of the environment the application is running in.
@@ -43,25 +37,11 @@ public interface LogConfiguration {
     String getEnvironment();
 
     /**
-     * Sets the name of the environment the application is running in.
-     *
-     * @param environment The environment name
-     */
-    void setEnvironment(String environment);
-
-    /**
      * Gets the number of messages accumulated before triggering a transmission.
      *
      * @return The flush threshold
      */
     long getFlushThreshold();
-
-    /**
-     * Sets the number of messages accumulated before triggering a transmission.
-     *
-     * @param flushThreshold The flush threshold
-     */
-    void setFlushThreshold(long flushThreshold);
 
     /**
      * Gets the maximum time between two transmissions: past this interval, a transmission is triggered even
@@ -70,14 +50,6 @@ public interface LogConfiguration {
      * @return The flush interval
      */
     Duration getFlushInterval();
-
-    /**
-     * Sets the maximum time between two transmissions: past this interval, a transmission is triggered even
-     * if {@link #getFlushThreshold()} was not reached yet.
-     *
-     * @param flushInterval The flush interval
-     */
-    void setFlushInterval(Duration flushInterval);
 
     /**
      * Maximum number of batches a batch-based log delivery transmits concurrently; forming the next batch

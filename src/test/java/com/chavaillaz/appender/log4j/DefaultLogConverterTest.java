@@ -31,10 +31,10 @@ class DefaultLogConverterTest {
     @DisplayName("Converts every field of a fully populated logging event")
     void testConversion() {
         // given
-        var configuration = new TestLogConfiguration();
-        configuration.setHost("my-host");
-        configuration.setEnvironment("pre-production");
-        configuration.setApplication("my-application");
+        var configuration = TestLogConfiguration.builder()
+                .host("my-host")
+                .environment("pre-production")
+                .application("my-application").build();
         var converter = new DefaultLogConverter();
         converter.configure(configuration);
         var mdc = new JdkMapAdapterStringMap();
@@ -77,7 +77,7 @@ class DefaultLogConverterTest {
         @DisplayName("Does not include exception fields when the event carries no exception")
         void testConversionWithoutException() {
             // given
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
@@ -98,7 +98,7 @@ class DefaultLogConverterTest {
         @DisplayName("Does not fail when the event carries no MDC context data")
         void testConversionWithoutMdc() {
             // given
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
@@ -115,8 +115,7 @@ class DefaultLogConverterTest {
         @DisplayName("Does not let an MDC entry override a reserved field")
         void testConversionMdcDoesNotOverrideReservedFields() {
             // given: MDC contains a key colliding with one of the fields written by the converter itself
-            var configuration = new TestLogConfiguration();
-            configuration.setHost("real-host");
+            var configuration = TestLogConfiguration.builder().host("real-host").build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var mdc = new JdkMapAdapterStringMap();
@@ -138,7 +137,7 @@ class DefaultLogConverterTest {
         @DisplayName("Falls back to the logger name when the fully qualified caller class name is missing")
         void testConversionFallsBackToLoggerNameWhenFqcnMissing() {
             // given
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
@@ -158,7 +157,7 @@ class DefaultLogConverterTest {
         @DisplayName("Converts a null message to a null logmessage field")
         void testConversionWithNullMessage() {
             // given
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
@@ -176,7 +175,7 @@ class DefaultLogConverterTest {
         @DisplayName("Truncates the stack trace once it exceeds the configured maximum length")
         void testConversionTruncatesLongStackTrace() {
             // given
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter() {
                 @Override
                 protected int getMaxStackTraceLength() {
@@ -204,7 +203,7 @@ class DefaultLogConverterTest {
         void testConversionDoesNotTruncateShortStackTrace() {
             // given: a stack trace pinned to a single frame, since the real one at this point in the test
             // includes the whole JUnit/reflection call chain and could otherwise exceed the default limit
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var exception = new RuntimeException("my-exception");
@@ -230,7 +229,7 @@ class DefaultLogConverterTest {
         void testNonPositiveMaxStackTraceLengthDisablesTruncation(int maxStackTraceLength) {
             // given: a deliberately deep (and therefore long) cause chain, which would normally exceed
             // the default limit and be truncated
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter() {
                 @Override
                 protected int getMaxStackTraceLength() {
@@ -262,7 +261,7 @@ class DefaultLogConverterTest {
         void testConversionToleratesThrowingMessage() {
             // given: a custom Message implementation (unlike every one bundled with Log4j2) that throws
             // while formatting itself, which must not prevent every other field from being captured
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
@@ -286,7 +285,7 @@ class DefaultLogConverterTest {
             // given: a custom Throwable whose getMessage() throws, which Throwable#printStackTrace()
             // relies on indirectly (through toString()) while writing every stack frame; this must not
             // prevent every other field, including "class", from being captured
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
@@ -309,7 +308,7 @@ class DefaultLogConverterTest {
             // given: a custom ReadOnlyStringMap (unlike the one bundled with Log4j2) whose forEach() throws,
             // which must not prevent every other field, already written before writeMDC() runs, from being
             // captured
-            var configuration = new TestLogConfiguration();
+            var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter();
             converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()

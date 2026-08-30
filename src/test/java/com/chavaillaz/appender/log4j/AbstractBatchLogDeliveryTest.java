@@ -41,8 +41,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Does not trigger a transmission")
         void testNotSendingBelowThreshold() {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -56,8 +55,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Flushing an empty batch does not trigger a transmission")
         void testNotSendingEmpty() {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -72,8 +70,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Sending null or no documents does not trigger a transmission")
         void testNotSendingNullOrEmptyList(List<Map<String, Object>> documents) {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -87,8 +84,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Sending a null document does not trigger a transmission nor stack a null entry")
         void testNotSendingNullDocument() throws Exception {
             // given: a LogConverter returning null (e.g. to signal "skip this event") must be tolerated
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -103,8 +99,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Filters out null elements of a list before stacking them")
         void testFiltersOutNullElementsOfList() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -120,8 +115,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Does not trigger a transmission when a list only contains null elements")
         void testNotSendingListOfOnlyNullElements() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -143,8 +137,7 @@ class AbstractBatchLogDeliveryTest {
         void testRejectsZeroMaxConcurrentTransmissions() {
             // given: a value of 0 would leave the internal semaphore with no permits to ever hand out,
             // so every dispatch() would block forever instead of merely lowering throughput
-            var configuration = new TestLogConfiguration();
-            configuration.setMaxConcurrentTransmissions(0);
+            var configuration = TestLogConfiguration.builder().maxConcurrentTransmissions(0).build();
 
             // when / then
             assertThrows(IllegalArgumentException.class, () -> new TestLogDelivery(configuration));
@@ -154,8 +147,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Rejects a negative maximum number of concurrent transmissions at construction")
         void testRejectsNegativeMaxConcurrentTransmissions() {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setMaxConcurrentTransmissions(-1);
+            var configuration = TestLogConfiguration.builder().maxConcurrentTransmissions(-1).build();
 
             // when / then
             assertThrows(IllegalArgumentException.class, () -> new TestLogDelivery(configuration));
@@ -169,9 +161,9 @@ class AbstractBatchLogDeliveryTest {
             // document is accumulated (a capacity of "less than zero" discards on arrival, before ever
             // attempting a transmission doomed to be undone anyway), so bulkResult/countBulkSent are not
             // exercised by this test
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
-            configuration.setMaxPendingDocuments(-1);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .maxPendingDocuments(-1).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
 
@@ -205,8 +197,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Triggers a single transmission of the accumulated batch")
         void testSendingReachedThreshold() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -223,8 +214,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Is also reached when several documents are sent in a single call")
         void testSendingMultipleDocumentsInOneCallReachingThreshold() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -240,8 +230,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Can also be forced early by calling flush()")
         void testSendingForcedFlush() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -263,8 +252,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Flushes and waits for the remaining batch to be transmitted before returning")
         void testCloseFlushesRemainingBatch() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
+            var configuration = TestLogConfiguration.builder().flushThreshold(10).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -285,8 +273,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Keeps the documents and retries on the next flush")
         void testSendingRetriedOnFlush() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
             logDelivery.bulkResult = false;
 
@@ -311,8 +298,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Is not retried on every new message while batching is enabled, only on the next flush")
         void testSendingNotRetriedOnEveryMessageWhileBatchingAndFailing() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
             logDelivery.bulkResult = false;
 
@@ -341,8 +327,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Is retried on every message when batching is disabled (flush threshold of 1)")
         void testSendingRetriedOnEveryMessageWhenBatchingDisabled() throws Exception {
             // given (threshold of 1 means no batching is wanted, so every message should be attempted)
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var logDelivery = new TestLogDelivery(configuration);
             logDelivery.bulkResult = false;
 
@@ -368,10 +353,10 @@ class AbstractBatchLogDeliveryTest {
             // given: batching disabled (threshold of 1) so every send() dispatches immediately and
             // deterministically, and a maximum pending documents small enough to be reached by 4 documents,
             // both configured through LogConfiguration rather than by subclassing the delivery
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
-            configuration.setMaxPendingDocuments(3);
-            configuration.setMaxConsecutiveFailures(1_000); // effectively disabled, tested separately below
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .maxPendingDocuments(3)
+                    .maxConsecutiveFailures(1_000).build(); // effectively disabled, tested separately below
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
             logDelivery.bulkResult = false;
@@ -405,9 +390,9 @@ class AbstractBatchLogDeliveryTest {
             // to be exceeded well before that; this exercises the cap being enforced by stackAndSend()
             // itself, as opposed to testPendingDocumentsCapDiscardsOldestDocuments() above which only
             // exercises it being enforced by requeue() after a failed transmission
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(100);
-            configuration.setMaxPendingDocuments(3);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .maxPendingDocuments(3).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
 
@@ -440,9 +425,9 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Gives up on a batch after too many consecutive failed attempts, unblocking the pipeline")
         void testGivesUpAfterMaxConsecutiveFailures() throws Exception {
             // given: the limit is configured through LogConfiguration rather than by subclassing the delivery
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10); // Only flush() (below) triggers a (re)transmission
-            configuration.setMaxConsecutiveFailures(3);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10) // Only flush() (below) triggers a (re)transmission
+                    .maxConsecutiveFailures(3).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
             logDelivery.bulkResult = false;
@@ -477,9 +462,9 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Never gives up when MaxConsecutiveFailures is zero or negative, retrying indefinitely instead")
         void testNonPositiveMaxConsecutiveFailuresDisablesTheLimit(int maxConsecutiveFailures) throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10); // Only flush() (below) triggers a (re)transmission
-            configuration.setMaxConsecutiveFailures(maxConsecutiveFailures);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10) // Only flush() (below) triggers a (re)transmission
+                    .maxConsecutiveFailures(maxConsecutiveFailures).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
             logDelivery.bulkResult = false;
@@ -513,9 +498,9 @@ class AbstractBatchLogDeliveryTest {
             // for the "poison" document (blocking on a per-round latch first, to guarantee it is still in
             // flight when an unrelated document is sent and succeeds concurrently) and always succeeds for
             // everything else
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
-            configuration.setMaxConsecutiveFailures(3);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .maxConsecutiveFailures(3).build();
             var listener = new RecordingListener();
             var poisonEntered = new AtomicReference<CountDownLatch>();
             var releasePoison = new AtomicReference<CountDownLatch>();
@@ -603,8 +588,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Sends the whole batch as a single request by default (no chunking)")
         void testDoesNotChunkByDefault() throws Exception {
             // given: MaxRequestDocuments left at its default (unbounded)
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(20);
+            var configuration = TestLogConfiguration.builder().flushThreshold(20).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -623,9 +607,9 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Does not chunk when MaxRequestDocuments is zero or negative, treating it as disabled")
         void testNonPositiveMaxRequestDocumentsDisablesChunking(int maxRequestDocuments) throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(5);
-            configuration.setMaxRequestDocuments(maxRequestDocuments);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(5)
+                    .maxRequestDocuments(maxRequestDocuments).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
@@ -643,9 +627,9 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Splits a batch larger than MaxRequestDocuments into several requests, none exceeding it")
         void testSplitsBatchLargerThanMaxRequestDocuments() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setMaxRequestDocuments(4);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .maxRequestDocuments(4).build();
             var logDelivery = new TestLogDelivery(configuration);
             List<Map<String, Object>> documents = new ArrayList<>();
             for (int i = 0; i < 10; i++) {
@@ -676,9 +660,9 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Transmits chunks of the same batch concurrently rather than sequentially")
         void testChunksTransmitConcurrently() throws Exception {
             // given: a batch of 4 split into 4 chunks of 1, each transmission taking 200ms
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(4);
-            configuration.setMaxRequestDocuments(1);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(4)
+                    .maxRequestDocuments(1).build();
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(200));
 
             // when
@@ -698,9 +682,9 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Retries a failed chunk independently, without affecting or duplicating a sibling that succeeded")
         void testFailedChunkIsRetriedIndependentlyOfSiblings() throws Exception {
             // given: a batch of 4 split into two chunks of 2; only the chunk containing id=0 fails
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(4);
-            configuration.setMaxRequestDocuments(2);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(4)
+                    .maxRequestDocuments(2).build();
             var attempts = new CopyOnWriteArrayList<List<Map<String, Object>>>();
             var logDelivery = new TestLogDelivery(configuration) {
                 @Override
@@ -742,8 +726,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Notifies the listener when a transmission succeeds")
         void testListenerNotifiedOnSuccess() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(2);
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
 
@@ -762,8 +745,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Notifies the listener with no cause when sendBulk() simply returns false")
         void testListenerNotifiedOnFailureWithoutCause() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
             logDelivery.bulkResult = false;
@@ -782,8 +764,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Notifies the listener with the cause when sendBulk() throws")
         void testListenerNotifiedOnFailureWithCause() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
             var exception = new RuntimeException("Simulated failure");
@@ -804,8 +785,7 @@ class AbstractBatchLogDeliveryTest {
             // given: a listener whose onTransmissionFailed() implementation is broken; without a guard
             // around this notification, the exception it throws would skip onTransmissionFailure()
             // entirely, losing the failed document without ever requeuing or reporting it as dropped
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             LogDeliveryListener listener = new LogDeliveryListener() {
                 @Override
                 public void onTransmissionFailed(int documentCount, Throwable cause) {
@@ -834,8 +814,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Keeps transmitting further batches even when onTransmissionSucceeded() throws")
         void testFurtherTransmissionsContinueDespiteThrowingListenerOnSuccess() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             LogDeliveryListener listener = new LogDeliveryListener() {
                 @Override
                 public void onTransmissionSucceeded(int documentCount, long durationMillis) {
@@ -864,8 +843,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Does not lose or duplicate documents when sent concurrently by several threads")
         void testConcurrentSendsDoNotLoseOrDuplicateDocuments() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1_000_000); // Never reached, everything is flushed manually below
+            var configuration = TestLogConfiguration.builder().flushThreshold(1_000_000).build(); // Never reached, everything is flushed manually below
             var logDelivery = new TestLogDelivery(configuration);
             var threads = 8;
             var messagesPerThread = 500;
@@ -898,8 +876,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Overlaps transmissions instead of delaying the accumulation of the next batch")
         void testTransmissionsOverlapInsteadOfDelayingBatchAccumulation() throws Exception {
             // given: every message is sent individually (threshold of 1), each transmission taking 200ms
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(200));
 
             // when sending 4 messages (the default concurrency limit), all transmissions should overlap
@@ -919,8 +896,7 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Bounds the number of transmissions running at the same time")
         void testTransmissionConcurrencyIsBounded() throws Exception {
             // given: twice the default concurrency limit (4) of messages, each transmission taking 150ms
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(150));
 
             // when
@@ -943,9 +919,9 @@ class AbstractBatchLogDeliveryTest {
         @DisplayName("Can be lowered through the configuration")
         void testConcurrencyLimitIsConfigurable() throws Exception {
             // given: half the default concurrency limit, each transmission taking 150ms
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
-            configuration.setMaxConcurrentTransmissions(2);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .maxConcurrentTransmissions(2).build();
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(150));
 
             // when sending 4 messages, twice the configured limit
@@ -968,9 +944,9 @@ class AbstractBatchLogDeliveryTest {
             // given: batching disabled (threshold of 1) and a maximum pending documents of 1, so that a
             // second failed document overflows the batch and triggers a drop notification; the listener
             // blocks until released, to prove send() does not need to wait for it to return
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
-            configuration.setMaxPendingDocuments(1);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .maxPendingDocuments(1).build();
             var listenerEntered = new CountDownLatch(1);
             var releaseListener = new CountDownLatch(1);
             var listener = new LogDeliveryListener() {

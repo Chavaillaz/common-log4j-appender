@@ -2,28 +2,28 @@ package com.chavaillaz.appender.log4j;
 
 import java.time.Duration;
 
-import lombok.Getter;
-import lombok.Setter;
+import lombok.Builder;
+import lombok.Value;
 
 import com.chavaillaz.appender.LogConfiguration;
 
 /**
- * Minimal, real implementation of {@link LogConfiguration} used across the test suite instead of mocking
- * the interface, to keep tests closer to actual usage and avoid repeating stubbing boilerplate.
+ * Minimal, real, immutable implementation of {@link LogConfiguration} used across the test suite instead
+ * of mocking the interface, to keep tests closer to actual usage and avoid repeating stubbing boilerplate.
  */
-@Getter
-@Setter
+@Value
+@Builder
 class TestLogConfiguration implements LogConfiguration {
 
-    private String application = "test-application";
-    private String host = "test-host";
-    private String environment = "test-environment";
-    private long flushThreshold = 10;
-    private Duration flushInterval = Duration.ofSeconds(5);
-    private int maxConcurrentTransmissions = 4;
-    private int maxPendingDocuments = 10_000;
-    private int maxRequestDocuments = Integer.MAX_VALUE;
-    private int maxConsecutiveFailures = 5;
-    private int maxQueuedEvents = 10_000;
+    @Builder.Default String application = "test-application";
+    @Builder.Default String host = "test-host";
+    @Builder.Default String environment = "test-environment";
+    @Builder.Default long flushThreshold = 10;
+    @Builder.Default Duration flushInterval = Duration.ofSeconds(5);
+    @Builder.Default int maxConcurrentTransmissions = 4;
+    @Builder.Default int maxPendingDocuments = 10_000;
+    @Builder.Default int maxRequestDocuments = Integer.MAX_VALUE;
+    @Builder.Default int maxConsecutiveFailures = 5;
+    @Builder.Default int maxQueuedEvents = 10_000;
 
 }

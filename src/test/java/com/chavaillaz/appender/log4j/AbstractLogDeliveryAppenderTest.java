@@ -82,9 +82,9 @@ class AbstractLogDeliveryAppenderTest {
         void testWithThreadPool_WaitFlush() throws Exception {
             // given
             var logEvent = mockLogEvent();
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofMillis(200));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(200)).build();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
 
             // when
@@ -109,9 +109,9 @@ class AbstractLogDeliveryAppenderTest {
         void testWithThreadPool_DoNotWaitFlush() throws Exception {
             // given
             var logEvent = mockLogEvent();
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofMillis(1_000));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(1_000)).build();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
 
             // when
@@ -136,9 +136,9 @@ class AbstractLogDeliveryAppenderTest {
             // given: ScheduledExecutorService#scheduleWithFixedDelay requires a strictly positive delay
             // and would otherwise throw IllegalArgumentException straight out of start()
             var logEvent = mockLogEvent();
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ZERO);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ZERO).build();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
@@ -163,9 +163,9 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Reports an error and does not schedule a periodic flush when FlushInterval is negative")
         void testWithThreadPool_NegativeFlushInterval() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofMillis(-100));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(-100)).build();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
@@ -184,9 +184,9 @@ class AbstractLogDeliveryAppenderTest {
             // given: a Duration so large that Duration#toMillis() itself throws ArithmeticException,
             // which would otherwise propagate straight out of start() instead of being reported cleanly
             // like every other invalid FlushInterval
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(Long.MAX_VALUE / 500));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(Long.MAX_VALUE / 500)).build();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
@@ -205,9 +205,9 @@ class AbstractLogDeliveryAppenderTest {
         void testWithoutThreadPool() throws Exception {
             // given
             var logEvent = mockLogEvent();
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(1);
-            configuration.setFlushInterval(Duration.ofMillis(1_000));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .flushInterval(Duration.ofMillis(1_000)).build();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
 
             // when
@@ -237,9 +237,9 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Returns immediately even while a delivery task is still running")
         void testAppendNeverBlocksCallingThread() throws Exception {
             // given: a delivery task that takes a while, to prove append() returns long before it completes
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
             var releaseTask = new CountDownLatch(1);
             var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
 
@@ -272,10 +272,10 @@ class AbstractLogDeliveryAppenderTest {
             // testQueueCapacityExceededDiscardsOldestQueuedEvent() below for that distinction; every event
             // here carries identical content, so this test only cares that exactly one of the three was
             // discarded without blocking, and reported as such)
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
-            configuration.setMaxQueuedEvents(1);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
             var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
@@ -325,10 +325,10 @@ class AbstractLogDeliveryAppenderTest {
             // given: a queue capacity of 1 and a delivery task that only blocks on its very first
             // invocation until released, so event A occupies the worker thread, event B fills the
             // one-slot queue, and event C then evicts B (the oldest still-queued event) to take its place
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
-            configuration.setMaxQueuedEvents(1);
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
             var releaseFirstTask = new CountDownLatch(1);
             var appender = new RecordingBlockingLogDeliveryAppender(
                     "appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
@@ -362,8 +362,7 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Does not crash construction when MaxQueuedEvents is zero or negative")
         void testNonPositiveMaxQueuedEventsDoesNotThrow() throws Exception {
             // given: the worker executor (and its bounded queue) is created at construction time
-            var configuration = new TestLogConfiguration();
-            configuration.setMaxQueuedEvents(-1);
+            var configuration = TestLogConfiguration.builder().maxQueuedEvents(-1).build();
 
             // when / then
             var appender = assertDoesNotThrow(
@@ -384,9 +383,9 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Waits for pending tasks to complete before closing the delivery handler")
         void testStopWaitsForPendingTasksBeforeClosingHandler() throws Exception {
             // given: several slow delivery tasks queued up right before stop() is called
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(100);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10)).build();
             var events = new CopyOnWriteArrayList<String>();
             var appender = new RecordingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, events, 50);
 
@@ -407,9 +406,9 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Rejects further appends without throwing back to the calling thread")
         void testAppendAfterStopDoesNotThrowToCallingThread() throws Exception {
             // given
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
@@ -426,9 +425,9 @@ class AbstractLogDeliveryAppenderTest {
         void testStopInterruptsStuckTaskAfterTimeout() throws Exception {
             // given: a delivery task that blocks forever unless interrupted, and a stop() timeout short
             // enough to elapse while it is still running
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
             var interrupted = new CountDownLatch(1);
             var appender = new StuckLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, interrupted);
 
@@ -452,9 +451,9 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Reports the failure once and skips processing further events instead of failing on every one")
         void testAppendIsNoOpAfterHandlerCreationFailed() throws Exception {
             // given: createLogDeliveryHandler() always fails, so getLogDeliveryHandler() stays null
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
             var appender = new FailStartLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
@@ -484,9 +483,9 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Reports a failing task and keeps processing the next ones")
         void testTaskExceptionIsReportedAndDoesNotStopFurtherProcessing() throws Exception {
             // given: the first task fails, the second one must still be processed by the same background thread
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
             var appender = new FailFirstLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
@@ -507,9 +506,9 @@ class AbstractLogDeliveryAppenderTest {
         void testTaskCreationExceptionIsReportedAndDoesNotPropagateToCaller() throws Exception {
             // given: createLogDeliveryTask() itself throws on the calling (application) thread, simulating
             // a subclass mistake; this must never break the guarantee that append() never fails the caller
-            var configuration = new TestLogConfiguration();
-            configuration.setFlushThreshold(10);
-            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
             var appender = new FailCreationLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));

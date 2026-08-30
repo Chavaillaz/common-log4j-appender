@@ -82,19 +82,24 @@ since each document already carries its own timestamp.
 
 ### 1. Configuration
 
-Implement `LogConfiguration` (or extend an existing implementation) to carry whatever settings your
-delivery mechanism needs, in addition to the ones already required by the interface:
+Implement `LogConfiguration` to carry whatever settings your delivery mechanism needs, in addition to the
+ones already required by the interface. The interface is deliberately read-only (no setters): build an
+immutable instance once, rather than a mutable bean, since it is read repeatedly (not just once) from a
+background thread with no synchronization of its own around those reads. This shape falls out naturally
+from Log4j2's own `@PluginBuilderFactory` pattern, whose `Builder` already carries the mutable,
+per-attribute fields, with only its `build()` result needing to satisfy `LogConfiguration`:
 
 ```java
+@Value
+@Builder
 public class MyConfiguration implements LogConfiguration {
-    private String application;
-    private String host;
-    private String environment;
-    private long flushThreshold;
-    private Duration flushInterval;
-    private LogConverter converter; // Not part of LogConfiguration itself, but used below
-    private String url; // Anything else specific to your delivery mechanism
-    // Getters and setters...
+    String application;
+    String host;
+    String environment;
+    long flushThreshold;
+    Duration flushInterval;
+    LogConverter converter; // Not part of LogConfiguration itself, but used below
+    String url; // Anything else specific to your delivery mechanism
 }
 ```
 
