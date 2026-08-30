@@ -188,6 +188,39 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Treats a PartialFailure reporting more rejected elements than were dispatched as a failure instead of losing them silently")
+    void testMalformedPartialFailureDoesNotLoseElements() throws Exception {
+        // given: a misbehaving transport reporting "a" as rejected twice for a chunk that only contains it
+        // once; before the fix, this made the accepted/rejected split throw (a negative ArrayList capacity)
+        // from inside a whenComplete() callback nobody observes, silently losing "a" without even a log line
+        var dropped = new CopyOnWriteArrayList<String>();
+        var attempts = new AtomicInteger();
+        Batcher<String> batcher = new Batcher<>(() -> 1L, () -> 10, () -> Integer.MAX_VALUE, () -> 2, 4,
+                "batcher-test-", "element", elements -> {
+                    attempts.incrementAndGet();
+                    return completedFuture(TransmissionResult.partialFailure(List.of(elements.get(0), elements.get(0)), null));
+                }, new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                });
+
+        // when: retried until the malformed chunk is eventually given up on
+        batcher.add(List.of("a"));
+        batcher.awaitPendingTransmissions();
+        for (int i = 0; i < 2; i++) {
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+        }
+
+        // then: "a" was retried (not lost after the very first malformed response) and eventually reported
+        // dropped once MaxConsecutiveFailures was reached, instead of vanishing without a trace
+        assertTrue(attempts.get() >= 2, "The malformed chunk should have been retried, not discarded outright");
+        assertTrue(dropped.contains("a"), "\"a\" should have been reported dropped instead of lost silently");
+    }
+
+    @Test
     @DisplayName("Does not block the calling thread on a transport that completes its future asynchronously")
     void testDoesNotBlockOnAsynchronousTransport() throws Exception {
         // given: a transport whose future is completed later, from a separate thread, rather than before

@@ -396,6 +396,16 @@ public class Batcher<T> {
             try {
                 long durationMillis = (System.nanoTime() - start) / 1_000_000;
                 handleResult(elements, failureStreak, normalizeResult(elements, result, throwable), durationMillis);
+            } catch (Exception e) {
+                // handleResult() is expected to always either notify a success/failure or requeue/drop the
+                // elements involved; a defensive catch-all in case a future bug there (or a
+                // TransmissionResult.PartialFailure inconsistent with the dispatched chunk) throws instead,
+                // so such a bug can only degrade this chunk to an ordinary failure instead of losing it
+                // silently with no trace at all.
+                log.warn("Unhandled exception while processing the result of a transmitted batch of {} {}(s), treating it as a failure",
+                        elements.size(), elementNoun, e);
+                notifyListener(() -> listener.onFailed(elements.size(), e));
+                onTransmissionFailure(elements, failureStreak);
             } finally {
                 transmissionPermits.release();
             }
@@ -491,7 +501,11 @@ public class Batcher<T> {
     private static <T> List<T> withoutIdentity(List<T> elements, List<T> excluded) {
         Set<T> excludedIdentity = Collections.newSetFromMap(new IdentityHashMap<>(excluded.size()));
         excludedIdentity.addAll(excluded);
-        List<T> remaining = new ArrayList<>(elements.size() - excluded.size());
+        // A misbehaving transport reporting more (or foreign) rejected elements than were actually
+        // dispatched must not be able to make this capacity negative and throw, or the whole chunk (both
+        // the genuinely accepted and rejected elements alike) would be lost silently instead of at least
+        // being reported.
+        List<T> remaining = new ArrayList<>(Math.max(0, elements.size() - excluded.size()));
         for (T element : elements) {
             if (!excludedIdentity.contains(element)) {
                 remaining.add(element);
