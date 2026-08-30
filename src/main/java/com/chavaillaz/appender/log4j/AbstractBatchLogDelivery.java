@@ -9,7 +9,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
@@ -49,7 +48,11 @@ import com.chavaillaz.appender.LogDeliveryListener;
  *     <li>The pending batch is never allowed to grow past {@link LogConfiguration#getMaxBatchSize()}: once
  *     exceeded, the oldest documents in excess are discarded.</li>
  *     <li>A batch that fails {@link LogConfiguration#getMaxConsecutiveFailures()} times in a row is
- *     discarded entirely instead of being retried indefinitely.</li>
+ *     discarded entirely instead of being retried indefinitely. This streak is tracked per pending batch
+ *     rather than as a single delivery-wide counter, so that an unrelated batch succeeding concurrently
+ *     (see {@link LogConfiguration#getMaxConcurrentTransmissions()}) can never reset it: a poison document
+ *     is given up on purely based on how many times it has itself failed to be transmitted, regardless of
+ *     how much unrelated traffic keeps succeeding around it at the same time.</li>
  * </ul>
  * Both cases are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} (in addition
  * to being logged), so this data loss is never silent.
@@ -68,6 +71,18 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * The list of logs documents to be sent with the next transmission
      */
     private List<Map<String, Object>> batch;
+
+    /**
+     * Number of consecutive times the data currently sitting in {@link #batch} has already failed to be
+     * transmitted (0 if it holds only documents that have never been attempted yet). Carried forward (and
+     * merged conservatively, keeping the higher of the two) whenever failed documents are merged back into
+     * the batch by {@link #requeue(List, int)}, and reset to {@code 0} whenever the batch is swapped out
+     * for a fresh, empty one by {@link #swapBatch()}, since the returned snapshot then becomes solely
+     * responsible for carrying its own streak through {@link #dispatch(List, int)}.
+     * <p>
+     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     */
+    private int pendingFailureStreak;
 
     /**
      * The configuration of the logs transmission
@@ -104,13 +119,6 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * message received while batching is enabled and the downstream system is unavailable or failing.
      */
     private volatile boolean transmissionFailed;
-
-    /**
-     * Number of consecutive transmission attempts that failed, reset to {@code 0} as soon as one succeeds.
-     * Used to give up on a batch that can seemingly never be transmitted successfully instead of retrying
-     * it forever (see {@link #getMaxConsecutiveFailures()}).
-     */
-    private final AtomicInteger consecutiveFailures = new AtomicInteger();
 
     /**
      * Creates a new logs delivery handler sending them by batches.
@@ -248,7 +256,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     @Override
     public void flush() {
-        List<Map<String, Object>> snapshot;
+        PendingBatch snapshot;
         synchronized (this) {
             if (batch.isEmpty()) {
                 return;
@@ -256,11 +264,11 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             log.debug("Sending partial batch of {}/{}", batch.size(), configuration.getFlushThreshold());
             snapshot = swapBatch();
         }
-        dispatch(snapshot);
+        dispatch(snapshot.documents(), snapshot.failureStreak());
     }
 
     private void stackAndSend(List<Map<String, Object>> data) {
-        List<Map<String, Object>> snapshot = null;
+        PendingBatch snapshot = null;
         synchronized (this) {
             batch.addAll(data);
             log.trace("Stacking batch {}/{}", batch.size(), configuration.getFlushThreshold());
@@ -272,21 +280,35 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             }
         }
         if (snapshot != null) {
-            dispatch(snapshot);
+            dispatch(snapshot.documents(), snapshot.failureStreak());
         }
     }
 
     /**
-     * Replaces the current batch with a new empty one and returns its previous content, so accumulation of
-     * the next batch can start immediately while the returned one is being transmitted.
+     * The content of {@link #batch} at the time it was swapped out, together with the number of times that
+     * same content had already failed to be transmitted (see {@link #pendingFailureStreak}).
+     *
+     * @param documents     The content of the batch prior to the swap
+     * @param failureStreak The failure streak inherited from {@link #pendingFailureStreak} at the time of
+     *                      the swap
+     */
+    private record PendingBatch(List<Map<String, Object>> documents, int failureStreak) {
+
+    }
+
+    /**
+     * Replaces the current batch with a new, fresh (never failed) empty one and returns its previous
+     * content together with the failure streak it had accumulated so far, so accumulation of the next
+     * batch can start immediately while the returned one is being transmitted.
      * <p>
      * Must be called while holding the monitor of this instance.
      *
-     * @return The content of the batch prior to the swap
+     * @return The content of the batch prior to the swap, and its failure streak
      */
-    private List<Map<String, Object>> swapBatch() {
-        List<Map<String, Object>> previous = batch;
+    private PendingBatch swapBatch() {
+        PendingBatch previous = new PendingBatch(batch, pendingFailureStreak);
         batch = newBatch();
+        pendingFailureStreak = 0;
         return previous;
     }
 
@@ -295,9 +317,12 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * batch, so they are retried before any newer document, discarding the oldest documents in excess if
      * this would grow the batch past {@link #getMaxBatchSize()}.
      *
-     * @param documents The documents to put back
+     * @param documents     The documents to put back
+     * @param failureStreak The number of consecutive times this exact content has already failed to be
+     *                      transmitted (0 if it was never actually attempted, e.g. because acquiring a
+     *                      transmission permit was interrupted)
      */
-    private void requeue(List<Map<String, Object>> documents) {
+    private void requeue(List<Map<String, Object>> documents, int failureStreak) {
         List<Map<String, Object>> discarded = null;
         int maxBatchSize;
         synchronized (this) {
@@ -317,6 +342,11 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             }
 
             batch = merged;
+            // The live batch might already carry forward a streak of its own (from a different failed
+            // chunk merged in moments earlier by a concurrent transmission); keeping the higher of the two
+            // is the conservative choice, since the merged batch is at least as "tainted" as its worst
+            // ingredient.
+            pendingFailureStreak = Math.max(pendingFailureStreak, failureStreak);
         }
         // Notified outside the lock above: this instance's monitor is also needed by send()/flush() to
         // accumulate the next batch, and a listener that takes a while (writing to a file, a metrics call
@@ -328,24 +358,24 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         }
     }
 
-    private void dispatch(List<Map<String, Object>> documents) {
+    private void dispatch(List<Map<String, Object>> documents, int failureStreak) {
         try {
             transmissionPermits.acquire();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            requeue(documents);
+            requeue(documents, failureStreak);
             return;
         }
 
         try {
-            transmissionExecutor.execute(() -> transmit(documents));
+            transmissionExecutor.execute(() -> transmit(documents, failureStreak));
         } catch (RejectedExecutionException e) {
             transmissionPermits.release();
-            requeue(documents);
+            requeue(documents, failureStreak);
         }
     }
 
-    private void transmit(List<Map<String, Object>> documents) {
+    private void transmit(List<Map<String, Object>> documents, int failureStreak) {
         long start = System.nanoTime();
         try {
             boolean success;
@@ -361,11 +391,10 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
             long durationMillis = (System.nanoTime() - start) / 1_000_000;
             transmissionFailed = !success;
             if (success) {
-                consecutiveFailures.set(0);
                 listener.onTransmissionSucceeded(documents.size(), durationMillis);
             } else {
                 listener.onTransmissionFailed(documents.size(), failure);
-                onTransmissionFailure(documents);
+                onTransmissionFailure(documents, failureStreak);
             }
         } finally {
             transmissionPermits.release();
@@ -376,18 +405,19 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * Handles a failed transmission attempt: either discards the given documents once
      * {@link #getMaxConsecutiveFailures()} has been reached, or puts them back for a later retry.
      *
-     * @param documents The documents that failed to be transmitted
+     * @param documents     The documents that failed to be transmitted
+     * @param failureStreak The number of consecutive times this exact content had already failed before
+     *                      this attempt
      */
-    private void onTransmissionFailure(List<Map<String, Object>> documents) {
+    private void onTransmissionFailure(List<Map<String, Object>> documents, int failureStreak) {
         int maxConsecutiveFailures = getMaxConsecutiveFailures();
-        int failures = consecutiveFailures.incrementAndGet();
-        if (maxConsecutiveFailures > 0 && failures >= maxConsecutiveFailures) {
-            consecutiveFailures.set(0);
+        int newFailureStreak = failureStreak + 1;
+        if (maxConsecutiveFailures > 0 && newFailureStreak >= maxConsecutiveFailures) {
             log.error("Giving up on {} document(s) after {} consecutive failed transmission attempts, they will be discarded",
-                    documents.size(), failures);
+                    documents.size(), newFailureStreak);
             listener.onDocumentsDropped(List.copyOf(documents), "maximum consecutive transmission failures exceeded");
         } else {
-            requeue(documents);
+            requeue(documents, newFailureStreak);
         }
     }
 

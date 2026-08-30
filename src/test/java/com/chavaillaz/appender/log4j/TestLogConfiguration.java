@@ -23,5 +23,6 @@ class TestLogConfiguration implements LogConfiguration {
     private int maxConcurrentTransmissions = 4;
     private int maxBatchSize = 10_000;
     private int maxConsecutiveFailures = 5;
+    private int maxPendingEvents = 10_000;
 
 }

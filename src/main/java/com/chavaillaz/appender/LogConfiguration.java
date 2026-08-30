@@ -118,4 +118,20 @@ public interface LogConfiguration {
         return 5;
     }
 
+    /**
+     * Gets the maximum number of logging events that can be queued, waiting to be converted and batched by
+     * the background thread of an appender, before new ones are discarded instead of being accepted. This
+     * bounds the memory that events accepted faster than they can be processed could otherwise use without
+     * limit, for example while every {@link #getMaxConcurrentTransmissions()} transmission slot is stuck on
+     * a downstream system that has become unresponsive for a long time: documents already converted and
+     * handed off to a batch-based log delivery are separately bounded by {@link #getMaxBatchSize()}; this
+     * limits how many have not even reached that stage yet. Defaults to {@code 10'000}; override to raise
+     * or lower this limit.
+     *
+     * @return The maximum number of logging events that can be queued awaiting processing
+     */
+    default int getMaxPendingEvents() {
+        return 10_000;
+    }
+
 }

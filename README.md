@@ -233,8 +233,9 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `MaxConcurrentTransmissions` | Maximum number of batches transmitted at the same time (see step 4 above). Defaults to `4`; raise it for a downstream system that can absorb more concurrent requests, or lower it to as little as `1` to strictly serialize transmissions (a value below `1` is rejected, as it would leave every transmission waiting forever). |
 | `MaxBatchSize` | Maximum number of documents a pending batch can hold while waiting to be (re)transmitted, discarding the oldest ones past that point (see step 5 above). Defaults to `10'000`. |
 | `MaxConsecutiveFailures` | Maximum number of consecutive failed attempts allowed for the same batch before it is discarded instead of retried again (see step 5 above). Defaults to `5`. |
+| `MaxPendingEvents` | Maximum number of logging events that can be queued, waiting to be converted and batched by the background thread, before new ones are discarded instead of being accepted (see below). Defaults to `10'000`. |
 
-These three are implemented as default methods on `LogConfiguration` itself (rather than plugin
+These four are implemented as default methods on `LogConfiguration` itself (rather than plugin
 attributes), so they are available even if the appender implementation you use does not explicitly expose
 them as configuration; ask its maintainer to wire them up, or override them in your own configuration
 class in the meantime.
@@ -246,10 +247,12 @@ class in the meantime.
   would be logarithmic time, since it keeps tasks ordered by delay); the periodic flush trigger runs on a
   separate, otherwise idle, thread that simply hands a flush over to that same FIFO queue, so this doesn't
   come at the cost of the ordering guarantees described above.
-- **Unbounded queue:** that said, the queue itself remains unbounded, so `append()` never blocks nor drops
-  a log under normal circumstances. If the external system stays unavailable for a long time, the queue of
-  pending events keeps growing in memory: size your `FlushThreshold`/`FlushInterval` and monitor the
-  application accordingly if this is a concern for your use case.
+- **Bounded queue:** that queue is capped at `MaxPendingEvents` (10'000 by default) so it cannot grow
+  memory usage without limit if the external system stays unavailable for a long time (once every
+  `MaxConcurrentTransmissions` slot is stuck, events keep arriving faster than they can be processed).
+  `append()` still never blocks: once the limit is reached, further events are discarded instead of being
+  queued, and reported through your `LogDeliveryListener` (see below) if one is configured, so this data
+  loss is never silent. Raise this limit if your traffic legitimately bursts past the default.
 - **Concurrent transmissions:** up to `MaxConcurrentTransmissions` batches (4 by default) can be
   transmitted at the same time (see step 4 above), each on its own virtual thread, so network latency does
   not throttle how fast new batches are formed. This only ever adds backpressure to the internal

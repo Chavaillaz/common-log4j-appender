@@ -34,4 +34,18 @@ public interface LogDelivery extends AutoCloseable {
      */
     void flush();
 
+    /**
+     * Gets the listener notified of the outcome of every transmission attempt, if this implementation
+     * supports one. Used, among other things, to report a logging event discarded before it could even
+     * reach this delivery (for example because the appender's internal queue feeding it was full) through
+     * the same {@link LogDeliveryListener#onDocumentsDropped(List, String)} callback as every other kind of
+     * data loss, instead of that specific case going unreported.
+     *
+     * @return The listener, defaulting to {@link LogDeliveryListener#NOOP} for an implementation that does
+     *         not support one
+     */
+    default LogDeliveryListener getListener() {
+        return LogDeliveryListener.NOOP;
+    }
+
 }

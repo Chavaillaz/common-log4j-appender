@@ -1,6 +1,7 @@
 package com.chavaillaz.appender.log4j;
 
 import static java.lang.Thread.sleep;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLayout;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -22,15 +23,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import lombok.Getter;
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.ErrorHandler;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.impl.Log4jLogEvent;
+import org.apache.logging.log4j.message.SimpleMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import com.chavaillaz.appender.LogDelivery;
+import com.chavaillaz.appender.LogDeliveryListener;
 
 @DisplayName("AbstractLogDeliveryAppender")
 class AbstractLogDeliveryAppenderTest {
@@ -225,6 +230,81 @@ class AbstractLogDeliveryAppenderTest {
     }
 
     @Nested
+    @DisplayName("Bounded worker queue")
+    class BoundedWorkerQueue {
+
+        @Test
+        @DisplayName("Rejects further events without blocking once the queue capacity is exceeded, reporting them as dropped")
+        void testQueueCapacityExceededReportsDroppedEvents() throws Exception {
+            // given: a queue capacity of 1 and a delivery task that blocks forever until released, so the
+            // first appended event occupies the worker thread and the second fills the one-slot queue,
+            // leaving no room for a third
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ofSeconds(10));
+            configuration.setMaxPendingEvents(1);
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                    droppedReasons.add(reason);
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // a real (not mocked) event, since the dropped one below is actually converted by a fallback
+            // converter to still produce something for the listener
+            var loggingEvent = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("would have been dropped"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
+
+            // when
+            appender.start();
+            appender.append(loggingEvent); // occupies the worker thread (blocked on releaseTask)
+            appender.append(loggingEvent); // fills the one-slot queue
+            var start = System.nanoTime();
+            appender.append(loggingEvent); // must be rejected instead of blocking
+            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then
+            assertTrue(elapsedMillis < 200, "append() should not block even when the queue is full, took " + elapsedMillis + "ms");
+            assertEquals(1, dropped.size());
+            assertEquals("would have been dropped", dropped.get(0).get("logmessage"));
+            assertTrue(droppedReasons.get(0).contains("queue"), "Reason should mention the queue: " + droppedReasons.get(0));
+            assertFalse(errors.isEmpty(), "The rejection should also have been reported through the error handler");
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Does not crash construction when MaxPendingEvents is zero or negative")
+        void testNonPositiveMaxPendingEventsDoesNotThrow() throws Exception {
+            // given: the worker executor (and its bounded queue) is created at construction time
+            var configuration = new TestLogConfiguration();
+            configuration.setMaxPendingEvents(-1);
+
+            // when / then
+            var appender = assertDoesNotThrow(
+                    () -> new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration));
+            assertDoesNotThrow(appender::start);
+
+            // cleanup
+            appender.stop(2, SECONDS);
+        }
+
+    }
+
+    @Nested
     @DisplayName("Shutdown")
     class Shutdown {
 
@@ -267,6 +347,27 @@ class AbstractLogDeliveryAppenderTest {
             // when / then: logging after the appender stopped must never propagate to the application thread
             assertDoesNotThrow(() -> appender.append(mockLogEvent()));
             assertFalse(errors.isEmpty(), "The rejection should still be reported through the error handler");
+        }
+
+        @Test
+        @DisplayName("Attempts to interrupt a still-running task once the shutdown timeout elapses")
+        void testStopInterruptsStuckTaskAfterTimeout() throws Exception {
+            // given: a delivery task that blocks forever unless interrupted, and a stop() timeout short
+            // enough to elapse while it is still running
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(10);
+            configuration.setFlushInterval(Duration.ofSeconds(10));
+            var interrupted = new CountDownLatch(1);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, interrupted);
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent());
+            appender.stop(200, MILLISECONDS);
+
+            // then: the stuck task was interrupted instead of being left running indefinitely after the
+            // (already closed by then) delivery handler
+            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted after the timeout");
         }
 
     }
@@ -372,6 +473,36 @@ class AbstractLogDeliveryAppenderTest {
         @Override
         public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> countTaskExecuted.incrementAndGet();
+        }
+
+    }
+
+    @Getter
+    static class StuckLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        LogDelivery logDeliveryHandler = mock(LogDelivery.class);
+        CountDownLatch interrupted;
+
+        protected StuckLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+                                            CountDownLatch interrupted) {
+            super(name, filter, layout, configuration);
+            this.interrupted = interrupted;
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            return () -> {
+                try {
+                    new CountDownLatch(1).await(); // Blocks forever unless interrupted
+                } catch (InterruptedException e) {
+                    interrupted.countDown();
+                }
+            };
         }
 
     }

@@ -16,6 +16,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.DisplayName;
@@ -416,6 +417,84 @@ class AbstractBatchLogDeliveryTest {
             // then the pipeline is not stuck: the new document is delivered normally
             assertEquals(4, logDelivery.countBulkSent.get());
             assertEquals(1, logDelivery.lastBulkSize.get());
+        }
+
+        @Test
+        @DisplayName("Gives up on a poison document based only on its own failures, unaffected by unrelated concurrent successes")
+        void testConsecutiveFailuresAreTrackedPerBatchNotGlobally() throws Exception {
+            // given: batching disabled (threshold of 1) so every send()/flush() dispatches immediately as
+            // its own independent transmission, up to the default of 4 concurrently; sendBulk() fails only
+            // for the "poison" document (blocking on a per-round latch first, to guarantee it is still in
+            // flight when an unrelated document is sent and succeeds concurrently) and always succeeds for
+            // everything else
+            var configuration = new TestLogConfiguration();
+            configuration.setFlushThreshold(1);
+            configuration.setMaxConsecutiveFailures(3);
+            var listener = new RecordingListener();
+            var poisonEntered = new AtomicReference<CountDownLatch>();
+            var releasePoison = new AtomicReference<CountDownLatch>();
+            var cleanSucceeded = new AtomicInteger();
+            var poisonAttempts = new AtomicInteger();
+            var logDelivery = new TestLogDelivery(configuration, listener) {
+                @Override
+                protected boolean sendBulk(List<Map<String, Object>> documents) {
+                    boolean poison = documents.stream().anyMatch(document -> document.containsKey("poison"));
+                    if (poison) {
+                        poisonAttempts.incrementAndGet();
+                        poisonEntered.get().countDown();
+                        await(releasePoison.get());
+                        return false;
+                    }
+                    cleanSucceeded.incrementAndGet();
+                    return true;
+                }
+            };
+
+            // when the poison document fails MaxConsecutiveFailures times in a row, with a different,
+            // unrelated document successfully transmitted concurrently during each of its attempts
+            int maxConsecutiveFailures = configuration.getMaxConsecutiveFailures();
+            for (int round = 1; round <= maxConsecutiveFailures; round++) {
+                poisonEntered.set(new CountDownLatch(1));
+                releasePoison.set(new CountDownLatch(1));
+                if (round == 1) {
+                    logDelivery.send(Map.of("poison", true));
+                } else {
+                    logDelivery.flush(); // re-dispatches the poison document requeued after the previous round
+                }
+                assertTrue(poisonEntered.get().await(2, SECONDS), "Round " + round + ": poison should be in flight");
+
+                logDelivery.send(Map.of("clean", round));
+                awaitAtLeast(cleanSucceeded, round);
+
+                releasePoison.get().countDown();
+                logDelivery.awaitPendingTransmissions();
+            }
+
+            // then: despite as many unrelated concurrent successes as the failure limit itself, the poison
+            // document was still given up on based purely on its own failure count
+            assertEquals(maxConsecutiveFailures, poisonAttempts.get());
+            assertEquals(maxConsecutiveFailures, cleanSucceeded.get());
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(Map.of("poison", true)), listener.dropped.get(0).documents());
+            assertTrue(listener.dropped.get(0).reason().contains("consecutive"));
+        }
+
+        private void await(CountDownLatch latch) {
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private void awaitAtLeast(AtomicInteger counter, int expected) throws InterruptedException {
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+            while (counter.get() < expected) {
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new AssertionError("Timed out waiting for the counter to reach " + expected);
+                }
+                Thread.sleep(5);
+            }
         }
 
     }
