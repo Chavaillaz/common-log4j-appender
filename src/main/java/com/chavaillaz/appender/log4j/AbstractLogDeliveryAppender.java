@@ -276,7 +276,16 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private void triggerFlush() {
         try {
-            workerExecutor.execute(() -> executeLogDeliveryTask(logDeliveryHandler::flush));
+            workerExecutor.execute(() -> {
+                // Re-read on the worker thread rather than captured when the task is queued: a method
+                // reference on a null handler would throw a NullPointerException outside
+                // executeLogDeliveryTask()'s own guard, escaping to the worker thread's uncaught exception
+                // handler instead of being reported through this appender's ErrorHandler.
+                LogDelivery handler = logDeliveryHandler;
+                if (handler != null) {
+                    executeLogDeliveryTask(handler::flush);
+                }
+            });
         } catch (RejectedExecutionException e) {
             // The queue may be momentarily full (see MaxQueuedEvents) or the worker may be shutting down;
             // either way this cycle's flush is simply skipped, not reported as dropped: nothing
