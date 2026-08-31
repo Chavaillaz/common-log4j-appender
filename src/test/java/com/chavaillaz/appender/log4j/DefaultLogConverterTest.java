@@ -195,6 +195,28 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Omits only the configuration-provided fields when the converter was never configured")
+        void testConversionWithoutConfiguration() {
+            // given: a converter used without configure() ever being called, which used to throw a
+            // NullPointerException out of convert() and lose the whole document
+            var converter = new DefaultLogConverter();
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: everything derivable from the event itself is still there
+            assertEquals("Message", document.get("logmessage"));
+            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+            assertNull(document.get("host"));
+            assertNull(document.get("environment"));
+            assertNull(document.get("application"));
+        }
+
+        @Test
         @DisplayName("Truncates the stack trace once it exceeds the configured maximum length")
         void testConversionTruncatesLongStackTrace() {
             // given

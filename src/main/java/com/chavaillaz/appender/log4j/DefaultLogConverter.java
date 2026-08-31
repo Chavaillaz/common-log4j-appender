@@ -47,7 +47,14 @@ public class DefaultLogConverter implements LogConverter {
      */
     private static final int THROWABLE_FIELD_COUNT = 2;
 
-    private LogConfiguration configuration;
+    /**
+     * Volatile because {@link #configure(LogConfiguration)} and {@link #convert(LogEvent)} are not
+     * guaranteed to run on the same thread: the former is typically called while building the appender, the
+     * latter on its background worker. In the usual case the handoff between the two already establishes a
+     * happens-before edge, but nothing in this class's contract requires it, and a converter reconfigured
+     * later would otherwise be free to never be seen as such by the worker.
+     */
+    private volatile LogConfiguration configuration;
 
     /**
      * Creates a new default log converter. {@link #configure(LogConfiguration)} must be called before
@@ -109,10 +116,16 @@ public class DefaultLogConverter implements LogConverter {
      * @param event    The logging event
      */
     protected void writeBasic(Map<String, Object> document, LogEvent event) {
+        LogConfiguration settings = configuration;
+        if (settings == null) {
+            // Reported once per event rather than thrown: losing the three configuration-provided fields is
+            // a far better outcome for a misconfigured converter than losing every document outright.
+            log.warn("The converter was never configured, the host/environment/application fields will be omitted");
+        }
         document.put("datetime", Instant.ofEpochMilli(event.getInstant().getEpochMillisecond()).toString());
-        document.put("host", configuration.getHost());
-        document.put("environment", configuration.getEnvironment());
-        document.put("application", configuration.getApplication());
+        document.put("host", settings != null ? settings.getHost() : null);
+        document.put("environment", settings != null ? settings.getEnvironment() : null);
+        document.put("application", settings != null ? settings.getApplication() : null);
         document.put("logger", Optional.ofNullable(event.getLoggerName())
                 .orElse(event.getLoggerFqcn()));
         document.put("level", Optional.ofNullable(event.getLevel())
