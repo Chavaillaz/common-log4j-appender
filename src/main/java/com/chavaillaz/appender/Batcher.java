@@ -1,5 +1,7 @@
 package com.chavaillaz.appender;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -35,7 +37,9 @@ import org.jspecify.annotations.Nullable;
  * A failed transmission's elements are put back at the front of the batch for a later retry instead of
  * being lost. While batching is enabled (a flush threshold greater than {@code 1}) and the last attempt is
  * still failing, a new one is not attempted for every incoming element; retries wait for the next
- * {@link #flush()} instead.
+ * {@link #flush()} instead. On top of that, a {@link BackoffPolicy} (disabled by default) holds off every
+ * transmission for a while after a failure, so a struggling downstream system is not hit again at the rate
+ * logs happen to arrive.
  * <p>
  * Two safety nets bound the cost of a struggling transport, or of a single element it can never accept, so
  * neither can grow memory without bound or wedge the pipeline forever: the pending batch is capped at
@@ -70,10 +74,18 @@ public class Batcher<T> {
      */
     private static final int MAX_INITIAL_BATCH_CAPACITY = 1_024;
 
+    /**
+     * Sentinel value of {@link #retryNotBeforeNanos} meaning no backoff is currently in effect. A plain
+     * {@code 0} would not do: {@link System#nanoTime()} has an arbitrary origin and can legitimately return
+     * it (or any other fixed value), so no reading of the clock can be reserved as a sentinel.
+     */
+    private static final long NO_BACKOFF = Long.MIN_VALUE;
+
     private final LongSupplier flushThreshold;
     private final IntSupplier maxPendingElements;
     private final IntSupplier maxRequestElements;
     private final IntSupplier maxConsecutiveFailures;
+    private final BackoffPolicy backoff;
     private final String elementNoun;
     private final Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport;
     private final BatcherListener<T> listener;
@@ -118,6 +130,12 @@ public class Batcher<T> {
     private volatile boolean transmissionFailed;
 
     /**
+     * The {@link System#nanoTime()} reading before which no transmission is attempted, as decided by
+     * {@link #backoff} after the last failure, or {@link #NO_BACKOFF} if none is in effect.
+     */
+    private volatile long retryNotBeforeNanos = NO_BACKOFF;
+
+    /**
      * Creates a new batching engine from the given builder.
      *
      * @param builder The builder carrying the settings to use
@@ -134,6 +152,7 @@ public class Batcher<T> {
         this.maxRequestElements = builder.maxRequestElements;
         this.maxConsecutiveFailures = builder.maxConsecutiveFailures;
         this.maxConcurrentTransmissions = builder.maxConcurrentTransmissions;
+        this.backoff = builder.backoff;
         this.elementNoun = builder.elementNoun;
         this.transport = Objects.requireNonNull(builder.transport, "transport must not be null");
         this.listener = builder.listener;
@@ -168,6 +187,7 @@ public class Batcher<T> {
         private IntSupplier maxRequestElements = () -> Integer.MAX_VALUE;
         private IntSupplier maxConsecutiveFailures = () -> 5;
         private int maxConcurrentTransmissions = 4;
+        private BackoffPolicy backoff = BackoffPolicy.none();
         private String transmissionThreadPrefix = "batcher-transmission-";
         private String elementNoun = "element";
         private @Nullable Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport;
@@ -236,6 +256,18 @@ public class Batcher<T> {
          */
         public Builder<T> maxConcurrentTransmissions(int maxConcurrentTransmissions) {
             this.maxConcurrentTransmissions = maxConcurrentTransmissions;
+            return this;
+        }
+
+        /**
+         * Sets how long to hold off transmissions after a failure. Defaults to {@link BackoffPolicy#none()},
+         * the behavior of every version of this library before that interface existed.
+         *
+         * @param backoff The backoff policy
+         * @return This builder
+         */
+        public Builder<T> backoff(BackoffPolicy backoff) {
+            this.backoff = backoff;
             return this;
         }
 
@@ -315,7 +347,7 @@ public class Batcher<T> {
      * @param elements The elements to accumulate, must not be empty
      */
     public void add(List<T> elements) {
-        PendingBatch snapshot = null;
+        PendingBatch<T> snapshot = null;
         List<T> discarded;
         int maxPending;
         synchronized (this) {
@@ -331,7 +363,7 @@ public class Batcher<T> {
 
             boolean batchingEnabled = flushThreshold.getAsLong() > 1;
             boolean thresholdReached = batch.size() >= flushThreshold.getAsLong();
-            if (thresholdReached && !(batchingEnabled && transmissionFailed)) {
+            if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
                 snapshot = swapBatch();
             }
         }
@@ -360,13 +392,41 @@ public class Batcher<T> {
     }
 
     /**
+     * Whether transmissions are currently held off by {@link #backoff} after a failure, meaning neither a
+     * reached threshold nor a {@link #flush()} triggers one until the delay it decided has elapsed.
+     *
+     * @return {@code true} if a backoff delay is currently in effect
+     */
+    public boolean isBackingOff() {
+        long notBefore = retryNotBeforeNanos;
+        // Compares the difference rather than the readings themselves, the only correct way to order two
+        // System.nanoTime() values (they may wrap around, being meaningful only relative to each other).
+        return notBefore != NO_BACKOFF && System.nanoTime() - notBefore < 0;
+    }
+
+    /**
      * Sends the pending elements (a partially filled batch). Intended to be called periodically to clean
-     * out pending elements.
+     * out pending elements. Does nothing while a backoff delay is in effect (see {@link #isBackingOff()}).
      */
     public void flush() {
-        PendingBatch snapshot;
+        flush(false);
+    }
+
+    /**
+     * Sends the pending elements (see {@link #flush()}).
+     *
+     * @param force Whether to transmit even while a backoff delay is in effect, used by {@link #close()}
+     *              since it is the last chance for those elements to be sent at all
+     */
+    private void flush(boolean force) {
+        PendingBatch<T> snapshot;
         synchronized (this) {
             if (batch.isEmpty()) {
+                return;
+            }
+            if (!force && isBackingOff()) {
+                log.debug("Holding off the transmission of {} pending {}(s) while backing off after a failure",
+                        batch.size(), elementNoun);
                 return;
             }
             log.debug("Sending partial batch of {}/{}", batch.size(), flushThreshold.getAsLong());
@@ -651,14 +711,15 @@ public class Batcher<T> {
     }
 
     /**
-     * Handles a fully successful transmission attempt: clears the failure state, and notifies
-     * {@link #listener}.
+     * Handles a fully successful transmission attempt: clears the failure and backoff state, so the next
+     * batch is transmitted at the first opportunity again, and notifies {@link #listener}.
      *
      * @param count          The number of elements accepted
      * @param durationMillis The time the transmission took, in milliseconds
      */
     private void onTransmissionSuccess(int count, long durationMillis) {
         transmissionFailed = false;
+        retryNotBeforeNanos = NO_BACKOFF;
         notifyListener(() -> listener.onSucceeded(count, durationMillis));
     }
 
@@ -726,7 +787,8 @@ public class Batcher<T> {
 
     /**
      * Handles a failed transmission attempt: either discards the given elements once
-     * {@code maxConsecutiveFailures} has been reached, or puts them back for a later retry.
+     * {@code maxConsecutiveFailures} has been reached, or puts them back for a later retry, holding off the
+     * next attempt for as long as {@link #backoff} decides in the latter case.
      *
      * @param elements      The elements that failed to be transmitted
      * @param failureStreak The number of consecutive times this exact content had already failed before
@@ -742,9 +804,41 @@ public class Batcher<T> {
             // thread, and keeping this under the same permit transmit() still holds lets
             // awaitPendingTransmissions() observe it, same as the transmission itself.
             notifyListener(() -> listener.onDropped(List.copyOf(elements), "maximum consecutive transmission failures exceeded"));
-        } else {
-            requeue(elements, newFailureStreak);
+            return;
         }
+
+        applyBackoff(newFailureStreak);
+        requeue(elements, newFailureStreak);
+    }
+
+    /**
+     * Holds off the next transmission for as long as {@link #backoff} decides for the given failure streak.
+     * Only ever pushes the deadline further out, never pulls it back in: a shorter delay computed for a
+     * lower streak (a different chunk failing for the first time, concurrently) must not cut short the wait
+     * a longer one already established.
+     *
+     * @param consecutiveFailures The number of consecutive failures the pending batch has now reached
+     */
+    private void applyBackoff(int consecutiveFailures) {
+        long delayMillis;
+        try {
+            delayMillis = backoff.delayMillis(consecutiveFailures);
+        } catch (Exception e) {
+            log.warn("Unhandled exception thrown by a BackoffPolicy, retrying without backing off", e);
+            return;
+        }
+        if (delayMillis <= 0) {
+            return;
+        }
+
+        long deadline = System.nanoTime() + MILLISECONDS.toNanos(delayMillis);
+        synchronized (this) {
+            long current = retryNotBeforeNanos;
+            if (current == NO_BACKOFF || deadline - current > 0) {
+                retryNotBeforeNanos = deadline;
+            }
+        }
+        log.debug("Holding off the next transmission for {}ms after {} consecutive failure(s)", delayMillis, consecutiveFailures);
     }
 
     /**
@@ -757,7 +851,9 @@ public class Batcher<T> {
      */
     public void close() throws Exception {
         try {
-            flush();
+            // Forced: a backoff delay still in effect must not stop this very last transmission attempt,
+            // which is the only remaining chance for those elements to be sent at all.
+            flush(true);
             awaitPendingTransmissions();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

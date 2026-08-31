@@ -29,4 +29,14 @@ class TestLogConfiguration implements LogConfiguration {
     @Builder.Default int maxConsecutiveFailures = 5;
     @Builder.Default int maxQueuedEvents = 10_000;
 
+    /**
+     * Deliberately disabled by default here, unlike {@link LogConfiguration#getRetryBackoff()}'s own
+     * production default: most tests below drive retries by calling {@code flush()} in a loop and asserting
+     * on the outcome right after, which a real delay would turn into either a sleep or a flaky wait. Tests
+     * specifically covering the backoff set it explicitly instead.
+     */
+    @Builder.Default Duration retryBackoff = Duration.ZERO;
+
+    @Builder.Default Duration maxRetryBackoff = Duration.ZERO;
+
 }

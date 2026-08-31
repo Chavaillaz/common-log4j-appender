@@ -332,6 +332,79 @@ class BatcherTest {
         assertTrue(attempts.stream().allMatch(List.of("a")::equals), "Attempts should only ever contain \"a\", but were " + attempts);
     }
 
+    @Test
+    @DisplayName("Holds off retrying while the backoff policy says to wait, then retries once it elapses")
+    void testBackoffHoldsOffRetries() throws Exception {
+        // given
+        var attempts = new AtomicInteger();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConsecutiveFailures(() -> 0)
+                .backoff(consecutiveFailures -> 200)
+                .transport(elements -> {
+                    attempts.incrementAndGet();
+                    return completedFuture(TransmissionResult.failure(null));
+                })
+                .listener(BatcherListener.noop())
+                .build();
+        batcher.add(List.of("a"));
+
+        // when: a first attempt fails
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: the next flush is held off rather than immediately hammering the failing transport again
+        assertEquals(1, attempts.get());
+        assertTrue(batcher.isBackingOff());
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        assertEquals(1, attempts.get(), "The retry should have been held off by the backoff");
+
+        // when: the backoff elapses
+        awaitBackoffElapsed(batcher);
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: retrying resumes on its own, without any further prompting
+        assertEquals(2, attempts.get());
+    }
+
+    @Test
+    @DisplayName("Ignores an active backoff while closing, that transmission being the last chance to send at all")
+    void testCloseTransmitsDespiteAnActiveBackoff() throws Exception {
+        // given: a backoff far longer than this test, engaged by a first failing attempt
+        var attempts = new AtomicInteger();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConsecutiveFailures(() -> 0)
+                .backoff(consecutiveFailures -> 60_000)
+                .transport(elements -> completedFuture(
+                        attempts.incrementAndGet() > 1 ? TransmissionResult.success() : TransmissionResult.failure(null)))
+                .listener(BatcherListener.noop())
+                .build();
+        batcher.add(List.of("a"));
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        assertTrue(batcher.isBackingOff());
+
+        // when
+        batcher.close();
+
+        // then: the second attempt happened despite the backoff, and succeeded
+        assertEquals(2, attempts.get());
+        assertFalse(batcher.isTransmissionFailing());
+    }
+
+    private static void awaitBackoffElapsed(Batcher<String> batcher) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        while (batcher.isBackingOff()) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new AssertionError("Timed out waiting for the backoff to elapse");
+            }
+            Thread.sleep(5);
+        }
+    }
+
     private static Batcher<String> batcher(long flushThreshold,
             Function<List<String>, CompletableFuture<TransmissionResult<String>>> transport, BatcherListener<String> listener) {
         return Batcher.<String>builder()

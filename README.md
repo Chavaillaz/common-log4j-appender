@@ -63,9 +63,11 @@ The flow for a single log event is:
    thread, and the background thread immediately resumes accumulating the next batch, never waiting on the
    network. Up to `MaxConcurrentTransmissions` requests (4 by default) run at the same time; beyond that,
    the background thread waits for a slot, so the downstream system is never overwhelmed.
-5. A failed request's documents are put back in front of the batch and retried at the next opportunity
-   instead of lost, without hammering the system on every incoming message in the meantime; a failing chunk
-   retries independently of its siblings. Two safety nets bound how far this can go: the pending batch never
+5. A failed request's documents are put back in front of the batch and retried later instead of lost; a
+   failing chunk retries independently of its siblings. Retries are delayed by an exponential backoff with
+   jitter (`RetryBackoff`, up to `MaxRetryBackoff`), so a downstream system that is down, overloaded or
+   rate-limiting is not hit again at whatever rate logs happen to arrive — which, with `FlushThreshold` at
+   `1`, would otherwise mean one request per log line for the whole outage. Two safety nets bound how far this can go: the pending batch never
    grows past `MaxPendingDocuments` in memory (oldest documents discarded past that point), and a request
    failing `MaxConsecutiveFailures` times in a row is discarded instead of retried forever (which would
    otherwise happen if a single document can never be accepted by the downstream system). Both are reported
@@ -271,8 +273,10 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `MaxRequestDocuments` | Maximum documents sent together in a single request; a bigger batch is split into chunks of that size (see step 4 above), each retried independently. Defaults to unbounded (no chunking); set to match a downstream system's per-request limit. |
 | `MaxConsecutiveFailures` | Maximum consecutive failed attempts for the same request before it is discarded instead of retried again (see step 5 above). Defaults to `5`; `0` or less retries indefinitely. |
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; oldest discarded past that to make room for a new one, mirroring `MaxPendingDocuments`. Defaults to `10'000`. |
+| `RetryBackoff` | Base delay before retrying a failed transmission, doubling per consecutive failure with full jitter, and holding off newly accumulated documents too while in effect. Defaults to `1s`; `ZERO` retries at the next opportunity, as before this setting existed. |
+| `MaxRetryBackoff` | Cap the delay above never grows past. Defaults to `30s`. |
 
-These six are default methods on `LogConfiguration` itself (rather than plugin attributes), so they're
+These eight are default methods on `LogConfiguration` itself (rather than plugin attributes), so they're
 available even if the appender implementation you use doesn't expose them as configuration; override them
 in your own configuration class if needed.
 

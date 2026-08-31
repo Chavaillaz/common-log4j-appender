@@ -11,6 +11,7 @@ import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.BackoffPolicy;
 import com.chavaillaz.appender.Batcher;
 import com.chavaillaz.appender.BatcherListener;
 import com.chavaillaz.appender.LogConfiguration;
@@ -94,6 +95,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                 .maxRequestElements(this::getMaxRequestDocuments)
                 .maxConsecutiveFailures(this::getMaxConsecutiveFailures)
                 .maxConcurrentTransmissions(configuration.getMaxConcurrentTransmissions())
+                .backoff(BackoffPolicy.exponential(configuration.getRetryBackoff(), configuration.getMaxRetryBackoff()))
                 .transmissionThreadPrefix("log-delivery-transmission-")
                 .elementNoun("document")
                 .transport(this::sendBulk)

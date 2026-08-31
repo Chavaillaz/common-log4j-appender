@@ -139,4 +139,34 @@ public interface LogConfiguration {
         return 10_000;
     }
 
+    /**
+     * Base delay before retrying after a failed transmission, doubling with every consecutive failure up to
+     * {@link #getMaxRetryBackoff()} and picked at random within that (see
+     * {@link com.chavaillaz.appender.BackoffPolicy#exponential(Duration, Duration)}), so a downstream system
+     * that is down, overloaded or rate-limiting is not hit again at the rate logs happen to arrive. Applies
+     * to newly accumulated documents too while it is in effect, which is the point: the pipeline stops
+     * sending for a while rather than merely reordering what it sends.
+     * <p>
+     * Defaults to one second; {@link Duration#ZERO} or less disables backing off entirely, retrying at the
+     * next flush (or, with {@link #getFlushThreshold()} at {@code 1}, on the very next document) as every
+     * version of this library before this setting existed did.
+     *
+     * @return The base delay before retrying a failed transmission
+     */
+    default Duration getRetryBackoff() {
+        return Duration.ofSeconds(1);
+    }
+
+    /**
+     * Cap the delay described by {@link #getRetryBackoff()} never grows past, so a long outage settles into
+     * retrying at a steady (low) rate instead of drifting towards intervals long enough for
+     * {@link #getMaxPendingDocuments()} to start discarding documents that could have been sent. Ignored if
+     * smaller than {@link #getRetryBackoff()}. Defaults to thirty seconds.
+     *
+     * @return The maximum delay before retrying a failed transmission
+     */
+    default Duration getMaxRetryBackoff() {
+        return Duration.ofSeconds(30);
+    }
+
 }
