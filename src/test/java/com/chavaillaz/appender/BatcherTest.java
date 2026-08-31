@@ -303,6 +303,35 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
     }
 
+    @Test
+    @DisplayName("Never requeues an element a PartialFailure referenced but the chunk never contained")
+    void testPartialFailureCannotInjectForeignElements() throws Exception {
+        // given: a misbehaving transport reporting, alongside the element it was actually given, one that
+        // was never part of the chunk (nor of this Batcher at all)
+        var attempts = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConsecutiveFailures(() -> 0)
+                .transport(elements -> {
+                    attempts.add(elements);
+                    return completedFuture(TransmissionResult.partialFailure(List.of(elements.get(0), "foreign"), null));
+                })
+                .listener(BatcherListener.noop())
+                .build();
+        batcher.add(List.of("a"));
+
+        // when: retried a few times, each attempt reporting the same foreign element again
+        for (int i = 0; i < 3; i++) {
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+        }
+
+        // then: only the element genuinely dispatched is ever retried, the foreign one never making its way
+        // into the pending batch (where it would be transmitted as if it were real data)
+        assertEquals(3, attempts.size());
+        assertTrue(attempts.stream().allMatch(List.of("a")::equals), "Attempts should only ever contain \"a\", but were " + attempts);
+    }
+
     private static Batcher<String> batcher(long flushThreshold,
             Function<List<String>, CompletableFuture<TransmissionResult<String>>> transport, BatcherListener<String> listener) {
         return Batcher.<String>builder()

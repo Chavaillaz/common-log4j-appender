@@ -615,10 +615,7 @@ public class Batcher<T> {
      */
     private void handleResult(List<T> elements, int failureStreak, TransmissionResult<T> result, long durationMillis) {
         switch (result) {
-            case TransmissionResult.Success<T> success -> {
-                transmissionFailed = false;
-                notifyListener(() -> listener.onSucceeded(elements.size(), durationMillis));
-            }
+            case TransmissionResult.Success<T> success -> onTransmissionSuccess(elements.size(), durationMillis);
             case TransmissionResult.Failure<T> failure -> {
                 transmissionFailed = true;
                 notifyListener(() -> listener.onFailed(elements.size(), failure.cause()));
@@ -628,44 +625,87 @@ public class Batcher<T> {
                 onTransmissionFailure(elements, failureStreak);
             }
             case TransmissionResult.PartialFailure<T> partial -> {
-                List<T> rejected = partial.rejected();
-                transmissionFailed = !rejected.isEmpty();
-                List<T> accepted = withoutIdentity(elements, rejected);
+                Partition<T> partition = partition(elements, partial.rejected());
+                List<T> rejected = partition.rejected();
+                if (rejected.size() != partial.rejected().size()) {
+                    // Only possible from a transport violating the TransmissionResult contract: duplicate
+                    // references, or elements that were never part of this chunk. Requeuing those verbatim
+                    // would inject foreign data into the pending batch, so only the intersection is kept.
+                    log.warn("Transport reported {} rejected {}(s) for a batch of {}, but only {} of them belong to it; "
+                                    + "ignoring the rest (they must be reported by reference identity)",
+                            partial.rejected().size(), elementNoun, elements.size(), rejected.size());
+                }
+                if (rejected.isEmpty()) {
+                    onTransmissionSuccess(elements.size(), durationMillis);
+                    return;
+                }
+                transmissionFailed = true;
+                List<T> accepted = partition.accepted();
                 if (!accepted.isEmpty()) {
                     notifyListener(() -> listener.onSucceeded(accepted.size(), durationMillis));
                 }
-                if (!rejected.isEmpty()) {
-                    notifyListener(() -> listener.onFailed(rejected.size(), partial.cause()));
-                    onTransmissionFailure(rejected, failureStreak);
-                }
+                notifyListener(() -> listener.onFailed(rejected.size(), partial.cause()));
+                onTransmissionFailure(rejected, failureStreak);
             }
         }
     }
 
     /**
-     * Returns the elements of {@code elements} not present in {@code excluded}, matched by reference
+     * Handles a fully successful transmission attempt: clears the failure state, and notifies
+     * {@link #listener}.
+     *
+     * @param count          The number of elements accepted
+     * @param durationMillis The time the transmission took, in milliseconds
+     */
+    private void onTransmissionSuccess(int count, long durationMillis) {
+        transmissionFailed = false;
+        notifyListener(() -> listener.onSucceeded(count, durationMillis));
+    }
+
+    /**
+     * The elements of a dispatched chunk, split into those a {@link TransmissionResult.PartialFailure}
+     * reported as rejected and those it did not.
+     *
+     * @param accepted The elements not reported as rejected, in their original order
+     * @param rejected The elements reported as rejected, in their original order
+     * @param <T>      The type of element
+     */
+    private record Partition<T>(List<T> accepted, List<T> rejected) {
+
+    }
+
+    /**
+     * Splits {@code elements} according to whether each is present in {@code rejected}, matched by reference
      * identity rather than {@code equals()} (see {@link TransmissionResult} for why: content-identical but
      * distinct elements, e.g. repeated heartbeat log messages, are common, and equals-based matching would
-     * silently misattribute which ones are excluded).
+     * silently misattribute which ones are retried).
+     * <p>
+     * Driven by {@code elements} rather than by {@code rejected}, so the result can only ever contain
+     * elements this chunk was actually dispatched with, each exactly as many times as it appears in it: a
+     * misbehaving transport reporting duplicates, or references foreign to the chunk entirely, cannot get
+     * them injected into the pending batch through a requeue.
      *
-     * @param elements The elements to filter
-     * @param excluded The elements to exclude, by reference identity
-     * @return The elements of {@code elements} not identical to any element of {@code excluded}
+     * @param elements The dispatched chunk
+     * @param rejected The elements the transport reported as rejected
+     * @param <T>      The type of element
+     * @return The chunk, partitioned into accepted and rejected elements
      */
-    private static <T> List<T> withoutIdentity(List<T> elements, List<T> excluded) {
-        Set<T> excludedIdentity = Collections.newSetFromMap(new IdentityHashMap<>(excluded.size()));
-        excludedIdentity.addAll(excluded);
-        // A misbehaving transport reporting more (or foreign) rejected elements than were actually
-        // dispatched must not be able to make this capacity negative and throw, or the whole chunk (both
-        // the genuinely accepted and rejected elements alike) would be lost silently instead of at least
-        // being reported.
-        List<T> remaining = new ArrayList<>(Math.max(0, elements.size() - excluded.size()));
+    private static <T> Partition<T> partition(List<T> elements, List<T> rejected) {
+        if (rejected.isEmpty()) {
+            return new Partition<>(elements, List.of());
+        }
+        Set<T> rejectedIdentity = Collections.newSetFromMap(new IdentityHashMap<>(rejected.size()));
+        rejectedIdentity.addAll(rejected);
+        List<T> accepted = new ArrayList<>(elements.size());
+        List<T> actuallyRejected = new ArrayList<>(Math.min(elements.size(), rejected.size()));
         for (T element : elements) {
-            if (!excludedIdentity.contains(element)) {
-                remaining.add(element);
+            if (rejectedIdentity.contains(element)) {
+                actuallyRejected.add(element);
+            } else {
+                accepted.add(element);
             }
         }
-        return remaining;
+        return new Partition<>(accepted, actuallyRejected);
     }
 
     /**
