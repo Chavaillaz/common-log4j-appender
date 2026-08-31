@@ -287,16 +287,22 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     protected abstract CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents);
 
     /**
-     * Flushes the current batch and waits for every pending transmission (including that final one) to
-     * complete, so a subclass can safely release resources used by {@link #sendBulk(List)} right after this
-     * call returns without racing an in-flight transmission.
+     * Flushes the current batch and waits, up to {@link LogConfiguration#getCloseTimeout()}, for every
+     * pending transmission (including that final one) to complete, so a subclass can safely release
+     * resources used by {@link #sendBulk(List)} right after this call returns without racing an in-flight
+     * transmission.
+     * <p>
+     * Whatever is still pending once that wait is over — documents a failing final transmission put back, or
+     * documents held by a transmission that never completed — is reported through
+     * {@link LogDeliveryListener#onDocumentsDropped(List, String)} rather than discarded along with this
+     * delivery, giving a dead-letter sink a last chance to save them.
      *
      * @throws Exception Never thrown by this implementation (an interruption while waiting is caught,
      *                    re-flagged on the current thread, and logged instead)
      */
     @Override
     public void close() throws Exception {
-        batcher.close();
+        batcher.close(configuration.getCloseTimeout());
     }
 
     /**

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -360,6 +361,37 @@ class BatcherTest {
         // then: a dead-letter sink gets its last chance at them
         assertEquals(List.of("a", "b"), dropped);
         assertEquals(List.of("still pending when closed"), reasons);
+    }
+
+    @Test
+    @DisplayName("Gives up closing once the timeout elapses instead of waiting forever on a stuck transport")
+    void testCloseIsBoundedByItsTimeout() throws Exception {
+        // given: a transport whose future is never completed, holding the single transmission permit for good
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConcurrentTransmissions(1)
+                .transport(elements -> new CompletableFuture<>())
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("stuck"));
+        batcher.flush();
+        batcher.add(List.of("pending"));
+
+        // when: closing, which must both wait for a permit the stuck transmission never gives back and then
+        // wait for that transmission itself, neither of which can be allowed to block a JVM shutdown forever
+        long start = System.nanoTime();
+        batcher.close(Duration.ofMillis(200));
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+        // then
+        assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
+        assertEquals(List.of("pending"), dropped, "The element never handed to the stuck transport should be reported");
     }
 
     @Test

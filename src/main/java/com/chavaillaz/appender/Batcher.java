@@ -1,7 +1,9 @@
 package com.chavaillaz.appender;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -81,6 +83,19 @@ public class Batcher<T> {
      */
     private static final long NO_BACKOFF = Long.MIN_VALUE;
 
+    /**
+     * Sentinel value of {@link #closeDeadlineNanos} meaning no deadline is in effect, for the same reason
+     * {@link #NO_BACKOFF} cannot simply be {@code 0}.
+     */
+    private static final long NO_DEADLINE = Long.MIN_VALUE;
+
+    /**
+     * Upper bound applied to a close timeout before converting it to nanoseconds, so an absurdly large one
+     * cannot overflow that conversion into a negative (i.e. already elapsed) deadline. A year is well past
+     * any sane shutdown budget, and indistinguishable from waiting indefinitely in practice.
+     */
+    private static final long MAX_TIMEOUT_MILLIS = Duration.ofDays(365).toMillis();
+
     private final LongSupplier flushThreshold;
     private final IntSupplier maxPendingElements;
     private final IntSupplier maxRequestElements;
@@ -136,11 +151,20 @@ public class Batcher<T> {
     private volatile long retryNotBeforeNanos = NO_BACKOFF;
 
     /**
-     * Whether {@link #close()} has been called, after which no element is accepted any more: without this, a
-     * late {@link #add(List)} would stack elements into a batch nothing will ever transmit or report (its
-     * dispatch being rejected by the shut-down {@link #transmissionExecutor}), losing them silently.
+     * Whether {@link #close(Duration)} has been called, after which no element is accepted any more: without
+     * this, a late {@link #add(List)} would stack elements into a batch nothing will ever transmit or report
+     * (its dispatch being rejected by the shut-down {@link #transmissionExecutor}), losing them silently.
      */
     private volatile boolean closed;
+
+    /**
+     * The {@link System#nanoTime()} reading past which {@link #close(Duration)} stops waiting, or
+     * {@link #NO_DEADLINE} while no bounded close is in progress. Read by {@link #dispatchChunk(List, int)}
+     * too, so the final flush's own wait for a transmission permit is bounded by the very same budget: with
+     * every permit held by transmissions that never complete, acquiring one would otherwise block the whole
+     * close before it even reaches its (bounded) wait, defeating the timeout entirely.
+     */
+    private volatile long closeDeadlineNanos = NO_DEADLINE;
 
     /**
      * Creates a new batching engine from the given builder.
@@ -431,8 +455,8 @@ public class Batcher<T> {
     /**
      * Sends the pending elements (see {@link #flush()}).
      *
-     * @param force Whether to transmit even while a backoff delay is in effect, used by {@link #close()}
-     *              since it is the last chance for those elements to be sent at all
+     * @param force Whether to transmit even while a backoff delay is in effect, used by
+     *              {@link #close(Duration)} since it is the last chance for those elements to be sent at all
      */
     private void flush(boolean force) {
         PendingBatch<T> snapshot;
@@ -590,7 +614,12 @@ public class Batcher<T> {
      */
     private void dispatchChunk(List<T> elements, int failureStreak) {
         try {
-            transmissionPermits.acquire();
+            if (!acquireTransmissionPermit()) {
+                log.warn("Unable to transmit {} {}(s) within the remaining close budget, they will be reported as dropped",
+                        elements.size(), elementNoun);
+                requeue(elements, failureStreak);
+                return;
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             requeue(elements, failureStreak);
@@ -603,6 +632,22 @@ public class Batcher<T> {
             transmissionPermits.release();
             requeue(elements, failureStreak);
         }
+    }
+
+    /**
+     * Acquires one transmission permit, waiting indefinitely in the normal case but only until
+     * {@link #closeDeadlineNanos} while a bounded {@link #close(Duration)} is in progress.
+     *
+     * @return {@code true} if a permit was acquired, {@code false} if the close deadline elapsed first
+     */
+    private boolean acquireTransmissionPermit() throws InterruptedException {
+        long deadline = closeDeadlineNanos;
+        if (deadline == NO_DEADLINE) {
+            transmissionPermits.acquire();
+            return true;
+        }
+        long remainingNanos = deadline - System.nanoTime();
+        return remainingNanos > 0 && transmissionPermits.tryAcquire(remainingNanos, NANOSECONDS);
     }
 
     /**
@@ -860,23 +905,44 @@ public class Batcher<T> {
     }
 
     /**
-     * Flushes the current batch and waits for every pending transmission (including that final one) to
-     * complete, so a caller can safely release resources used by the transport function right after this
-     * call returns without racing an in-flight transmission.
-     * <p>
-     * Whatever is still pending once that wait is over — typically elements a failing final transmission put
-     * back — is reported through {@link BatcherListener#onDropped(List, String)} rather than silently
-     * discarded along with this engine, giving a dead-letter sink a last chance to save them.
+     * Flushes the current batch and waits, indefinitely, for every pending transmission (including that
+     * final one) to complete; prefer {@link #close(Duration)}, which bounds that wait, for a transport whose
+     * future is not guaranteed to complete.
      * <p>
      * Never throws: an interruption while waiting is caught, re-flagged on the current thread, and logged.
      */
     public void close() {
+        close(null);
+    }
+
+    /**
+     * Flushes the current batch and waits for every pending transmission (including that final one) to
+     * complete, so a caller can safely release resources used by the transport function right after this
+     * call returns without racing an in-flight transmission.
+     * <p>
+     * Whatever is still pending once that wait is over — elements a failing final transmission put back, or
+     * elements still held by a transmission that did not complete within {@code timeout} — is reported
+     * through {@link BatcherListener#onDropped(List, String)} rather than silently discarded along with this
+     * engine, giving a dead-letter sink a last chance to save them.
+     *
+     * @param timeout The maximum time to wait for pending transmissions to complete, or {@code null} to wait
+     *                indefinitely (only safe for a transport guaranteed to always complete its future, since
+     *                one that never does would otherwise block this call, and any JVM shutdown behind it,
+     *                forever)
+     */
+    public void close(@Nullable Duration timeout) {
         closed = true;
+        Long timeoutMillis = toMillis(timeout);
+        if (timeoutMillis != null) {
+            closeDeadlineNanos = System.nanoTime() + MILLISECONDS.toNanos(timeoutMillis);
+        }
         try {
             // Forced: a backoff delay still in effect must not stop this very last transmission attempt,
             // which is the only remaining chance for those elements to be sent at all.
             flush(true);
-            awaitPendingTransmissions();
+            if (!awaitUntilCloseDeadline()) {
+                log.warn("Gave up waiting for pending transmissions to complete after {}", timeout);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("Interrupted while waiting for pending transmissions to complete");
@@ -887,8 +953,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Reports whatever is left in the pending batch once this engine is closed (see {@link #close()}) as
-     * dropped, so those elements are not lost without a trace. Notifies on the calling thread rather than
+     * Reports whatever is left in the pending batch once this engine is closed (see {@link #close(Duration)})
+     * as dropped, so those elements are not lost without a trace. Notifies on the calling thread rather than
      * through {@link #notifyDropped(List, String)}, {@link #transmissionExecutor} being shut down by then,
      * and because a caller of {@code close()} is already waiting on this work anyway.
      */
@@ -908,15 +974,80 @@ public class Batcher<T> {
     }
 
     /**
-     * Waits until every currently dispatched transmission (including the one triggered by the last call to
-     * {@link #flush()}) has completed, so that closing any resource used by the transport function
-     * (typically done right after calling this method) does not race with an in-flight transmission.
+     * Waits, indefinitely, until every currently dispatched transmission (including the one triggered by the
+     * last call to {@link #flush()}) has completed, so that closing any resource used by the transport
+     * function (typically done right after calling this method) does not race with an in-flight transmission.
      * <p>
      * Also used by tests to deterministically wait for asynchronous transmissions to complete.
      */
     public void awaitPendingTransmissions() throws InterruptedException {
-        transmissionPermits.acquire(maxConcurrentTransmissions);
-        transmissionPermits.release(maxConcurrentTransmissions);
+        awaitPendingTransmissions(null);
+    }
+
+    /**
+     * Waits until every currently dispatched transmission has completed, or the given timeout elapses.
+     *
+     * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
+     * @return {@code true} if every pending transmission completed, {@code false} if the timeout elapsed first
+     */
+    public boolean awaitPendingTransmissions(@Nullable Duration timeout) throws InterruptedException {
+        Long timeoutMillis = toMillis(timeout);
+        return awaitPendingTransmissions(timeoutMillis == null ? -1 : MILLISECONDS.toNanos(timeoutMillis));
+    }
+
+    /**
+     * Waits until every currently dispatched transmission has completed, or {@link #closeDeadlineNanos}
+     * (if any is in effect) is reached.
+     *
+     * @return {@code true} if every pending transmission completed, {@code false} if the deadline elapsed first
+     */
+    private boolean awaitUntilCloseDeadline() throws InterruptedException {
+        long deadline = closeDeadlineNanos;
+        if (deadline == NO_DEADLINE) {
+            return awaitPendingTransmissions(-1);
+        }
+        // Clamped at zero: a deadline already elapsed (the final flush having spent the whole budget waiting
+        // for a transmission permit) would otherwise be passed down as a negative value, which means "wait
+        // indefinitely" there and would turn a bounded close into an unbounded one at the worst moment.
+        return awaitPendingTransmissions(Math.max(0, deadline - System.nanoTime()));
+    }
+
+    /**
+     * Waits until every currently dispatched transmission has completed, or the given time elapses.
+     *
+     * @param timeoutNanos The maximum time to wait, in nanoseconds, or a negative value to wait indefinitely
+     * @return {@code true} if every pending transmission completed, {@code false} if the timeout elapsed first
+     */
+    private boolean awaitPendingTransmissions(long timeoutNanos) throws InterruptedException {
+        if (timeoutNanos < 0) {
+            transmissionPermits.acquire(maxConcurrentTransmissions);
+            transmissionPermits.release(maxConcurrentTransmissions);
+            return true;
+        }
+        if (transmissionPermits.tryAcquire(maxConcurrentTransmissions, timeoutNanos, NANOSECONDS)) {
+            transmissionPermits.release(maxConcurrentTransmissions);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Converts the given timeout to milliseconds, clamped to {@link #MAX_TIMEOUT_MILLIS} and treating one
+     * too large to be expressed that way at all as no timeout rather than letting {@link Duration#toMillis()}
+     * throw out of a shutdown path.
+     *
+     * @param timeout The timeout to convert, or {@code null}
+     * @return The timeout in milliseconds (never negative), or {@code null} to wait indefinitely
+     */
+    private static @Nullable Long toMillis(@Nullable Duration timeout) {
+        if (timeout == null) {
+            return null;
+        }
+        try {
+            return Math.clamp(timeout.toMillis(), 0, MAX_TIMEOUT_MILLIS);
+        } catch (ArithmeticException e) {
+            return null;
+        }
     }
 
 }

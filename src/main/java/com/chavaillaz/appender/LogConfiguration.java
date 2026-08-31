@@ -1,6 +1,7 @@
 package com.chavaillaz.appender;
 
 import java.time.Duration;
+import java.util.List;
 
 import org.apache.logging.log4j.Level;
 import org.jspecify.annotations.Nullable;
@@ -166,6 +167,24 @@ public interface LogConfiguration {
      * @return The maximum delay before retrying a failed transmission
      */
     default Duration getMaxRetryBackoff() {
+        return Duration.ofSeconds(30);
+    }
+
+    /**
+     * Maximum time a batch-based log delivery waits, while closing, for the transmissions still in flight
+     * (including the final flush's own) to complete, before giving up and reporting whatever is still
+     * pending through {@link LogDeliveryListener#onDocumentsDropped(List, String)}. Bounds how long an
+     * unresponsive downstream system can hold up an application's shutdown: without it, a transport whose
+     * future never completes would block it indefinitely.
+     * <p>
+     * Distinct from, and applied after, the {@code shutdownTimeout} of the Log4j2 configuration, which
+     * governs how long the appender waits for already-accepted events to reach the delivery in the first
+     * place. Defaults to thirty seconds; {@code null} waits indefinitely.
+     *
+     * @return The maximum time to wait for in-flight transmissions while closing, or {@code null} to wait
+     *         indefinitely
+     */
+    default @Nullable Duration getCloseTimeout() {
         return Duration.ofSeconds(30);
     }
 

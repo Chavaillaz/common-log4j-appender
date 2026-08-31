@@ -387,6 +387,34 @@ class AbstractBatchLogDeliveryTest {
             assertEquals("still pending when closed", listener.dropped.get(0).reason());
         }
 
+        @Test
+        @DisplayName("Gives up after the configured close timeout instead of waiting forever on a stuck transmission")
+        void testCloseIsBoundedByTheConfiguredTimeout() throws Exception {
+            // given: a delivery whose future is never completed, as an unresponsive downstream system with
+            // no read timeout of its own would produce, holding the only transmission slot for good
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .maxConcurrentTransmissions(1)
+                    .closeTimeout(Duration.ofMillis(200))
+                    .build();
+            var listener = new RecordingListener();
+            var logDelivery = new StuckTestLogDelivery(configuration, listener);
+            logDelivery.send(Map.<String, Object>of("logmessage", "in flight"));
+            logDelivery.flush();
+            var pending = Map.<String, Object>of("logmessage", "never dispatched");
+            logDelivery.send(pending);
+
+            // when
+            long start = System.nanoTime();
+            logDelivery.close();
+            long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then: an application's shutdown is not held hostage by a downstream system that never answers
+            assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(pending), listener.dropped.get(0).documents());
+        }
+
     }
 
     @Nested
@@ -1289,6 +1317,23 @@ class AbstractBatchLogDeliveryTest {
 
         record Dropped(List<Map<String, Object>> documents, String reason) {
 
+        }
+
+    }
+
+    /**
+     * A delivery whose transmissions never complete, standing in for a downstream system that accepts a
+     * connection and then never answers (and a client with no read timeout of its own to notice).
+     */
+    static class StuckTestLogDelivery extends AbstractBatchLogDelivery<TestLogConfiguration> {
+
+        protected StuckTestLogDelivery(TestLogConfiguration configuration, LogDeliveryListener listener) {
+            super(configuration, listener);
+        }
+
+        @Override
+        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+            return new CompletableFuture<>();
         }
 
     }

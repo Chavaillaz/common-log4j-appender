@@ -39,4 +39,6 @@ class TestLogConfiguration implements LogConfiguration {
 
     @Builder.Default Duration maxRetryBackoff = Duration.ZERO;
 
+    @Builder.Default @Nullable Duration closeTimeout = Duration.ofSeconds(10);
+
 }
