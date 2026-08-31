@@ -136,6 +136,13 @@ public class Batcher<T> {
     private volatile long retryNotBeforeNanos = NO_BACKOFF;
 
     /**
+     * Whether {@link #close()} has been called, after which no element is accepted any more: without this, a
+     * late {@link #add(List)} would stack elements into a batch nothing will ever transmit or report (its
+     * dispatch being rejected by the shut-down {@link #transmissionExecutor}), losing them silently.
+     */
+    private volatile boolean closed;
+
+    /**
      * Creates a new batching engine from the given builder.
      *
      * @param builder The builder carrying the settings to use
@@ -347,6 +354,15 @@ public class Batcher<T> {
      * @param elements The elements to accumulate, must not be empty
      */
     public void add(List<T> elements) {
+        if (closed) {
+            // Stacking them would be worse than reporting them here: nothing would ever transmit them
+            // (dispatch being rejected by the shut-down executor) nor report them, losing them silently.
+            log.warn("Discarding {} {}(s) submitted after this engine was closed", elements.size(), elementNoun);
+            List<T> rejected = List.copyOf(elements);
+            notifyListener(() -> listener.onDropped(rejected, "submitted after close"));
+            return;
+        }
+
         PendingBatch<T> snapshot = null;
         List<T> discarded;
         int maxPending;
@@ -510,8 +526,8 @@ public class Batcher<T> {
      * notified directly instead.
      * <p>
      * Best-effort: not tracked by {@link #transmissionPermits}, so {@link #awaitPendingTransmissions()} (and
-     * transitively {@link #close()}) does not wait for it; lost entirely if the executor is already
-     * shutting down.
+     * transitively {@link #close()}) does not wait for it; falls back to notifying on the calling thread if
+     * the executor is already shutting down, rather than losing the notification entirely.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded
@@ -520,7 +536,9 @@ public class Batcher<T> {
         try {
             transmissionExecutor.execute(() -> notifyListener(() -> listener.onDropped(elements, reason)));
         } catch (RejectedExecutionException e) {
-            log.warn("Unable to notify the listener of {} dropped {}(s), the engine is shutting down", elements.size(), elementNoun);
+            log.warn("Notifying the listener of {} dropped {}(s) on the calling thread, the engine is shutting down",
+                    elements.size(), elementNoun);
+            notifyListener(() -> listener.onDropped(elements, reason));
         }
     }
 
@@ -845,11 +863,15 @@ public class Batcher<T> {
      * Flushes the current batch and waits for every pending transmission (including that final one) to
      * complete, so a caller can safely release resources used by the transport function right after this
      * call returns without racing an in-flight transmission.
-     *
-     * @throws Exception Never thrown by this implementation (an interruption while waiting is caught,
-     *                    re-flagged on the current thread, and logged instead)
+     * <p>
+     * Whatever is still pending once that wait is over — typically elements a failing final transmission put
+     * back — is reported through {@link BatcherListener#onDropped(List, String)} rather than silently
+     * discarded along with this engine, giving a dead-letter sink a last chance to save them.
+     * <p>
+     * Never throws: an interruption while waiting is caught, re-flagged on the current thread, and logged.
      */
-    public void close() throws Exception {
+    public void close() {
+        closed = true;
         try {
             // Forced: a backoff delay still in effect must not stop this very last transmission attempt,
             // which is the only remaining chance for those elements to be sent at all.
@@ -860,7 +882,29 @@ public class Batcher<T> {
             log.warn("Interrupted while waiting for pending transmissions to complete");
         } finally {
             transmissionExecutor.shutdown();
+            reportRemainingAsDropped();
         }
+    }
+
+    /**
+     * Reports whatever is left in the pending batch once this engine is closed (see {@link #close()}) as
+     * dropped, so those elements are not lost without a trace. Notifies on the calling thread rather than
+     * through {@link #notifyDropped(List, String)}, {@link #transmissionExecutor} being shut down by then,
+     * and because a caller of {@code close()} is already waiting on this work anyway.
+     */
+    private void reportRemainingAsDropped() {
+        List<T> remaining;
+        synchronized (this) {
+            if (batch.isEmpty()) {
+                return;
+            }
+            remaining = List.copyOf(batch);
+            batch = new ArrayList<>(0);
+            pendingFailureStreak = 0;
+        }
+        log.error("Discarding {} {}(s) still pending once closed, they were never successfully transmitted",
+                remaining.size(), elementNoun);
+        notifyListener(() -> listener.onDropped(remaining, "still pending when closed"));
     }
 
     /**

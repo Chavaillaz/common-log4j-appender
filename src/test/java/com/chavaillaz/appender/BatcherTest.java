@@ -333,6 +333,61 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Reports the elements still pending when closed as dropped instead of discarding them silently")
+    void testCloseReportsStillPendingElementsAsDropped() {
+        // given: a transport that never succeeds, and no consecutive-failure limit, so the final flush's
+        // documents are put back for a retry that will never come — this used to end there, the pending
+        // batch simply going away with the engine, with no log line and no listener call to show for it
+        var dropped = new CopyOnWriteArrayList<String>();
+        var reasons = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConsecutiveFailures(() -> 0)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                        reasons.add(reason);
+                    }
+                })
+                .build();
+        batcher.add(List.of("a", "b"));
+
+        // when
+        batcher.close();
+
+        // then: a dead-letter sink gets its last chance at them
+        assertEquals(List.of("a", "b"), dropped);
+        assertEquals(List.of("still pending when closed"), reasons);
+    }
+
+    @Test
+    @DisplayName("Reports elements submitted after being closed as dropped instead of stacking them for nobody")
+    void testElementsSubmittedAfterCloseAreReported() {
+        // given
+        var dropped = new CopyOnWriteArrayList<String>();
+        var reasons = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = batcher(10, elements -> completedFuture(TransmissionResult.success()),
+                new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                        reasons.add(reason);
+                    }
+                });
+        batcher.close();
+
+        // when: a late caller (a log event racing the shutdown) still hands over an element
+        batcher.add(List.of("late"));
+
+        // then: reported rather than stacked into a batch nothing will ever transmit, its dispatch being
+        // rejected by the shut-down executor
+        assertEquals(List.of("late"), dropped);
+        assertEquals(List.of("submitted after close"), reasons);
+    }
+
+    @Test
     @DisplayName("Holds off retrying while the backoff policy says to wait, then retries once it elapses")
     void testBackoffHoldsOffRetries() throws Exception {
         // given

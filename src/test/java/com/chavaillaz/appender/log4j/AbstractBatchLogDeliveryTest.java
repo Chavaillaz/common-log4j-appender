@@ -362,6 +362,31 @@ class AbstractBatchLogDeliveryTest {
             assertEquals(1, logDelivery.countBulkSent.get());
         }
 
+        @Test
+        @DisplayName("Reports the documents still pending once closed instead of discarding them silently")
+        void testCloseReportsStillPendingDocumentsAsDropped() throws Exception {
+            // given: a downstream system that is down, and no consecutive-failure limit, so the final flush's
+            // documents are put back for a retry that will never come
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .maxConsecutiveFailures(0)
+                    .build();
+            var listener = new RecordingListener();
+            var logDelivery = new TestLogDelivery(configuration, listener);
+            logDelivery.bulkResult = false;
+            var document = Map.<String, Object>of("logmessage", "last words");
+            logDelivery.send(document);
+
+            // when
+            logDelivery.close();
+
+            // then: a dead-letter sink gets its last chance at them, rather than the pending batch simply
+            // going away with the delivery
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(document), listener.dropped.get(0).documents());
+            assertEquals("still pending when closed", listener.dropped.get(0).reason());
+        }
+
     }
 
     @Nested
