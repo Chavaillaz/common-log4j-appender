@@ -95,18 +95,22 @@ class BatcherFuzzTest {
         List<Elem> dropped = new CopyOnWriteArrayList<>();
         AtomicInteger transmitCount = new AtomicInteger();
 
-        Batcher<Elem> batcher = new Batcher<>(() -> Long.MAX_VALUE, () -> 100, () -> Integer.MAX_VALUE,
-                () -> maxConsecutiveFailures, 4, "batcher-fuzz-", "element",
-                chunk -> {
+        Batcher<Elem> batcher = Batcher.<Elem>builder()
+                .flushThreshold(() -> Long.MAX_VALUE)
+                .maxPendingElements(() -> 100)
+                .maxConsecutiveFailures(() -> maxConsecutiveFailures)
+                .transmissionThreadPrefix("batcher-fuzz-")
+                .transport(chunk -> {
                     transmitCount.incrementAndGet();
                     return completedFuture(fuzzedResult(random, chunk, foreignPool, stillPending));
-                },
-                new BatcherListener<>() {
+                })
+                .listener(new BatcherListener<>() {
                     @Override
                     public void onDropped(List<Elem> elementsDropped, String reason) {
                         dropped.addAll(elementsDropped);
                     }
-                });
+                })
+                .build();
 
         batcher.add(elements);
         batcher.awaitPendingTransmissions();

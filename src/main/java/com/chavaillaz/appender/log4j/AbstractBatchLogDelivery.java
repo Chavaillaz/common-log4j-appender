@@ -88,16 +88,16 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         this.configuration = configuration;
         warnAboutDegradedConfiguration(configuration);
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
-        this.batcher = new Batcher<>(
-                configuration::getFlushThreshold,
-                this::getMaxPendingDocuments,
-                this::getMaxRequestDocuments,
-                this::getMaxConsecutiveFailures,
-                configuration.getMaxConcurrentTransmissions(),
-                "log-delivery-transmission-",
-                "document",
-                this::sendBulk,
-                new BatcherListener<>() {
+        this.batcher = Batcher.<Map<String, Object>>builder()
+                .flushThreshold(configuration::getFlushThreshold)
+                .maxPendingElements(this::getMaxPendingDocuments)
+                .maxRequestElements(this::getMaxRequestDocuments)
+                .maxConsecutiveFailures(this::getMaxConsecutiveFailures)
+                .maxConcurrentTransmissions(configuration.getMaxConcurrentTransmissions())
+                .transmissionThreadPrefix("log-delivery-transmission-")
+                .elementNoun("document")
+                .transport(this::sendBulk)
+                .listener(new BatcherListener<>() {
                     @Override
                     public void onSucceeded(int count, long durationMillis) {
                         AbstractBatchLogDelivery.this.listener.onTransmissionSucceeded(count, durationMillis);
@@ -112,7 +112,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     public void onDropped(List<Map<String, Object>> dropped, String reason) {
                         AbstractBatchLogDelivery.this.listener.onDocumentsDropped(dropped, reason);
                     }
-                });
+                })
+                .build();
     }
 
     /**

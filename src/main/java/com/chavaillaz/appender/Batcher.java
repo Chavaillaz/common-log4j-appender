@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -55,6 +56,9 @@ import org.jspecify.annotations.Nullable;
  * chunk were rejected; only those are requeued for retry and counted toward
  * {@code maxConsecutiveFailures}, instead of the whole chunk being retried (or given up on) over a single
  * bad element.
+ * <p>
+ * Instances are created through {@link #builder()}, every setting having a usable default except the
+ * transport function itself.
  *
  * @param <T> The type of element accumulated and transmitted
  */
@@ -114,51 +118,188 @@ public class Batcher<T> {
     private volatile boolean transmissionFailed;
 
     /**
-     * Creates a new batching engine.
+     * Creates a new batching engine from the given builder.
      *
-     * @param flushThreshold             The number of accumulated elements that triggers a transmission,
-     *                                    re-read on every call
-     * @param maxPendingElements          The maximum number of elements a pending batch can hold in memory,
-     *                                    re-read on every call
-     * @param maxRequestElements          The maximum number of elements sent together in a single request; a
-     *                                    non-positive value disables chunking, re-read on every call
-     * @param maxConsecutiveFailures     The maximum number of consecutive failed attempts allowed for the
-     *                                    same pending batch before it is discarded; a non-positive value
-     *                                    disables this limit, re-read on every call
-     * @param maxConcurrentTransmissions The maximum number of batches transmitted concurrently, fixed at
-     *                                    construction time; must be at least {@code 1}, or every dispatch
-     *                                    would block forever waiting for a permit that never opens
-     * @param transmissionThreadPrefix   The name prefix for threads created to run transmissions
-     * @param elementNoun                Singular noun describing one element (e.g. {@code "document"}), used
-     *                                    only to phrase log messages and the reason string reported to
-     *                                    {@code listener} on a discard
-     * @param transport                  The transport function, called with a batch (or chunk) to transmit;
-     *                                    may complete the returned future synchronously or asynchronously,
-     *                                    and is not expected to block the calling thread either way
-     * @param listener                   The listener notified of the outcome of every transmission attempt
+     * @param builder The builder carrying the settings to use
      */
-    public Batcher(LongSupplier flushThreshold, IntSupplier maxPendingElements, IntSupplier maxRequestElements,
-            IntSupplier maxConsecutiveFailures, int maxConcurrentTransmissions, String transmissionThreadPrefix,
-            String elementNoun, Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport,
-            BatcherListener<T> listener) {
-        if (maxConcurrentTransmissions < 1) {
+    private Batcher(Builder<T> builder) {
+        if (builder.maxConcurrentTransmissions < 1) {
             // A value of 0 or less would give the semaphore below no permits to ever hand out, so every
             // dispatch() would block forever instead of merely lowering throughput.
             throw new IllegalArgumentException(
-                    "maxConcurrentTransmissions must be at least 1, but was " + maxConcurrentTransmissions);
+                    "maxConcurrentTransmissions must be at least 1, but was " + builder.maxConcurrentTransmissions);
         }
-        this.flushThreshold = flushThreshold;
-        this.maxPendingElements = maxPendingElements;
-        this.maxRequestElements = maxRequestElements;
-        this.maxConsecutiveFailures = maxConsecutiveFailures;
-        this.maxConcurrentTransmissions = maxConcurrentTransmissions;
-        this.elementNoun = elementNoun;
-        this.transport = transport;
-        this.listener = listener;
+        this.flushThreshold = builder.flushThreshold;
+        this.maxPendingElements = builder.maxPendingElements;
+        this.maxRequestElements = builder.maxRequestElements;
+        this.maxConsecutiveFailures = builder.maxConsecutiveFailures;
+        this.maxConcurrentTransmissions = builder.maxConcurrentTransmissions;
+        this.elementNoun = builder.elementNoun;
+        this.transport = Objects.requireNonNull(builder.transport, "transport must not be null");
+        this.listener = builder.listener;
         this.batch = newBatch();
-        this.transmissionPermits = new Semaphore(maxConcurrentTransmissions);
+        this.transmissionPermits = new Semaphore(builder.maxConcurrentTransmissions);
         this.transmissionExecutor = Executors.newThreadPerTaskExecutor(
-                Thread.ofVirtual().name(transmissionThreadPrefix, 0).factory());
+                Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).factory());
+    }
+
+    /**
+     * Creates a builder for a new batching engine, every setting having a usable default except
+     * {@link Builder#transport(Function)}.
+     *
+     * @param <T> The type of element accumulated and transmitted
+     * @return A new builder
+     */
+    public static <T> Builder<T> builder() {
+        return new Builder<>();
+    }
+
+    /**
+     * Builder for {@link Batcher}, preferred over a constructor taking every setting positionally: most of
+     * them are same-typed suppliers and counts, which such a constructor makes trivially easy to swap by
+     * mistake with no compiler error to show for it.
+     *
+     * @param <T> The type of element accumulated and transmitted
+     */
+    public static final class Builder<T> {
+
+        private LongSupplier flushThreshold = () -> 1L;
+        private IntSupplier maxPendingElements = () -> 10_000;
+        private IntSupplier maxRequestElements = () -> Integer.MAX_VALUE;
+        private IntSupplier maxConsecutiveFailures = () -> 5;
+        private int maxConcurrentTransmissions = 4;
+        private String transmissionThreadPrefix = "batcher-transmission-";
+        private String elementNoun = "element";
+        private @Nullable Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport;
+        private BatcherListener<T> listener = BatcherListener.noop();
+
+        private Builder() {
+            // Instantiated only through Batcher.builder()
+        }
+
+        /**
+         * Sets the number of accumulated elements that triggers a transmission, re-read on every call so it
+         * can be changed at runtime. Defaults to {@code 1} (no batching).
+         *
+         * @param flushThreshold The supplier of the flush threshold
+         * @return This builder
+         */
+        public Builder<T> flushThreshold(LongSupplier flushThreshold) {
+            this.flushThreshold = flushThreshold;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of elements a pending batch can hold in memory, re-read on every call.
+         * Defaults to {@code 10'000}.
+         *
+         * @param maxPendingElements The supplier of the maximum number of pending elements
+         * @return This builder
+         */
+        public Builder<T> maxPendingElements(IntSupplier maxPendingElements) {
+            this.maxPendingElements = maxPendingElements;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of elements sent together in a single request, a non-positive value
+         * disabling chunking, re-read on every call. Defaults to {@link Integer#MAX_VALUE} (no chunking).
+         *
+         * @param maxRequestElements The supplier of the maximum number of elements per request
+         * @return This builder
+         */
+        public Builder<T> maxRequestElements(IntSupplier maxRequestElements) {
+            this.maxRequestElements = maxRequestElements;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of consecutive failed attempts allowed for the same pending batch before
+         * it is discarded, a non-positive value disabling this limit, re-read on every call. Defaults to
+         * {@code 5}.
+         *
+         * @param maxConsecutiveFailures The supplier of the maximum number of consecutive failures
+         * @return This builder
+         */
+        public Builder<T> maxConsecutiveFailures(IntSupplier maxConsecutiveFailures) {
+            this.maxConsecutiveFailures = maxConsecutiveFailures;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of batches transmitted concurrently, fixed once built (unlike the limits
+         * above); must be at least {@code 1}, or every dispatch would block forever waiting for a permit
+         * that never opens. Defaults to {@code 4}.
+         *
+         * @param maxConcurrentTransmissions The maximum number of concurrent transmissions
+         * @return This builder
+         */
+        public Builder<T> maxConcurrentTransmissions(int maxConcurrentTransmissions) {
+            this.maxConcurrentTransmissions = maxConcurrentTransmissions;
+            return this;
+        }
+
+        /**
+         * Sets the name prefix for the threads created to run transmissions, so they can be identified in a
+         * thread dump. Defaults to {@code "batcher-transmission-"}.
+         *
+         * @param transmissionThreadPrefix The thread name prefix
+         * @return This builder
+         */
+        public Builder<T> transmissionThreadPrefix(String transmissionThreadPrefix) {
+            this.transmissionThreadPrefix = transmissionThreadPrefix;
+            return this;
+        }
+
+        /**
+         * Sets the singular noun describing one element (e.g. {@code "document"}), used only to phrase log
+         * messages and the reason string reported to the listener on a discard. Defaults to
+         * {@code "element"}.
+         *
+         * @param elementNoun The singular noun describing one element
+         * @return This builder
+         */
+        public Builder<T> elementNoun(String elementNoun) {
+            this.elementNoun = elementNoun;
+            return this;
+        }
+
+        /**
+         * Sets the transport function, called with a batch (or chunk) to transmit; it may complete the
+         * returned future synchronously or asynchronously, and is not expected to block the calling thread
+         * either way. Required, having no sensible default.
+         *
+         * @param transport The transport function
+         * @return This builder
+         */
+        public Builder<T> transport(Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport) {
+            this.transport = transport;
+            return this;
+        }
+
+        /**
+         * Sets the listener notified of the outcome of every transmission attempt. Defaults to
+         * {@link BatcherListener#noop()}.
+         *
+         * @param listener The listener
+         * @return This builder
+         */
+        public Builder<T> listener(BatcherListener<T> listener) {
+            this.listener = listener;
+            return this;
+        }
+
+        /**
+         * Builds the batching engine, which starts accepting elements immediately.
+         *
+         * @return The new batching engine
+         * @throws IllegalArgumentException If {@code maxConcurrentTransmissions} is below {@code 1}
+         * @throws NullPointerException     If no transport function was set
+         */
+        public Batcher<T> build() {
+            return new Batcher<>(this);
+        }
+
     }
 
     private List<T> newBatch() {

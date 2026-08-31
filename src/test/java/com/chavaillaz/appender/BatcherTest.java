@@ -32,9 +32,16 @@ class BatcherTest {
     @Test
     @DisplayName("Rejects a non-positive maximum number of concurrent transmissions at construction")
     void testRejectsNonPositiveMaxConcurrentTransmissions() {
-        assertThrows(IllegalArgumentException.class,
-                () -> new Batcher<>(() -> 1L, () -> 10, () -> 10, () -> 5, 0, "batcher-test-", "element",
-                        elements -> completedFuture(TransmissionResult.success()), BatcherListener.noop()));
+        assertThrows(IllegalArgumentException.class, () -> Batcher.<String>builder()
+                .maxConcurrentTransmissions(0)
+                .transport(elements -> completedFuture(TransmissionResult.success()))
+                .build());
+    }
+
+    @Test
+    @DisplayName("Rejects a missing transport function at construction")
+    void testRejectsMissingTransport() {
+        assertThrows(NullPointerException.class, () -> Batcher.builder().build());
     }
 
     @Test
@@ -132,8 +139,13 @@ class BatcherTest {
             }
         };
         int maxConsecutiveFailures = 2;
-        Batcher<String> batcher = new Batcher<>(() -> 10L, () -> 10, () -> Integer.MAX_VALUE, () -> maxConsecutiveFailures, 4,
-                "batcher-test-", "element", elements -> completedFuture(TransmissionResult.failure(null)), listener);
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxPendingElements(() -> 10)
+                .maxConsecutiveFailures(() -> maxConsecutiveFailures)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(listener)
+                .build();
         batcher.add(List.of("poison"));
 
         // when: retried (via flush(), since the flush threshold of 10 is never reached on its own) until
@@ -161,8 +173,12 @@ class BatcherTest {
                 dropped.addAll(elements);
             }
         };
-        Batcher<String> batcher = new Batcher<>(() -> 100L, maxPending::get, () -> Integer.MAX_VALUE, () -> 5, 4,
-                "batcher-test-", "element", elements -> completedFuture(TransmissionResult.success()), listener);
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 100L)
+                .maxPendingElements(maxPending::get)
+                .transport(elements -> completedFuture(TransmissionResult.success()))
+                .listener(listener)
+                .build();
 
         // when: accumulating under the initial generous limit
         batcher.add(List.of("a", "b", "c"));
@@ -186,19 +202,23 @@ class BatcherTest {
         // given: "b" is rejected every attempt, "a" and "c" are accepted the very first time
         var succeeded = new CopyOnWriteArrayList<Integer>();
         var attempts = new CopyOnWriteArrayList<List<String>>();
-        Batcher<String> batcher = new Batcher<>(() -> 3L, () -> 10, () -> Integer.MAX_VALUE, () -> 5, 4,
-                "batcher-test-", "element", elements -> {
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 3L)
+                .maxPendingElements(() -> 10)
+                .transport(elements -> {
                     attempts.add(elements);
                     List<String> rejected = elements.stream().filter("b"::equals).toList();
                     return completedFuture(rejected.isEmpty()
                             ? TransmissionResult.success()
                             : TransmissionResult.partialFailure(rejected, null));
-                }, new BatcherListener<>() {
+                })
+                .listener(new BatcherListener<>() {
                     @Override
                     public void onSucceeded(int count, long durationMillis) {
                         succeeded.add(count);
                     }
-                });
+                })
+                .build();
 
         // when: the first attempt rejects "b" only
         batcher.add(List.of("a", "b", "c"));
@@ -224,16 +244,20 @@ class BatcherTest {
         // from inside a whenComplete() callback nobody observes, silently losing "a" without even a log line
         var dropped = new CopyOnWriteArrayList<String>();
         var attempts = new AtomicInteger();
-        Batcher<String> batcher = new Batcher<>(() -> 1L, () -> 10, () -> Integer.MAX_VALUE, () -> 2, 4,
-                "batcher-test-", "element", elements -> {
+        Batcher<String> batcher = Batcher.<String>builder()
+                .maxPendingElements(() -> 10)
+                .maxConsecutiveFailures(() -> 2)
+                .transport(elements -> {
                     attempts.incrementAndGet();
                     return completedFuture(TransmissionResult.partialFailure(List.of(elements.get(0), elements.get(0)), null));
-                }, new BatcherListener<>() {
+                })
+                .listener(new BatcherListener<>() {
                     @Override
                     public void onDropped(List<String> elements, String reason) {
                         dropped.addAll(elements);
                     }
-                });
+                })
+                .build();
 
         // when: retried until the malformed chunk is eventually given up on
         batcher.add(List.of("a"));
@@ -281,8 +305,11 @@ class BatcherTest {
 
     private static Batcher<String> batcher(long flushThreshold,
             Function<List<String>, CompletableFuture<TransmissionResult<String>>> transport, BatcherListener<String> listener) {
-        return new Batcher<>(() -> flushThreshold, () -> 10_000, () -> Integer.MAX_VALUE, () -> 5, 4,
-                "batcher-test-", "element", transport, listener);
+        return Batcher.<String>builder()
+                .flushThreshold(() -> flushThreshold)
+                .transport(transport)
+                .listener(listener)
+                .build();
     }
 
     private static void awaitDropped(List<String> dropped, int expected) throws InterruptedException {
