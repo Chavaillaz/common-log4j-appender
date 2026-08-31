@@ -426,6 +426,19 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
+     * Number of logging events currently queued awaiting conversion and batching by the background thread,
+     * out of the {@link LogConfiguration#getMaxQueuedEvents()} it can hold. The graduated counterpart of
+     * {@link #isBackpressured()}: exported as a gauge, it shows a queue trending towards full long before it
+     * gets there, which is when raising {@code MaxQueuedEvents}, lowering {@code FlushInterval} or looking at
+     * the downstream system is still cheap.
+     *
+     * @return The number of events currently queued
+     */
+    public int getQueuedEventCount() {
+        return workerExecutor.getQueue().size();
+    }
+
+    /**
      * Stops accepting new logging events, waits (up to the given timeout) for already-accepted ones to be
      * processed, then flushes and closes the delivery handler, so logs accepted just before shutdown are
      * not lost.

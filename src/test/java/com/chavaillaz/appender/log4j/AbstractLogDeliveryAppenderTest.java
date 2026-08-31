@@ -704,6 +704,38 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(2, SECONDS);
         }
 
+        @Test
+        @DisplayName("getQueuedEventCount() reports how full the internal queue is before it overflows")
+        void testQueuedEventCountReflectsQueueDepth() throws Exception {
+            // given: a queue with room to spare, so the count can be observed growing rather than only
+            // reaching the all-or-nothing state isBackpressured() reports
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(10).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+
+            // when
+            appender.start();
+
+            // then: nothing queued yet
+            assertEquals(0, appender.getQueuedEventCount());
+
+            // when: the first event occupies the (blocked) worker thread, the next two sit in the queue
+            appender.append(mockLogEvent());
+            appender.append(mockLogEvent());
+            appender.append(mockLogEvent());
+
+            // then: a gauge worth alerting on well before documents actually start being discarded
+            assertEquals(2, appender.getQueuedEventCount());
+            assertFalse(appender.isBackpressured());
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+        }
+
     }
 
     @Nested

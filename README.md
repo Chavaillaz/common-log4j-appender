@@ -248,6 +248,10 @@ endpoint, instead of only reacting to listener callbacks:
 - `AbstractLogDeliveryAppender#isBackpressured()` — `true` once the internal queue feeding the background
   thread (bounded by `MaxQueuedEvents`) is full, meaning the very next logging event would evict the oldest
   queued one — an early warning before `onDocumentsDropped` actually fires.
+- `AbstractLogDeliveryAppender#getQueuedEventCount()` — how many events are currently in that queue, out of
+  `MaxQueuedEvents`. The graduated version of the above: exported as a gauge, it shows the queue trending
+  towards full while raising `MaxQueuedEvents`, lowering `FlushInterval` or looking at the downstream system
+  is still cheap.
 
 ## Configuration reference
 
