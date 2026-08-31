@@ -14,6 +14,7 @@ import org.jspecify.annotations.Nullable;
 import com.chavaillaz.appender.BackoffPolicy;
 import com.chavaillaz.appender.Batcher;
 import com.chavaillaz.appender.BatcherListener;
+import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -25,7 +26,7 @@ import com.chavaillaz.appender.TransmissionResult;
  * A batch ready to be sent (threshold reached, or {@link #flush()} called) is handed off to a virtual
  * thread instead of being sent by the calling thread, so a slow or blocked transmission never delays
  * accumulation of the next batch. Concurrent transmissions are bounded by
- * {@link LogConfiguration#getMaxConcurrentTransmissions()}: beyond that limit, the calling thread (in
+ * {@link DeliveryOptions#maxConcurrentTransmissions()}: beyond that limit, the calling thread (in
  * practice, {@link AbstractLogDeliveryAppender}'s background thread, never the application thread) waits
  * for one to complete before handing over the next.
  * <p>
@@ -37,17 +38,17 @@ import com.chavaillaz.appender.TransmissionResult;
  * <p>
  * Two safety nets bound the cost of a struggling downstream system, or of a single "poison document" it can
  * never accept, so neither can grow memory without bound or wedge the pipeline forever: the pending batch
- * is capped at {@link LogConfiguration#getMaxPendingDocuments()} via the shared {@link com.chavaillaz.appender.BoundedTrim}
+ * is capped at {@link DeliveryOptions#maxPendingDocuments()} via the shared {@link com.chavaillaz.appender.BoundedTrim}
  * policy (oldest documents discarded past that, both while accumulating and while requeuing after a
  * failure, the same policy {@link AbstractLogDeliveryAppender}'s own pending event queue applies), and a
- * batch that fails {@link LogConfiguration#getMaxConsecutiveFailures()} times in a row (tracked per batch,
+ * batch that fails {@link DeliveryOptions#maxConsecutiveFailures()} times in a row (tracked per batch,
  * not delivery-wide, so an unrelated batch succeeding concurrently can never reset it) is discarded instead
  * of retried indefinitely. Both are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)},
  * so this data loss is never silent.
  * <p>
- * A batch due for (re)transmission bigger than {@link LogConfiguration#getMaxRequestDocuments()} is first
+ * A batch due for (re)transmission bigger than {@link DeliveryOptions#maxRequestDocuments()} is first
  * split into chunks of at most that size, each dispatched, retried and (subject to
- * {@link LogConfiguration#getMaxConcurrentTransmissions()}) transmitted independently. Disabled by default;
+ * {@link DeliveryOptions#maxConcurrentTransmissions()}) transmitted independently. Disabled by default;
  * only matters for a downstream system with its own limit on documents or payload size per request.
  * <p>
  * The generic accumulate/backpressure/retry machinery itself lives in {@link Batcher}; this class is a thin
@@ -87,15 +88,21 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     protected AbstractBatchLogDelivery(C configuration, @Nullable LogDeliveryListener listener) {
         this.configuration = configuration;
-        warnAboutDegradedConfiguration(configuration);
+        DeliveryOptions options = configuration.getDeliveryOptions();
+        warnAboutDegradedConfiguration(options);
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
         this.batcher = Batcher.<Map<String, Object>>builder()
-                .flushThreshold(configuration::getFlushThreshold)
+                // Read through getDeliveryOptions() on every call rather than off the instance captured
+                // above, so a configuration varying a limit at runtime is still honored, exactly as the
+                // per-setting getters it replaced were.
+                .flushThreshold(() -> configuration.getDeliveryOptions().flushThreshold())
                 .maxPendingElements(this::getMaxPendingDocuments)
                 .maxRequestElements(this::getMaxRequestDocuments)
                 .maxConsecutiveFailures(this::getMaxConsecutiveFailures)
-                .maxConcurrentTransmissions(configuration.getMaxConcurrentTransmissions())
-                .backoff(BackoffPolicy.exponential(configuration.getRetryBackoff(), configuration.getMaxRetryBackoff()))
+                // Fixed once here, unlike the limits above: the Batcher sizes its semaphore from it, and the
+                // backoff policy is built once from these two durations.
+                .maxConcurrentTransmissions(options.maxConcurrentTransmissions())
+                .backoff(BackoffPolicy.exponential(options.retryBackoff(), options.maxRetryBackoff()))
                 .transmissionThreadPrefix("log-delivery-transmission-")
                 .elementNoun("document")
                 .transport(this::sendBulk)
@@ -126,21 +133,21 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * leave the pipeline stuck: a request never blocks waiting for one, so they are deliberately still
      * allowed, only reported.
      *
-     * @param configuration The configuration to inspect
+     * @param options The options to inspect
      */
-    private void warnAboutDegradedConfiguration(C configuration) {
-        int maxPendingDocuments = configuration.getMaxPendingDocuments();
+    private void warnAboutDegradedConfiguration(DeliveryOptions options) {
+        int maxPendingDocuments = options.maxPendingDocuments();
         if (maxPendingDocuments <= 0) {
             log.warn("MaxPendingDocuments is {} (0 or less), every document will be discarded immediately, "
                     + "effectively disabling this delivery", maxPendingDocuments);
         }
 
-        int maxRequestDocuments = configuration.getMaxRequestDocuments();
+        int maxRequestDocuments = options.maxRequestDocuments();
         if (maxRequestDocuments <= 0) {
             log.warn("MaxRequestDocuments is {} (0 or less), request chunking is disabled", maxRequestDocuments);
         }
 
-        int maxConsecutiveFailures = configuration.getMaxConsecutiveFailures();
+        int maxConsecutiveFailures = options.maxConsecutiveFailures();
         if (maxConsecutiveFailures <= 0) {
             log.warn("MaxConsecutiveFailures is {} (0 or less), failed batches will be retried indefinitely "
                     + "instead of eventually discarded", maxConsecutiveFailures);
@@ -159,37 +166,37 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     /**
      * Maximum number of documents a pending batch can hold in memory; past it, the oldest documents are
      * discarded, favoring the most recently received ones. Independent of {@link #getMaxRequestDocuments()}.
-     * Defaults to {@link LogConfiguration#getMaxPendingDocuments()}; override if the limit should depend on
+     * Defaults to {@link DeliveryOptions#maxPendingDocuments()}; override if the limit should depend on
      * more than just the configuration.
      *
      * @return The maximum number of documents a pending batch can hold in memory
      */
     protected int getMaxPendingDocuments() {
-        return configuration.getMaxPendingDocuments();
+        return configuration.getDeliveryOptions().maxPendingDocuments();
     }
 
     /**
      * Maximum number of documents sent together in a single request; a bigger pending batch is split into
-     * chunks of at most this size before dispatch. Defaults to {@link LogConfiguration#getMaxRequestDocuments()}
+     * chunks of at most this size before dispatch. Defaults to {@link DeliveryOptions#maxRequestDocuments()}
      * (unbounded, no chunking); override if the limit should depend on more than just the configuration.
      *
      * @return The maximum number of documents sent together in a single request
      */
     protected int getMaxRequestDocuments() {
-        return configuration.getMaxRequestDocuments();
+        return configuration.getDeliveryOptions().maxRequestDocuments();
     }
 
     /**
      * Maximum number of consecutive failed transmission attempts allowed for the same pending batch before
      * it is discarded instead of retried again, so a single document the downstream system can never accept
      * (a "poison document") cannot block everything behind it forever. Defaults to
-     * {@link LogConfiguration#getMaxConsecutiveFailures()}; override if the limit should depend on more than
+     * {@link DeliveryOptions#maxConsecutiveFailures()}; override if the limit should depend on more than
      * just the configuration.
      *
      * @return The maximum number of consecutive failed attempts allowed
      */
     protected int getMaxConsecutiveFailures() {
-        return configuration.getMaxConsecutiveFailures();
+        return configuration.getDeliveryOptions().maxConsecutiveFailures();
     }
 
     /**
@@ -277,7 +284,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * whole batch be retried or eventually discarded together), or
      * {@link TransmissionResult#partialFailure(List, Throwable)} when only some were rejected (e.g. one
      * malformed document in an otherwise-successful bulk response) so only those, not the accepted ones
-     * alongside them, are retried or counted toward {@link LogConfiguration#getMaxConsecutiveFailures()}. A
+     * alongside them, are retried or counted toward {@link DeliveryOptions#maxConsecutiveFailures()}. A
      * synchronously thrown exception, a future completed exceptionally, or a future completed with
      * {@code null} are all treated the same as {@link TransmissionResult#failure(Throwable)}.
      *
@@ -287,7 +294,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     protected abstract CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents);
 
     /**
-     * Flushes the current batch and waits, up to {@link LogConfiguration#getCloseTimeout()}, for every
+     * Flushes the current batch and waits, up to {@link DeliveryOptions#closeTimeout()}, for every
      * pending transmission (including that final one) to complete, so a subclass can safely release
      * resources used by {@link #sendBulk(List)} right after this call returns without racing an in-flight
      * transmission.
@@ -302,7 +309,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     @Override
     public void close() throws Exception {
-        batcher.close(configuration.getCloseTimeout());
+        batcher.close(configuration.getDeliveryOptions().closeTimeout());
     }
 
     /**

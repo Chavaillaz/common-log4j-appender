@@ -85,11 +85,17 @@ since each document already carries its own timestamp.
 ### 1. Configuration
 
 Implement `LogConfiguration` to carry whatever settings your delivery mechanism needs, in addition to the
-ones already required by the interface. The interface is deliberately read-only (no setters): build an
-immutable instance once, rather than a mutable bean, since it is read repeatedly (not just once) from a
-background thread with no synchronization of its own around those reads. This shape falls out naturally
-from Log4j2's own `@PluginBuilderFactory` pattern, whose `Builder` already carries the mutable,
-per-attribute fields, with only its `build()` result needing to satisfy `LogConfiguration`:
+ones already required by the interface. It asks for only two things: what identifies the application
+producing the logs (`Application`, `Host`, `Environment`, which end up inside every document), and a
+`DeliveryOptions` carrying how the pipeline itself should behave — batching, backpressure, retries and
+shutdown. Every `DeliveryOptions` setting has a usable default, so `getDeliveryOptions()` can be left alone
+entirely until you have a reason to tune something.
+
+The interface is deliberately read-only (no setters): build an immutable instance once, rather than a
+mutable bean, since it is read repeatedly (not just once) from a background thread with no synchronization
+of its own around those reads. This shape falls out naturally from Log4j2's own `@PluginBuilderFactory`
+pattern, whose `Builder` already carries the mutable, per-attribute fields, with only its `build()` result
+needing to satisfy `LogConfiguration`:
 
 ```java
 @Value
@@ -98,12 +104,26 @@ public class MyConfiguration implements LogConfiguration {
     String application;
     String host;
     String environment;
-    long flushThreshold;
-    Duration flushInterval;
+    DeliveryOptions deliveryOptions;
     LogConverter converter; // Not part of LogConfiguration itself, but used below
     String url; // Anything else specific to your delivery mechanism
 }
 ```
+
+Your plugin `Builder` assembles the options from its own attributes, and only needs to name the ones it
+actually exposes:
+
+```java
+DeliveryOptions options = DeliveryOptions.builder()
+        .flushThreshold(flushThreshold)
+        .flushInterval(flushInterval)
+        .build();
+```
+
+`getDeliveryOptions()` is read on the path taken by every document, not once at construction, so an
+implementation can vary a limit at runtime by returning a different instance — return a stored one rather
+than building a new one on every call. Use `options.with().maxPendingDocuments(50_000).build()` to derive
+one instance from another without restating the rest.
 
 ### 2. Delivery
 
@@ -277,9 +297,10 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `MaxRetryBackoff` | Cap the delay above never grows past. Defaults to `30s`. |
 | `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. Defaults to `30s`; `null` waits indefinitely. |
 
-These nine are default methods on `LogConfiguration` itself (rather than plugin attributes), so they're
-available even if the appender implementation you use doesn't expose them as configuration; override them
-in your own configuration class if needed.
+`Application`, `Host` and `Environment` come from `LogConfiguration` itself; everything else is a component
+of the `DeliveryOptions` it returns, all with usable defaults. An appender implementation typically exposes
+only some of them as plugin attributes — the rest stay available through `DeliveryOptions.builder()` in your
+own configuration class, whether or not the appender surfaces them.
 
 ## Shutdown and failure handling
 

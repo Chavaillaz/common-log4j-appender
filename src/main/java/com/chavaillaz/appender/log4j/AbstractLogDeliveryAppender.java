@@ -25,6 +25,7 @@ import org.apache.logging.log4j.core.config.Property;
 import org.jspecify.annotations.Nullable;
 
 import com.chavaillaz.appender.BoundedTrim;
+import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -42,17 +43,17 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * thread only hands a flush trigger over to the same queue periodically, so batching still only ever
  * happens on the one background thread.
  * <p>
- * The queue is bounded to {@link LogConfiguration#getMaxQueuedEvents()}, so events arriving faster than
- * they can be processed (e.g. while every {@link LogConfiguration#getMaxConcurrentTransmissions()}
+ * The queue is bounded to {@link DeliveryOptions#maxQueuedEvents()}, so events arriving faster than
+ * they can be processed (e.g. while every {@link DeliveryOptions#maxConcurrentTransmissions()}
  * transmission slot is stuck on an unresponsive downstream system) cannot grow memory usage without limit.
  * Once full, the oldest queued event is discarded to make room for the new one (never blocking the
  * application thread), applying the same {@link BoundedTrim} policy {@link AbstractBatchLogDelivery}'s own
  * pending batch is bounded by, and reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}
  * so this data loss is never silent.
  * <p>
- * An event at least as severe as {@link LogConfiguration#getFlushLevel()} (disabled by default) triggers an
+ * An event at least as severe as {@link DeliveryOptions#flushLevel()} (disabled by default) triggers an
  * immediate flush of the whole current batch right after it, instead of waiting for
- * {@link LogConfiguration#getFlushThreshold()} or {@link LogConfiguration#getFlushInterval()} as usual, so
+ * {@link DeliveryOptions#flushThreshold()} or {@link DeliveryOptions#flushInterval()} as usual, so
  * an occasional severe event is not held hostage behind settings otherwise tuned for throughput.
  *
  * @param <C> The configuration type
@@ -128,7 +129,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * The single background thread converting and batching events (see the class documentation), fed by a
-     * queue bounded to {@link LogConfiguration#getMaxQueuedEvents()} (see {@link #newWorkerExecutor(int)}).
+     * queue bounded to {@link DeliveryOptions#maxQueuedEvents()} (see {@link #newWorkerExecutor(int)}).
      * Kept typed as {@link ThreadPoolExecutor} (rather than the narrower {@link ExecutorService}) so
      * {@link #isBackpressured()} can inspect its queue directly.
      */
@@ -169,7 +170,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     protected AbstractLogDeliveryAppender(String name, Filter filter, Layout<?> layout, C configuration) {
         super(name, filter, layout, true, Property.EMPTY_ARRAY);
         this.logConfiguration = configuration;
-        this.workerExecutor = newWorkerExecutor(configuration.getMaxQueuedEvents());
+        this.workerExecutor = newWorkerExecutor(configuration.getDeliveryOptions().maxQueuedEvents());
         this.fallbackConverter.configure(configuration);
     }
 
@@ -202,8 +203,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     public void start() {
         startLogDeliveryHandler();
 
-        if (logDeliveryHandler != null && logConfiguration.getFlushThreshold() > 1) {
-            Long intervalMillis = validateFlushInterval(logConfiguration.getFlushInterval());
+        if (logDeliveryHandler != null && logConfiguration.getDeliveryOptions().flushThreshold() > 1) {
+            Long intervalMillis = validateFlushInterval(logConfiguration.getDeliveryOptions().flushInterval());
             if (intervalMillis != null) {
                 flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
                 flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
@@ -219,7 +220,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * {@link Duration#toMillis()} either by overflowing it, or (like a non-positive one) by rounding down to
      * {@code 0}, which {@link ScheduledExecutorService#scheduleWithFixedDelay} rejects.
      *
-     * @param flushInterval The interval to validate, as returned by {@link LogConfiguration#getFlushInterval()}
+     * @param flushInterval The interval to validate, as returned by {@link DeliveryOptions#flushInterval()}
      * @return The interval in milliseconds, or {@code null} if invalid and no periodic flush should be
      *         scheduled
      */
@@ -249,9 +250,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Whether the given event's severity is at least as severe as {@link LogConfiguration#getFlushLevel()},
+     * Whether the given event's severity is at least as severe as {@link DeliveryOptions#flushLevel()},
      * meaning it should trigger an immediate flush (see {@link #append(LogEvent)}) rather than wait for
-     * {@link LogConfiguration#getFlushThreshold()} or {@link LogConfiguration#getFlushInterval()} as usual.
+     * {@link DeliveryOptions#flushThreshold()} or {@link DeliveryOptions#flushInterval()} as usual.
      * Always {@code false} while that setting is left at its default of {@code null} (disabled), or for an
      * event carrying no level at all.
      *
@@ -259,7 +260,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return {@code true} if this event should trigger an immediate flush
      */
     private boolean isUrgent(LogEvent event) {
-        Level flushLevel = logConfiguration.getFlushLevel();
+        Level flushLevel = logConfiguration.getDeliveryOptions().flushLevel();
         Level eventLevel = event.getLevel();
         return flushLevel != null && eventLevel != null && eventLevel.isMoreSpecificThan(flushLevel);
     }
@@ -412,7 +413,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Whether the internal queue feeding {@link #workerExecutor} (bounded to
-     * {@link LogConfiguration#getMaxQueuedEvents()}) is currently full, meaning the very next logging event
+     * {@link DeliveryOptions#maxQueuedEvents()}) is currently full, meaning the very next logging event
      * would cause the oldest queued one to be discarded (see {@link DiscardOldestEventPolicy}) rather than
      * merely accumulating pending work. A simple backpressure signal an application can poll (e.g. for a
      * readiness/liveness endpoint, or to throttle its own logging) before data loss actually starts,
@@ -427,7 +428,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Number of logging events currently queued awaiting conversion and batching by the background thread,
-     * out of the {@link LogConfiguration#getMaxQueuedEvents()} it can hold. The graduated counterpart of
+     * out of the {@link DeliveryOptions#maxQueuedEvents()} it can hold. The graduated counterpart of
      * {@link #isBackpressured()}: exported as a gauge, it shows a queue trending towards full long before it
      * gets there, which is when raising {@code MaxQueuedEvents}, lowering {@code FlushInterval} or looking at
      * the downstream system is still cheap.

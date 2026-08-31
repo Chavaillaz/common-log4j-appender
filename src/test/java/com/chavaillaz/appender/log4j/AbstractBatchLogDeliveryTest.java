@@ -621,7 +621,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(Map.of("id", "poison"));
 
             // when retrying the same (never growing) batch until the limit is reached
-            for (int i = 0; i < configuration.getMaxConsecutiveFailures(); i++) {
+            for (int i = 0; i < configuration.getDeliveryOptions().maxConsecutiveFailures(); i++) {
                 logDelivery.flush();
                 logDelivery.awaitPendingTransmissions();
             }
@@ -710,7 +710,7 @@ class AbstractBatchLogDeliveryTest {
 
             // when the poison document fails MaxConsecutiveFailures times in a row, with a different,
             // unrelated document successfully transmitted concurrently during each of its attempts
-            int maxConsecutiveFailures = configuration.getMaxConsecutiveFailures();
+            int maxConsecutiveFailures = configuration.getDeliveryOptions().maxConsecutiveFailures();
             for (int round = 1; round <= maxConsecutiveFailures; round++) {
                 poisonEntered.set(new CountDownLatch(1));
                 releasePoison.set(new CountDownLatch(1));
