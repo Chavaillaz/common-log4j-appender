@@ -217,6 +217,76 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Truncates the message once it exceeds the configured maximum length")
+        void testConversionTruncatesLongMessage() {
+            // given: a single log call carrying a large payload (a response body, a serialized entity, a
+            // dumped collection), the one part of a document whose size the application controls entirely
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter() {
+                @Override
+                protected int getMaxMessageLength() {
+                    return 10;
+                }
+            };
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("0123456789abcdef"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: truncated, and visibly so, rather than inflating the whole batch it travels in
+            assertEquals("0123456789... (truncated, 6 more characters)", document.get("logmessage"));
+        }
+
+        @Test
+        @DisplayName("Does not truncate a message within the configured maximum length")
+        void testConversionDoesNotTruncateShortMessage() {
+            // given
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("A perfectly ordinary log line"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertEquals("A perfectly ordinary log line", document.get("logmessage"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Disables message truncation entirely when the configured maximum length is zero or negative")
+        void testNonPositiveMaxMessageLengthDisablesTruncation(int maxMessageLength) {
+            // given: a message well past the default limit, so only the override under test can keep it whole
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter() {
+                @Override
+                protected int getMaxMessageLength() {
+                    return maxMessageLength;
+                }
+            };
+            converter.configure(configuration);
+            String message = "x".repeat(64_000);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage(message))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertEquals(message, document.get("logmessage"));
+        }
+
+        @Test
         @DisplayName("Truncates the stack trace once it exceeds the configured maximum length")
         void testConversionTruncatesLongStackTrace() {
             // given

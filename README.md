@@ -182,7 +182,7 @@ fields:
 | `application` | Taken from the configuration                                                         |
 | `logger`      | Logger name, falling back to the fully qualified caller class name if not available  |
 | `level`       | Level of the logging event (e.g. `INFO`, `ERROR`)                                    |
-| `logmessage`  | Formatted message of the logging event                                               |
+| `logmessage`  | Formatted message of the logging event, truncated to 32'768 characters by default (see `getMaxMessageLength()`) so a single call logging a large payload can't inflate its document, and the whole batch it travels in, enough to get the request rejected |
 | `thread`      | Name of the thread that created the logging event                                    |
 | `class`       | Canonical name of the exception class, only present if the event carries an exception |
 | `stacktrace`  | Stack trace, only present with an exception, truncated to 8'192 characters by default (see `getMaxStackTraceLength()`) so a deep or recursive cause chain can't inflate a document on its own |

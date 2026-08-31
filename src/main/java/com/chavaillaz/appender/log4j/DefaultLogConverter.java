@@ -150,11 +150,27 @@ public class DefaultLogConverter implements LogConverter {
             return null;
         }
         try {
-            return message.getFormattedMessage();
+            return truncate(message.getFormattedMessage(), getMaxMessageLength());
         } catch (Exception e) {
             log.warn("Unable to format the message of a logging event, using a placeholder instead", e);
             return "<unable to format message: " + e + ">";
         }
+    }
+
+    /**
+     * Truncates the given value to at most {@code maxLength} characters, appending how much was cut off so a
+     * truncated value is never mistaken for a complete one.
+     *
+     * @param value     The value to truncate, or {@code null}
+     * @param maxLength The maximum length allowed, a non-positive value disabling truncation
+     * @return The value, truncated if it was longer than allowed
+     */
+    private static String truncate(String value, int maxLength) {
+        if (value == null || maxLength <= 0 || value.length() <= maxLength) {
+            return value;
+        }
+        int truncatedChars = value.length() - maxLength;
+        return value.substring(0, maxLength) + "... (truncated, " + truncatedChars + " more characters)";
     }
 
     /**
@@ -207,14 +223,7 @@ public class DefaultLogConverter implements LogConverter {
         Writer result = new StringWriter();
         PrintWriter printWriter = new PrintWriter(result);
         throwable.printStackTrace(printWriter);
-        String stackTrace = result.toString();
-
-        int maxLength = getMaxStackTraceLength();
-        if (maxLength > 0 && stackTrace.length() > maxLength) {
-            int truncatedChars = stackTrace.length() - maxLength;
-            return stackTrace.substring(0, maxLength) + "... (truncated, " + truncatedChars + " more characters)";
-        }
-        return stackTrace;
+        return truncate(result.toString(), getMaxStackTraceLength());
     }
 
     /**
@@ -226,6 +235,24 @@ public class DefaultLogConverter implements LogConverter {
      */
     protected int getMaxStackTraceLength() {
         return 8_192;
+    }
+
+    /**
+     * Maximum length (in characters) of the {@code logmessage} field written by
+     * {@link #writeBasic(Map, LogEvent)}. Bounds the one remaining part of a document whose size the
+     * application controls entirely: a single call logging a large payload (an HTTP response body, a
+     * serialized entity, a dump of a collection) would otherwise inflate its document, and by extension the
+     * whole batch it travels in, enough for the downstream system to reject the request — costing every
+     * other document batched alongside it, not just the oversized one. The same reasoning already applied to
+     * {@link #getMaxStackTraceLength()}.
+     * <p>
+     * Defaults to {@code 32'768}, well above any reasonable log line; override to raise, lower, or disable
+     * ({@code 0} or negative) truncation.
+     *
+     * @return The maximum length allowed for the message, or a non-positive value to disable truncation
+     */
+    protected int getMaxMessageLength() {
+        return 32_768;
     }
 
 }
