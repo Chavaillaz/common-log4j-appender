@@ -15,6 +15,7 @@ import com.chavaillaz.appender.BackoffPolicy;
 import com.chavaillaz.appender.Batcher;
 import com.chavaillaz.appender.BatcherListener;
 import com.chavaillaz.appender.DeliveryOptions;
+import com.chavaillaz.appender.DocumentSizeEstimator;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -91,7 +92,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         DeliveryOptions options = configuration.getDeliveryOptions();
         warnAboutDegradedConfiguration(options);
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
-        this.batcher = Batcher.<Map<String, Object>>builder()
+        Batcher.Builder<Map<String, Object>> batcherBuilder = Batcher.<Map<String, Object>>builder()
                 // Read through getDeliveryOptions() on every call rather than off the instance captured
                 // above, so a configuration varying a limit at runtime is still honored, exactly as the
                 // per-setting getters it replaced were.
@@ -99,6 +100,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                 .maxPendingElements(this::getMaxPendingDocuments)
                 .maxRequestElements(this::getMaxRequestDocuments)
                 .maxConsecutiveFailures(this::getMaxConsecutiveFailures)
+                .maxPendingBytes(this::getMaxPendingBytes)
+                .maxRequestBytes(this::getMaxRequestBytes)
                 // Fixed once here, unlike the limits above: the Batcher sizes its semaphore from it, and the
                 // backoff policy is built once from these two durations.
                 .maxConcurrentTransmissions(options.maxConcurrentTransmissions())
@@ -121,8 +124,27 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     public void onDropped(List<Map<String, Object>> dropped, String reason) {
                         AbstractBatchLogDelivery.this.listener.onDocumentsDropped(dropped, reason);
                     }
-                })
-                .build();
+                });
+
+        // Measuring documents costs something on the path every one of them takes, so it is only wired in
+        // when there is actually a byte limit to enforce. Decided once here rather than per call, unlike the
+        // count limits: the pending total is maintained incrementally as documents come and go, so it could
+        // not be started midway through an already-accumulating batch and still describe all of it.
+        if (isBounded(options.maxPendingBytes()) || isBounded(options.maxRequestBytes())) {
+            batcherBuilder.elementSize(this::estimateDocumentSize);
+        }
+        this.batcher = batcherBuilder.build();
+    }
+
+    /**
+     * Whether the given byte limit actually bounds anything, as opposed to being left unset or explicitly
+     * disabled.
+     *
+     * @param limit The limit to check
+     * @return {@code true} if the limit is in effect
+     */
+    private static boolean isBounded(long limit) {
+        return limit > 0 && limit < Long.MAX_VALUE;
     }
 
     /**
@@ -197,6 +219,49 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     protected int getMaxConsecutiveFailures() {
         return configuration.getDeliveryOptions().maxConsecutiveFailures();
+    }
+
+    /**
+     * Maximum estimated size a pending batch can reach in memory; past it, the oldest documents are
+     * discarded, the size-based counterpart of {@link #getMaxPendingDocuments()}. Defaults to
+     * {@link DeliveryOptions#maxPendingBytes()} (unbounded); override if the limit should depend on more than
+     * just the configuration.
+     *
+     * @return The maximum estimated size a pending batch can reach, in bytes
+     */
+    protected long getMaxPendingBytes() {
+        return configuration.getDeliveryOptions().maxPendingBytes();
+    }
+
+    /**
+     * Maximum estimated size of a single request; a batch weighing more is split into chunks that each stay
+     * under it, the size-based counterpart of {@link #getMaxRequestDocuments()}. Defaults to
+     * {@link DeliveryOptions#maxRequestBytes()} (unbounded); override if the limit should depend on more than
+     * just the configuration.
+     *
+     * @return The maximum estimated size of a single request, in bytes
+     */
+    protected long getMaxRequestBytes() {
+        return configuration.getDeliveryOptions().maxRequestBytes();
+    }
+
+    /**
+     * Estimates how many bytes the given document takes on the wire, used only to enforce
+     * {@link #getMaxPendingBytes()} and {@link #getMaxRequestBytes()} — and never called at all while both
+     * are left unbounded, so a delivery that does not use them pays nothing for this.
+     * <p>
+     * Defaults to {@link DocumentSizeEstimator#estimate(Map)}, a compact-JSON approximation good enough to
+     * keep a request under a server's maximum content length. Override it when the actual encoding is known
+     * and differs enough to matter: an Elasticsearch bulk body adds an action line per document, a
+     * compressed or binary transport is smaller than its JSON rendering, and either way the transport itself
+     * is the only thing that knows. Expected to be cheap and free of side effects: it is called once per
+     * document on the way in, and again per document when a batch is split for transmission.
+     *
+     * @param document The document to measure
+     * @return The estimated size of the document in bytes
+     */
+    protected long estimateDocumentSize(Map<String, Object> document) {
+        return DocumentSizeEstimator.estimate(document);
     }
 
     /**

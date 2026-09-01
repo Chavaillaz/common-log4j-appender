@@ -44,6 +44,25 @@ import com.chavaillaz.appender.TransmissionResult;
 @DisplayName("AbstractBatchLogDelivery")
 class AbstractBatchLogDeliveryTest {
 
+    /**
+     * Waits for the given number of drop notifications to arrive. Needed only for a drop happening while
+     * accumulating, which is deliberately notified off the calling thread and therefore not tracked by
+     * {@code awaitPendingTransmissions()} (see {@code Batcher.notifyDropped()}); every other assertion on a
+     * listener in this class can be made immediately.
+     *
+     * @param listener The listener to watch
+     * @param expected The number of drop notifications to wait for
+     */
+    private static void awaitDropped(RecordingListener listener, int expected) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+        while (listener.dropped.size() < expected) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new AssertionError("Timed out waiting for " + expected + " dropped notification(s)");
+            }
+            Thread.sleep(5);
+        }
+    }
+
     @Nested
     @DisplayName("Below the flush threshold")
     class BelowThreshold {
@@ -188,16 +207,6 @@ class AbstractBatchLogDeliveryTest {
             assertEquals(List.of(Map.of("id", 1)), listener.dropped.get(0).documents());
         }
 
-        private void awaitDropped(RecordingListener listener, int expected) throws InterruptedException {
-            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
-            while (listener.dropped.size() < expected) {
-                if (System.nanoTime() > deadlineNanos) {
-                    throw new AssertionError("Timed out waiting for " + expected + " dropped notification(s)");
-                }
-                Thread.sleep(5);
-            }
-        }
-
         @ParameterizedTest(name = "maxPendingDocuments = {0}")
         @ValueSource(ints = {0, -1})
         @DisplayName("Warns when MaxPendingDocuments is 0 or less, since it disables this delivery")
@@ -338,6 +347,74 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
+            assertEquals(1, logDelivery.countBulkSent.get());
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Request and pending size limits")
+    class ByteLimits {
+
+        @Test
+        @DisplayName("Splits a batch into requests that each stay under MaxRequestBytes")
+        void testSplitsRequestsByEstimatedSize() throws Exception {
+            // given: a limit low enough that two documents already exceed it, so each request carries one
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(3)
+                    .maxRequestBytes(120)
+                    .build();
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 100);
+
+            // when
+            logDelivery.send(List.of(Map.of("id", 1), Map.of("id", 2), Map.of("id", 3)));
+            logDelivery.awaitPendingTransmissions();
+
+            // then: three requests of one document each, rather than one oversized request the downstream
+            // system would reject outright on its content length
+            assertEquals(3, logDelivery.countBulkSent.get());
+            assertEquals(List.of(1, 1, 1), logDelivery.allBulkDocuments.stream().map(List::size).toList());
+        }
+
+        @Test
+        @DisplayName("Discards the oldest documents once the pending batch exceeds MaxPendingBytes")
+        void testPendingSizeCapDiscardsOldestDocuments() throws Exception {
+            // given: a batch that never fills up by count, capped at a size two documents already exceed
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1_000)
+                    .maxPendingBytes(150)
+                    .build();
+            var listener = new RecordingListener();
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 100, listener);
+            var first = Map.<String, Object>of("id", 1);
+
+            // when
+            logDelivery.send(first);
+            logDelivery.send(Map.<String, Object>of("id", 2));
+
+            // then: a count-based cap alone would have seen nothing wrong here, the batch holding two of the
+            // thousand documents it is allowed; awaited rather than asserted immediately since a drop while
+            // accumulating is intentionally not tracked by awaitPendingTransmissions() (see notifyDropped())
+            awaitDropped(listener, 1);
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(first), listener.dropped.get(0).documents());
+            assertEquals("maximum pending bytes exceeded", listener.dropped.get(0).reason());
+        }
+
+        @Test
+        @DisplayName("Never measures a document while both size limits are left at their defaults")
+        void testDocumentsAreNotMeasuredWithoutASizeLimit() throws Exception {
+            // given: the default configuration, with a delivery that records every measurement it is asked for
+            var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 100);
+
+            // when
+            logDelivery.send(List.of(Map.of("id", 1), Map.of("id", 2)));
+            logDelivery.awaitPendingTransmissions();
+
+            // then: measuring costs something per document, and a delivery with no size limit to enforce
+            // must not pay it
+            assertEquals(0, logDelivery.timesMeasured.get());
             assertEquals(1, logDelivery.countBulkSent.get());
         }
 
@@ -750,16 +827,6 @@ class AbstractBatchLogDeliveryTest {
             while (counter.get() < expected) {
                 if (System.nanoTime() > deadlineNanos) {
                     throw new AssertionError("Timed out waiting for the counter to reach " + expected);
-                }
-                Thread.sleep(5);
-            }
-        }
-
-        private void awaitDropped(RecordingListener listener, int expected) throws InterruptedException {
-            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
-            while (listener.dropped.size() < expected) {
-                if (System.nanoTime() > deadlineNanos) {
-                    throw new AssertionError("Timed out waiting for " + expected + " dropped notification(s)");
                 }
                 Thread.sleep(5);
             }
@@ -1317,6 +1384,35 @@ class AbstractBatchLogDeliveryTest {
 
         record Dropped(List<Map<String, Object>> documents, String reason) {
 
+        }
+
+    }
+
+    /**
+     * A delivery reporting a fixed size per document, so tests can reason about the byte limits in round
+     * numbers instead of depending on what {@link com.chavaillaz.appender.DocumentSizeEstimator} happens to
+     * compute for a given map. Also counts how often it was asked, so a test can assert that a delivery with
+     * no size limit configured is never asked at all.
+     */
+    static class MeasuredTestLogDelivery extends TestLogDelivery {
+
+        final AtomicInteger timesMeasured = new AtomicInteger();
+        private final long documentSize;
+
+        protected MeasuredTestLogDelivery(TestLogConfiguration configuration, long documentSize) {
+            super(configuration);
+            this.documentSize = documentSize;
+        }
+
+        protected MeasuredTestLogDelivery(TestLogConfiguration configuration, long documentSize, LogDeliveryListener listener) {
+            super(configuration, listener);
+            this.documentSize = documentSize;
+        }
+
+        @Override
+        protected long estimateDocumentSize(Map<String, Object> document) {
+            timesMeasured.incrementAndGet();
+            return documentSize;
         }
 
     }

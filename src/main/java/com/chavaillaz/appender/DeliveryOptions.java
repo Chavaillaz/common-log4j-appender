@@ -2,6 +2,7 @@ package com.chavaillaz.appender;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.logging.log4j.Level;
 import org.jspecify.annotations.Nullable;
@@ -65,6 +66,26 @@ import org.jspecify.annotations.Nullable;
  *                                   respect a downstream system's own limit on documents per request; leave
  *                                   unset if it has none. Defaults to {@link Integer#MAX_VALUE} (no
  *                                   chunking); a non-positive value also disables chunking.
+ * @param maxPendingBytes            Maximum estimated size a pending batch can reach in memory; past it, the
+ *                                   oldest documents are discarded, exactly as {@code maxPendingDocuments}
+ *                                   does by count. The two are complementary rather than redundant: a batch
+ *                                   comfortably within a 10'000-document limit still holds hundreds of
+ *                                   megabytes if the documents are large, which is the failure a count-based
+ *                                   limit alone cannot see coming. Sizes are approximated by
+ *                                   {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)}.
+ *                                   Defaults to {@link Long#MAX_VALUE} (unbounded); a non-positive value also
+ *                                   disables the limit.
+ * @param maxRequestBytes            Maximum estimated size of a single request: a batch whose documents add
+ *                                   up to more than this is split into chunks that each stay under it, on top
+ *                                   of whatever {@code maxRequestDocuments} already imposes. This is usually
+ *                                   the limit that actually matters downstream — Elasticsearch and OpenSearch
+ *                                   reject a bulk request over {@code http.max_content_length} (100MB by
+ *                                   default) by payload size, not by document count, so a
+ *                                   {@code maxRequestDocuments} tuned to stay under it is only ever a guess
+ *                                   about average document size. A single document larger than this limit is
+ *                                   still sent on its own, there being no way to split it further. Defaults to
+ *                                   {@link Long#MAX_VALUE} (unbounded); a non-positive value also disables the
+ *                                   limit.
  * @param maxConsecutiveFailures     Maximum number of consecutive failed transmission attempts allowed for
  *                                   the same pending batch before it is discarded instead of retried again.
  *                                   Without this limit, a single document the downstream system can never
@@ -111,6 +132,8 @@ public record DeliveryOptions(
         int maxConcurrentTransmissions,
         int maxPendingDocuments,
         int maxRequestDocuments,
+        long maxPendingBytes,
+        long maxRequestBytes,
         int maxConsecutiveFailures,
         int maxQueuedEvents,
         Duration retryBackoff,
@@ -150,6 +173,8 @@ public record DeliveryOptions(
                 .maxConcurrentTransmissions(maxConcurrentTransmissions)
                 .maxPendingDocuments(maxPendingDocuments)
                 .maxRequestDocuments(maxRequestDocuments)
+                .maxPendingBytes(maxPendingBytes)
+                .maxRequestBytes(maxRequestBytes)
                 .maxConsecutiveFailures(maxConsecutiveFailures)
                 .maxQueuedEvents(maxQueuedEvents)
                 .retryBackoff(retryBackoff)
@@ -170,6 +195,8 @@ public record DeliveryOptions(
         private int maxConcurrentTransmissions = 4;
         private int maxPendingDocuments = 10_000;
         private int maxRequestDocuments = Integer.MAX_VALUE;
+        private long maxPendingBytes = Long.MAX_VALUE;
+        private long maxRequestBytes = Long.MAX_VALUE;
         private int maxConsecutiveFailures = 5;
         private int maxQueuedEvents = 10_000;
         private Duration retryBackoff = Duration.ofSeconds(1);
@@ -247,6 +274,28 @@ public record DeliveryOptions(
         }
 
         /**
+         * Sets the maximum estimated size a pending batch can reach in memory.
+         *
+         * @param maxPendingBytes The maximum pending size, in bytes
+         * @return This builder
+         */
+        public Builder maxPendingBytes(long maxPendingBytes) {
+            this.maxPendingBytes = maxPendingBytes;
+            return this;
+        }
+
+        /**
+         * Sets the maximum estimated size of a single request.
+         *
+         * @param maxRequestBytes The maximum request size, in bytes
+         * @return This builder
+         */
+        public Builder maxRequestBytes(long maxRequestBytes) {
+            this.maxRequestBytes = maxRequestBytes;
+            return this;
+        }
+
+        /**
          * Sets the maximum number of consecutive failed attempts allowed for the same pending batch.
          *
          * @param maxConsecutiveFailures The maximum number of consecutive failures
@@ -309,7 +358,8 @@ public record DeliveryOptions(
          */
         public DeliveryOptions build() {
             return new DeliveryOptions(flushThreshold, flushInterval, flushLevel, maxConcurrentTransmissions,
-                    maxPendingDocuments, maxRequestDocuments, maxConsecutiveFailures, maxQueuedEvents,
+                    maxPendingDocuments, maxRequestDocuments, maxPendingBytes, maxRequestBytes,
+                    maxConsecutiveFailures, maxQueuedEvents,
                     retryBackoff, maxRetryBackoff, closeTimeout);
         }
 

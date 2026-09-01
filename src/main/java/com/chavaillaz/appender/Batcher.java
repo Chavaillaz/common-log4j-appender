@@ -19,6 +19,7 @@ import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.ToLongFunction;
 
 import lombok.extern.log4j.Log4j2;
 import org.jspecify.annotations.Nullable;
@@ -54,6 +55,12 @@ import org.jspecify.annotations.Nullable;
  * A batch due for (re)transmission bigger than {@code maxRequestElements} is first split into chunks of at
  * most that size, each dispatched, retried and (subject to {@code maxConcurrentTransmissions}) transmitted
  * independently.
+ * <p>
+ * Both of those limits count elements, which only stands in for what actually matters — memory held, and
+ * bytes put on the wire — while elements are of roughly uniform size. Supplying an {@code elementSize}
+ * measurement enables the two that bound those directly: {@code maxPendingBytes}, discarding the oldest
+ * elements once the pending batch weighs more than that, and {@code maxRequestBytes}, splitting a batch into
+ * chunks that each stay under it. Both are off (and cost nothing) unless a measurement is supplied.
  * <p>
  * The transport function returns a {@code CompletableFuture<TransmissionResult<T>>} rather than blocking:
  * it may complete it synchronously, or kick off asynchronous I/O and complete it later from another thread,
@@ -100,6 +107,17 @@ public class Batcher<T> {
     private final IntSupplier maxPendingElements;
     private final IntSupplier maxRequestElements;
     private final IntSupplier maxConsecutiveFailures;
+    private final LongSupplier maxPendingBytes;
+    private final LongSupplier maxRequestBytes;
+
+    /**
+     * Measures one element, or {@code null} to not track sizes at all — in which case both byte limits above
+     * are inert and nothing here ever pays for measuring. Fixed at construction rather than re-read per call
+     * like the count limits: turning measurement on midway would leave {@link #pendingBytes} describing only
+     * part of the batch, so the decision has to be made once, before anything accumulates.
+     */
+    private final @Nullable ToLongFunction<T> elementSize;
+
     private final BackoffPolicy backoff;
     private final String elementNoun;
     private final Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport;
@@ -119,6 +137,16 @@ public class Batcher<T> {
      * Always guarded by the monitor of this instance, like {@link #batch} itself.
      */
     private int pendingFailureStreak;
+
+    /**
+     * Estimated total size of {@link #batch}, kept up to date as elements are added and discarded rather than
+     * recomputed on demand: summing it per call would make every {@link #add(List)} walk the whole pending
+     * batch, turning an O(1) accumulation into an O(n) one exactly when the batch is at its largest. Always
+     * {@code 0} while {@link #elementSize} is {@code null}.
+     * <p>
+     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     */
+    private long pendingBytes;
 
     /**
      * Executor transmitting batches on virtual threads, so that transmission never blocks the thread
@@ -182,6 +210,9 @@ public class Batcher<T> {
         this.maxPendingElements = builder.maxPendingElements;
         this.maxRequestElements = builder.maxRequestElements;
         this.maxConsecutiveFailures = builder.maxConsecutiveFailures;
+        this.maxPendingBytes = builder.maxPendingBytes;
+        this.maxRequestBytes = builder.maxRequestBytes;
+        this.elementSize = builder.elementSize;
         this.maxConcurrentTransmissions = builder.maxConcurrentTransmissions;
         this.backoff = builder.backoff;
         this.elementNoun = builder.elementNoun;
@@ -217,6 +248,9 @@ public class Batcher<T> {
         private IntSupplier maxPendingElements = () -> 10_000;
         private IntSupplier maxRequestElements = () -> Integer.MAX_VALUE;
         private IntSupplier maxConsecutiveFailures = () -> 5;
+        private LongSupplier maxPendingBytes = () -> Long.MAX_VALUE;
+        private LongSupplier maxRequestBytes = () -> Long.MAX_VALUE;
+        private @Nullable ToLongFunction<T> elementSize;
         private int maxConcurrentTransmissions = 4;
         private BackoffPolicy backoff = BackoffPolicy.none();
         private String transmissionThreadPrefix = "batcher-transmission-";
@@ -274,6 +308,55 @@ public class Batcher<T> {
          */
         public Builder<T> maxConsecutiveFailures(IntSupplier maxConsecutiveFailures) {
             this.maxConsecutiveFailures = maxConsecutiveFailures;
+            return this;
+        }
+
+        /**
+         * Sets the maximum estimated size a pending batch can reach in memory, re-read on every call. Has no
+         * effect unless {@link #elementSize(ToLongFunction)} is also set. Defaults to {@link Long#MAX_VALUE}
+         * (unbounded); a non-positive value also disables the limit.
+         *
+         * @param maxPendingBytes The supplier of the maximum pending size, in bytes
+         * @return This builder
+         */
+        public Builder<T> maxPendingBytes(LongSupplier maxPendingBytes) {
+            this.maxPendingBytes = maxPendingBytes;
+            return this;
+        }
+
+        /**
+         * Sets the maximum estimated size of a single request, re-read on every call: a batch whose elements
+         * add up to more than this is split into chunks that each stay under it. Has no effect unless
+         * {@link #elementSize(ToLongFunction)} is also set. Defaults to {@link Long#MAX_VALUE} (unbounded); a
+         * non-positive value also disables the limit.
+         *
+         * @param maxRequestBytes The supplier of the maximum request size, in bytes
+         * @return This builder
+         */
+        public Builder<T> maxRequestBytes(LongSupplier maxRequestBytes) {
+            this.maxRequestBytes = maxRequestBytes;
+            return this;
+        }
+
+        /**
+         * Sets how to measure one element, enabling the two byte limits above — which do nothing without it,
+         * since there is otherwise no way to know what an element weighs.
+         * <p>
+         * Left unset by default, and deliberately not defaulted to some generic guess: measuring costs
+         * something on the path every element takes, and an engine given no byte limit to enforce should not
+         * pay it. Set it only alongside {@link #maxPendingBytes(LongSupplier)} or
+         * {@link #maxRequestBytes(LongSupplier)}.
+         * <p>
+         * Expected to be cheap, pure and free of side effects: it is called once per element on the way in,
+         * and again per element when chunking a batch for transmission. A negative result is treated as zero,
+         * and an exception is logged and treated the same way, so a misbehaving measurement can only make the
+         * limits less accurate, never break the pipeline.
+         *
+         * @param elementSize The measurement function
+         * @return This builder
+         */
+        public Builder<T> elementSize(ToLongFunction<T> elementSize) {
+            this.elementSize = elementSize;
             return this;
         }
 
@@ -389,9 +472,11 @@ public class Batcher<T> {
 
         PendingBatch<T> snapshot = null;
         List<T> discarded;
+        List<T> oversized;
         int maxPending;
         synchronized (this) {
             batch.addAll(elements);
+            pendingBytes += sizeOf(elements);
             log.trace("Stacking batch {}/{}", batch.size(), flushThreshold.getAsLong());
 
             // Enforces the same cap as requeue() here too, so maxPendingElements bounds memory even when
@@ -400,6 +485,8 @@ public class Batcher<T> {
             BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(batch, maxPending);
             batch = trimmed.kept();
             discarded = trimmed.discarded();
+            pendingBytes -= sizeOf(discarded);
+            oversized = trimToPendingBytes();
 
             boolean batchingEnabled = flushThreshold.getAsLong() > 1;
             boolean thresholdReached = batch.size() >= flushThreshold.getAsLong();
@@ -413,6 +500,9 @@ public class Batcher<T> {
             log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while accumulating",
                     discarded.size(), elementNoun, elementNoun, maxPending);
             notifyDropped(discarded, "maximum pending " + elementNoun + "s exceeded");
+        }
+        if (oversized != null) {
+            notifyDropped(oversized, "maximum pending bytes exceeded");
         }
         if (snapshot != null) {
             dispatch(snapshot.elements(), snapshot.failureStreak());
@@ -500,7 +590,81 @@ public class Batcher<T> {
         PendingBatch<T> previous = new PendingBatch<>(batch, pendingFailureStreak);
         batch = newBatch();
         pendingFailureStreak = 0;
+        pendingBytes = 0;
         return previous;
+    }
+
+    /**
+     * Measures one element through {@link #elementSize}, or returns {@code 0} if sizes are not tracked.
+     * Tolerates a misbehaving measurement — a negative result, or one throwing outright — by counting the
+     * element as weightless: a byte limit going unenforced is a far better outcome than the element being
+     * lost, or the whole pipeline failing, over a faulty estimate.
+     *
+     * @param element The element to measure
+     * @return The estimated size of the element in bytes, never negative
+     */
+    private long sizeOf(T element) {
+        if (elementSize == null) {
+            return 0;
+        }
+        try {
+            return Math.max(0, elementSize.applyAsLong(element));
+        } catch (Exception e) {
+            log.warn("Unhandled exception thrown while measuring a {}, counting it as empty", elementNoun, e);
+            return 0;
+        }
+    }
+
+    /**
+     * Measures a whole list of elements (see {@link #sizeOf(Object)}).
+     *
+     * @param elements The elements to measure, or {@code null} for none
+     * @return The estimated total size in bytes
+     */
+    private long sizeOf(@Nullable List<T> elements) {
+        if (elementSize == null || elements == null) {
+            return 0;
+        }
+        long total = 0;
+        for (T element : elements) {
+            total += sizeOf(element);
+        }
+        return total;
+    }
+
+    /**
+     * Discards the oldest elements of {@link #batch} until its estimated size fits within
+     * {@code maxPendingBytes}, the size-based counterpart of the {@code maxPendingElements} cap
+     * {@link BoundedTrim} applies: a batch of documents well within the count limit can still hold far more
+     * memory than expected when the documents themselves are large.
+     * <p>
+     * Must be called while holding the monitor of this instance.
+     *
+     * @return The elements discarded, or {@code null} if none were
+     */
+    private @Nullable List<T> trimToPendingBytes() {
+        long maxBytes = maxPendingBytes.getAsLong();
+        if (elementSize == null || maxBytes <= 0 || pendingBytes <= maxBytes) {
+            return null;
+        }
+
+        List<T> discarded = new ArrayList<>();
+        int index = 0;
+        while (index < batch.size() && pendingBytes > maxBytes) {
+            T element = batch.get(index++);
+            pendingBytes -= sizeOf(element);
+            discarded.add(element);
+        }
+        batch = new ArrayList<>(batch.subList(index, batch.size()));
+        if (batch.isEmpty()) {
+            // Re-anchors the running total on an empty batch rather than letting rounding from a measurement
+            // that is not perfectly stable accumulate across the engine's whole lifetime.
+            pendingBytes = 0;
+        }
+
+        log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending size of {} bytes",
+                discarded.size(), elementNoun, maxBytes);
+        return discarded.isEmpty() ? null : discarded;
     }
 
     /**
@@ -515,16 +679,22 @@ public class Batcher<T> {
      */
     private void requeue(List<T> elements, int failureStreak) {
         List<T> discarded;
+        List<T> oversized;
         int maxPending;
         synchronized (this) {
             List<T> merged = new ArrayList<>(elements.size() + batch.size());
             merged.addAll(elements);
             merged.addAll(batch);
+            // The requeued elements left this batch (and its running total) when they were swapped out for
+            // transmission, so they are measured again on the way back in rather than remembered.
+            pendingBytes += sizeOf(elements);
 
             maxPending = maxPendingElements.getAsInt();
             BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(merged, maxPending);
             batch = trimmed.kept();
             discarded = trimmed.discarded();
+            pendingBytes -= sizeOf(discarded);
+            oversized = trimToPendingBytes();
 
             // The live batch might already carry forward a streak of its own (from a different failed
             // chunk merged in moments earlier by a concurrent transmission); keeping the higher of the two
@@ -540,6 +710,9 @@ public class Batcher<T> {
             log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while retrying",
                     discarded.size(), elementNoun, elementNoun, maxPending);
             notifyListener(() -> listener.onDropped(discarded, "maximum pending " + elementNoun + "s exceeded"));
+        }
+        if (oversized != null) {
+            notifyListener(() -> listener.onDropped(oversized, "maximum pending bytes exceeded"));
         }
     }
 
@@ -576,28 +749,52 @@ public class Batcher<T> {
      *                      transmitted, inherited by every chunk split off from it
      */
     private void dispatch(List<T> elements, int failureStreak) {
-        int maxRequest = maxRequestElements.getAsInt();
-        if (maxRequest > 0 && elements.size() > maxRequest) {
-            for (List<T> chunk : chunk(elements, maxRequest)) {
-                dispatchChunk(chunk, failureStreak);
-            }
-        } else {
+        int maxCount = maxRequestElements.getAsInt();
+        long maxBytes = maxRequestBytes.getAsLong();
+        boolean countLimited = maxCount > 0 && elements.size() > maxCount;
+        // A single element is never worth measuring: there is nothing to split it against, and it goes out
+        // on its own either way.
+        boolean byteLimited = elementSize != null && maxBytes > 0 && maxBytes < Long.MAX_VALUE && elements.size() > 1;
+        if (!countLimited && !byteLimited) {
             dispatchChunk(elements, failureStreak);
+            return;
+        }
+
+        for (List<T> chunk : chunk(elements, maxCount, byteLimited ? maxBytes : 0)) {
+            dispatchChunk(chunk, failureStreak);
         }
     }
 
     /**
-     * Splits the given list into consecutive, independent chunks of at most {@code chunkSize} elements each
-     * (the last one possibly smaller), preserving order.
+     * Splits the given list into consecutive, independent chunks preserving order, cutting whenever the next
+     * element would push the current chunk past {@code maxCount} elements or {@code maxBytes} bytes.
      *
-     * @param elements  The elements to split
-     * @param chunkSize The maximum size of each chunk, guaranteed positive by the only caller
+     * @param elements The elements to split
+     * @param maxCount The maximum number of elements per chunk, or a non-positive value for no such limit
+     * @param maxBytes The maximum estimated size per chunk, or a non-positive value for no such limit
      * @return The list of chunks, in original order
      */
-    private static <T> List<List<T>> chunk(List<T> elements, int chunkSize) {
-        List<List<T>> chunks = new ArrayList<>((elements.size() + chunkSize - 1) / chunkSize);
-        for (int i = 0; i < elements.size(); i += chunkSize) {
-            chunks.add(List.copyOf(elements.subList(i, Math.min(i + chunkSize, elements.size()))));
+    private List<List<T>> chunk(List<T> elements, int maxCount, long maxBytes) {
+        List<List<T>> chunks = new ArrayList<>();
+        List<T> current = new ArrayList<>();
+        long currentBytes = 0;
+        for (T element : elements) {
+            long size = maxBytes > 0 ? sizeOf(element) : 0;
+            boolean countReached = maxCount > 0 && current.size() >= maxCount;
+            // Never cut before a chunk's first element: one element bigger than the byte limit all by itself
+            // cannot be split any further, so it goes out alone (and is left for the transport to reject)
+            // rather than producing an empty chunk, or no chunk at all, forever.
+            boolean bytesReached = maxBytes > 0 && !current.isEmpty() && currentBytes + size > maxBytes;
+            if (countReached || bytesReached) {
+                chunks.add(List.copyOf(current));
+                current = new ArrayList<>();
+                currentBytes = 0;
+            }
+            current.add(element);
+            currentBytes += size;
+        }
+        if (!current.isEmpty()) {
+            chunks.add(List.copyOf(current));
         }
         return chunks;
     }
@@ -966,6 +1163,7 @@ public class Batcher<T> {
             }
             remaining = List.copyOf(batch);
             batch = new ArrayList<>(0);
+            pendingBytes = 0;
             pendingFailureStreak = 0;
         }
         log.error("Discarding {} {}(s) still pending once closed, they were never successfully transmitted",

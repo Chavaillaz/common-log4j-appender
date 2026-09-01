@@ -68,7 +68,7 @@ The flow for a single log event is:
    jitter (`RetryBackoff`, up to `MaxRetryBackoff`), so a downstream system that is down, overloaded or
    rate-limiting is not hit again at whatever rate logs happen to arrive — which, with `FlushThreshold` at
    `1`, would otherwise mean one request per log line for the whole outage. Two safety nets bound how far this can go: the pending batch never
-   grows past `MaxPendingDocuments` in memory (oldest documents discarded past that point), and a request
+   grows past `MaxPendingDocuments` (or `MaxPendingBytes`) in memory (oldest documents discarded past that point), and a request
    failing `MaxConsecutiveFailures` times in a row is discarded instead of retried forever (which would
    otherwise happen if a single document can never be accepted by the downstream system). Both are reported
    through a `LogDeliveryListener` if configured (see [Observability](#observability) below), so this data
@@ -250,6 +250,26 @@ attention in production — it fires only when documents are irrecoverably disca
 above), which should normally never happen and is worth alerting on. It receives the actual documents (an
 unmodifiable list), not just a count, as a last chance to save them.
 
+### Bounding by size rather than by count
+
+`MaxPendingDocuments` and `MaxRequestDocuments` count documents, which only stands in for what actually
+matters — memory held, and bytes put on the wire — while documents are of roughly uniform size. Setting
+`MaxPendingBytes` or `MaxRequestBytes` bounds those directly instead:
+
+```java
+DeliveryOptions.builder()
+        .maxRequestBytes(50L * 1024 * 1024)  // Comfortably under Elasticsearch's 100MB default
+        .maxPendingBytes(64L * 1024 * 1024)  // Cap what a struggling backend can pin in memory
+        .build();
+```
+
+Sizes come from `AbstractBatchLogDelivery#estimateDocumentSize(Map)`, which approximates a compact UTF-8
+JSON rendering of the document — the right order of magnitude for any JSON-ish transport. Override it when
+your transport knows better (an Elasticsearch bulk body adds an action line per document; a compressed or
+binary payload is smaller than its JSON form). It is never called at all while both limits are left
+unbounded, so a delivery that does not use them pays nothing for measuring. A document larger than
+`MaxRequestBytes` on its own is still sent alone, since there is no way to split it further.
+
 `FileDeadLetterListener` provides a ready-made `onDocumentsDropped` for the most common case, so you don't
 have to write your own from scratch: it appends every dropped document to a local file, one JSON object per
 line (newline-delimited JSON), wrapped with the reason and a timestamp, so nothing irrecoverably discarded
@@ -291,6 +311,8 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`; must be at least `1`, or every transmission would wait forever. |
 | `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory; oldest discarded past that (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`; `0` or less discards every document immediately, disabling this delivery. |
 | `MaxRequestDocuments` | Maximum documents sent together in a single request; a bigger batch is split into chunks of that size (see step 4 above), each retried independently. Defaults to unbounded (no chunking); set to match a downstream system's per-request limit. |
+| `MaxPendingBytes` | Maximum estimated size a pending batch can hold in memory; oldest discarded past that, exactly as `MaxPendingDocuments` does by count. Defaults to unbounded. |
+| `MaxRequestBytes` | Maximum estimated size of a single request; a heavier batch is split into chunks that each stay under it. Usually the limit that actually matters — Elasticsearch and OpenSearch reject a bulk over `http.max_content_length` by payload size, not document count. Defaults to unbounded. |
 | `MaxConsecutiveFailures` | Maximum consecutive failed attempts for the same request before it is discarded instead of retried again (see step 5 above). Defaults to `5`; `0` or less retries indefinitely. |
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; oldest discarded past that to make room for a new one, mirroring `MaxPendingDocuments`. Defaults to `10'000`. |
 | `RetryBackoff` | Base delay before retrying a failed transmission, doubling per consecutive failure with full jitter, and holding off newly accumulated documents too while in effect. Defaults to `1s`; `ZERO` retries at the next opportunity, as before this setting existed. |

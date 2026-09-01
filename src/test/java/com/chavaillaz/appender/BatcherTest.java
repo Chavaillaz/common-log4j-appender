@@ -334,6 +334,142 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Splits a batch into chunks that each stay under the maximum request size")
+    void testChunksByRequestBytes() throws Exception {
+        // given: elements measured at 10 bytes each and a 25 byte request limit, so chunks hold two of them
+        var attempts = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 5L)
+                // One at a time, so the chunks arrive in the order they were cut rather than racing each other
+                .maxConcurrentTransmissions(1)
+                .elementSize(element -> 10)
+                .maxRequestBytes(() -> 25L)
+                .transport(elements -> {
+                    attempts.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a", "b", "c", "d", "e"));
+        batcher.awaitPendingTransmissions();
+
+        // then: cut before the element that would have pushed a chunk over, never after
+        assertEquals(List.of(List.of("a", "b"), List.of("c", "d"), List.of("e")), attempts);
+    }
+
+    @Test
+    @DisplayName("Sends an element larger than the maximum request size on its own rather than never at all")
+    void testOversizedElementIsStillDispatchedAlone() throws Exception {
+        // given: "big" alone weighs more than a whole request is allowed to, and cannot be split any further
+        var attempts = new CopyOnWriteArrayList<List<String>>();
+                // One at a time, so the chunks arrive in the order they were cut rather than racing each other
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 3L)
+                .elementSize(element -> element.equals("big") ? 500 : 10)
+                .maxRequestBytes(() -> 100L)
+                .transport(elements -> {
+                    attempts.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a", "big", "b"));
+        batcher.awaitPendingTransmissions();
+
+        // then: it goes out alone (for the transport to accept or reject on its own merits) instead of
+        // stalling the batch behind an element no chunk can ever fit
+        assertEquals(List.of(List.of("a"), List.of("big"), List.of("b")), attempts);
+    }
+
+    @Test
+    @DisplayName("Discards the oldest elements once the pending batch weighs more than allowed")
+    void testPendingBytesCapDiscardsOldestElements() throws Exception {
+        // given: a batch that never transmits on its own, capped at 25 bytes with elements of 10
+        var dropped = new CopyOnWriteArrayList<String>();
+        var reasons = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 100L)
+                .elementSize(element -> 10)
+                .maxPendingBytes(() -> 25L)
+                .transport(elements -> completedFuture(TransmissionResult.success()))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                        reasons.add(reason);
+                    }
+                })
+                .build();
+
+        // when: four elements weigh 40 bytes, 15 over the cap
+        batcher.add(List.of("a", "b"));
+        batcher.add(List.of("c"));
+        batcher.add(List.of("d"));
+        awaitDropped(dropped, 2);
+
+        // then: the two oldest were discarded, leaving the batch back under the cap
+        assertEquals(List.of("a", "b"), dropped);
+        assertEquals(List.of("maximum pending bytes exceeded"), reasons.stream().distinct().toList());
+
+        // and: what is left is exactly what the cap allows to be kept
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        assertFalse(batcher.isTransmissionFailing());
+    }
+
+    @Test
+    @DisplayName("Never measures an element when no measurement was supplied at all")
+    void testNoMeasurementWithoutAnElementSizeFunction() throws Exception {
+        // given: byte limits set but no way to measure against them, which must be inert rather than
+        // treating every element as weightless-but-still-counted (or worse, as unbounded)
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 3L)
+                .maxRequestBytes(() -> 1L)
+                .maxPendingBytes(() -> 1L)
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a", "b", "c"));
+        batcher.awaitPendingTransmissions();
+
+        // then: neither limit did anything, despite being far below what three elements would weigh
+        assertEquals(List.of(List.of("a", "b", "c")), transmitted);
+    }
+
+    @Test
+    @DisplayName("Treats a measurement that throws as weightless instead of failing the pipeline")
+    void testThrowingElementSizeIsTolerated() throws Exception {
+        // given
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 2L)
+                .elementSize(element -> {
+                    throw new IllegalStateException("cannot measure " + element);
+                })
+                .maxRequestBytes(() -> 100L)
+                .maxPendingBytes(() -> 100L)
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a", "b"));
+        batcher.awaitPendingTransmissions();
+
+        // then: the byte limits simply go unenforced, rather than the elements being lost over a faulty estimate
+        assertEquals(List.of(List.of("a", "b")), transmitted);
+    }
+
+    @Test
     @DisplayName("Reports the elements still pending when closed as dropped instead of discarding them silently")
     void testCloseReportsStillPendingElementsAsDropped() {
         // given: a transport that never succeeds, and no consecutive-failure limit, so the final flush's

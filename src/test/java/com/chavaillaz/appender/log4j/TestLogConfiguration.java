@@ -95,6 +95,16 @@ class TestLogConfiguration implements LogConfiguration {
             return this;
         }
 
+        Builder maxPendingBytes(long maxPendingBytes) {
+            options.maxPendingBytes(maxPendingBytes);
+            return this;
+        }
+
+        Builder maxRequestBytes(long maxRequestBytes) {
+            options.maxRequestBytes(maxRequestBytes);
+            return this;
+        }
+
         Builder maxConsecutiveFailures(int maxConsecutiveFailures) {
             options.maxConsecutiveFailures(maxConsecutiveFailures);
             return this;
