@@ -532,6 +532,46 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Releases a caller blocked waiting for a permit once a bounded close begins")
+    void testBlockedDispatchIsReleasedByALaterClose() throws Exception {
+        // given: the single transmission permit held for good by a transport whose future never completes,
+        // so the next dispatch blocks waiting for it with no close in progress yet
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1L)
+                .maxConcurrentTransmissions(1)
+                .maxConsecutiveFailures(() -> 0)
+                .transport(elements -> new CompletableFuture<>())
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("stuck"));
+
+        var blocked = new AtomicBoolean(true);
+        var adder = new Thread(() -> {
+            batcher.add(List.of("waiting"));
+            blocked.set(false);
+        });
+        adder.setDaemon(true);
+        adder.start();
+        Thread.sleep(300);
+        assertTrue(blocked.get(), "The second add() should be waiting for the only transmission permit");
+
+        // when: closing with a budget, which the blocked caller must notice rather than wait out an
+        // unbounded acquire it entered before the deadline existed
+        batcher.close(Duration.ofMillis(200));
+
+        // then: it comes back instead of staying blocked for as long as the transport stays stuck
+        adder.join(SECONDS.toMillis(10));
+        assertFalse(blocked.get(), "The blocked add() should have been released by the close");
+        assertFalse(adder.isAlive(), "The blocked add() should have returned");
+    }
+
+    @Test
     @DisplayName("Reports elements a transmission hands back after closing drained the batch")
     void testElementsRequeuedAfterCloseDrainedAreReported() throws Exception {
         // given: a transport holding its future open, so closing gives up on it and drains the batch while

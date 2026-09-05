@@ -110,6 +110,14 @@ public class Batcher<T> {
      */
     private static final int MAX_CONCURRENT_DROP_NOTIFICATIONS = 4;
 
+    /**
+     * How long {@link #acquireTransmissionPermit()} waits for a permit at a time while no close is in
+     * progress, before looking again at whether one has begun (see that method for why it does not simply
+     * wait indefinitely). Only ever reached while genuinely blocked on a saturated transport, so waking up
+     * this often costs nothing on any path that is actually making progress.
+     */
+    private static final long PERMIT_WAIT_SLICE_NANOS = Duration.ofSeconds(1).toNanos();
+
     private final LongSupplier flushThreshold;
     private final IntSupplier maxPendingElements;
     private final IntSupplier maxRequestElements;
@@ -914,17 +922,26 @@ public class Batcher<T> {
     /**
      * Acquires one transmission permit, waiting indefinitely in the normal case but only until
      * {@link #closeDeadlineNanos} while a bounded {@link #close(Duration)} is in progress.
+     * <p>
+     * While no close is in progress, the wait is taken in {@link #PERMIT_WAIT_SLICE_NANOS} slices rather
+     * than as one unbounded acquire, so that a close beginning <em>after</em> this call still bounds it. A
+     * single unbounded acquire reads the deadline once and would never learn about one set a moment later,
+     * leaving the caller blocked for good on a transport whose future never completes — the very case
+     * {@link #close(Duration)} takes a timeout for.
      *
      * @return {@code true} if a permit was acquired, {@code false} if the close deadline elapsed first
      */
     private boolean acquireTransmissionPermit() throws InterruptedException {
-        long deadline = closeDeadlineNanos;
-        if (deadline == NO_DEADLINE) {
-            transmissionPermits.acquire();
-            return true;
+        while (true) {
+            long deadline = closeDeadlineNanos;
+            if (deadline != NO_DEADLINE) {
+                long remainingNanos = deadline - System.nanoTime();
+                return remainingNanos > 0 && transmissionPermits.tryAcquire(remainingNanos, NANOSECONDS);
+            }
+            if (transmissionPermits.tryAcquire(PERMIT_WAIT_SLICE_NANOS, NANOSECONDS)) {
+                return true;
+            }
         }
-        long remainingNanos = deadline - System.nanoTime();
-        return remainingNanos > 0 && transmissionPermits.tryAcquire(remainingNanos, NANOSECONDS);
     }
 
     /**
