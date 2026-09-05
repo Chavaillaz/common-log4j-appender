@@ -197,8 +197,21 @@ public class Batcher<T> {
      * Whether {@link #close(Duration)} has been called, after which no element is accepted any more: without
      * this, a late {@link #add(List)} would stack elements into a batch nothing will ever transmit or report
      * (its dispatch being rejected by the shut-down {@link #transmissionExecutor}), losing them silently.
+     * <p>
+     * Raised before {@link #close(Duration)} acquires the monitor of this instance for the first time, which
+     * is what lets {@link #add(List)} read it under that monitor and conclude that an unset value means
+     * {@link #reportRemainingAsDropped()} has not run yet, and will therefore still see what it stacks.
      */
     private volatile boolean closed;
+
+    /**
+     * Whether {@link #reportRemainingAsDropped()} has already emptied {@link #batch} for good. Past that
+     * point nothing will ever transmit or report the batch again, so {@link #requeue(List, int)} reports its
+     * elements directly instead of merging them into a batch no one is left to look at.
+     * <p>
+     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     */
+    private boolean drained;
 
     /**
      * The {@link System#nanoTime()} reading past which {@link #close(Duration)} stops waiting, or
@@ -476,38 +489,47 @@ public class Batcher<T> {
      * @param elements The elements to accumulate, must not be empty
      */
     public void add(List<T> elements) {
-        if (closed) {
-            // Stacking them would be worse than reporting them here: nothing would ever transmit them
-            // (dispatch being rejected by the shut-down executor) nor report them, losing them silently.
-            log.warn("Discarding {} {}(s) submitted after this engine was closed", elements.size(), elementNoun);
-            List<T> rejected = List.copyOf(elements);
-            notifyListener(() -> listener.onDropped(rejected, "submitted after close"));
-            return;
-        }
-
         PendingBatch<T> snapshot = null;
-        List<T> discarded;
-        List<T> oversized;
-        int maxPending;
+        List<T> discarded = null;
+        List<T> oversized = null;
+        boolean rejected = false;
+        int maxPending = 0;
         synchronized (this) {
-            batch.addAll(elements);
-            pendingBytes += sizeOf(elements);
-            log.trace("Stacking batch {}/{}", batch.size(), flushThreshold.getAsLong());
+            // Read while holding the monitor rather than before taking it. close() raises this flag before
+            // it ever acquires the monitor, so seeing it unset here proves reportRemainingAsDropped() has
+            // not drained the batch yet and will still pick up whatever is stacked below. Checked outside,
+            // a caller could pass it just as a concurrent close() begins, then stack elements into a batch
+            // that has already been drained -- nothing would ever transmit them (dispatch being rejected by
+            // the shut-down executor) nor report them, losing them silently.
+            rejected = closed;
+            if (!rejected) {
+                batch.addAll(elements);
+                pendingBytes += sizeOf(elements);
+                log.trace("Stacking batch {}/{}", batch.size(), flushThreshold.getAsLong());
 
-            // Enforces the same cap as requeue() here too, so maxPendingElements bounds memory even when
-            // flushThreshold is set higher (or effectively unbounded) and nothing is actually failing.
-            maxPending = maxPendingElements.getAsInt();
-            BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(batch, maxPending);
-            batch = trimmed.kept();
-            discarded = trimmed.discarded();
-            pendingBytes -= sizeOf(discarded);
-            oversized = trimToPendingBytes();
+                // Enforces the same cap as requeue() here too, so maxPendingElements bounds memory even when
+                // flushThreshold is set higher (or effectively unbounded) and nothing is actually failing.
+                maxPending = maxPendingElements.getAsInt();
+                BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(batch, maxPending);
+                batch = trimmed.kept();
+                discarded = trimmed.discarded();
+                pendingBytes -= sizeOf(discarded);
+                oversized = trimToPendingBytes();
 
-            boolean batchingEnabled = flushThreshold.getAsLong() > 1;
-            boolean thresholdReached = batch.size() >= flushThreshold.getAsLong();
-            if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
-                snapshot = swapBatch();
+                boolean batchingEnabled = flushThreshold.getAsLong() > 1;
+                boolean thresholdReached = batch.size() >= flushThreshold.getAsLong();
+                if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
+                    snapshot = swapBatch();
+                }
             }
+        }
+        if (rejected) {
+            log.warn("Discarding {} {}(s) submitted after this engine was closed", elements.size(), elementNoun);
+            List<T> copy = List.copyOf(elements);
+            // Notified on the calling thread: transmissionExecutor is already shut down by the time this
+            // flag is visible, so handing it off would only fall straight back here.
+            notifyListener(() -> listener.onDropped(copy, "submitted after close"));
+            return;
         }
         // Notified asynchronously (see notifyDropped()) since this runs directly on whatever thread called
         // add(): a slow listener must not stall it.
@@ -693,43 +715,63 @@ public class Batcher<T> {
      *                      transmission permit was interrupted)
      */
     private void requeue(List<T> elements, int failureStreak) {
-        List<T> discarded;
-        List<T> oversized;
-        int maxPending;
+        List<T> discarded = null;
+        List<T> oversized = null;
+        List<T> abandoned = null;
+        int maxPending = 0;
         synchronized (this) {
-            List<T> merged = new ArrayList<>(elements.size() + batch.size());
-            merged.addAll(elements);
-            merged.addAll(batch);
-            // The requeued elements left this batch (and its running total) when they were swapped out for
-            // transmission, so they are measured again on the way back in rather than remembered.
-            pendingBytes += sizeOf(elements);
+            if (drained) {
+                // reportRemainingAsDropped() already emptied the batch for good, and add() refuses to stack
+                // anything new past that point, so nothing will ever look at this batch again: merging these
+                // elements back in would leave them sitting there with nothing left to transmit or report
+                // them. Reached when a transmission, or a dispatch that never got a permit within the close
+                // budget, hands its elements back just after close() drained.
+                abandoned = List.copyOf(elements);
+            } else {
+                List<T> merged = new ArrayList<>(elements.size() + batch.size());
+                merged.addAll(elements);
+                merged.addAll(batch);
+                // The requeued elements left this batch (and its running total) when they were swapped out
+                // for transmission, so they are measured again on the way back in rather than remembered.
+                pendingBytes += sizeOf(elements);
 
-            maxPending = maxPendingElements.getAsInt();
-            BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(merged, maxPending);
-            batch = trimmed.kept();
-            discarded = trimmed.discarded();
-            pendingBytes -= sizeOf(discarded);
-            oversized = trimToPendingBytes();
+                maxPending = maxPendingElements.getAsInt();
+                BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(merged, maxPending);
+                batch = trimmed.kept();
+                discarded = trimmed.discarded();
+                pendingBytes -= sizeOf(discarded);
+                oversized = trimToPendingBytes();
 
-            // The live batch might already carry forward a streak of its own (from a different failed
-            // chunk merged in moments earlier by a concurrent transmission); keeping the higher of the two
-            // is the conservative choice, since the merged batch is at least as "tainted" as its worst
-            // ingredient.
-            pendingFailureStreak = Math.max(pendingFailureStreak, failureStreak);
+                // The live batch might already carry forward a streak of its own (from a different failed
+                // chunk merged in moments earlier by a concurrent transmission); keeping the higher of the
+                // two is the conservative choice, since the merged batch is at least as "tainted" as its
+                // worst ingredient.
+                pendingFailureStreak = Math.max(pendingFailureStreak, failureStreak);
+            }
         }
         // Notified outside the lock: it's also needed to accumulate the next batch, and a slow listener
         // must not stall that. Called directly (not via notifyDropped()) since this is reached either from
         // onTransmissionFailure() (already on transmissionExecutor's own thread) or, more rarely, from a
         // failed dispatch handoff — never from the caller-facing add()/flush().
+        if (abandoned != null) {
+            List<T> lost = abandoned;
+            log.error("Discarding {} {}(s) put back after this engine was closed, they were never successfully transmitted",
+                    lost.size(), elementNoun);
+            notifyListener(() -> listener.onDropped(lost, "still pending when closed"));
+            return;
+        }
         if (discarded != null) {
+            List<T> trimmedOut = discarded;
             log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while retrying",
-                    discarded.size(), elementNoun, elementNoun, maxPending);
-            notifyListener(() -> listener.onDropped(discarded, "maximum pending " + elementNoun + "s exceeded"));
+                    trimmedOut.size(), elementNoun, elementNoun, maxPending);
+            notifyListener(() -> listener.onDropped(trimmedOut, "maximum pending " + elementNoun + "s exceeded"));
         }
         if (oversized != null) {
-            notifyListener(() -> listener.onDropped(oversized, "maximum pending bytes exceeded"));
+            List<T> tooHeavy = oversized;
+            notifyListener(() -> listener.onDropped(tooHeavy, "maximum pending bytes exceeded"));
         }
     }
+
 
     /**
      * Notifies {@link #listener} of dropped elements on a fresh virtual thread rather than the calling one,
@@ -1196,6 +1238,9 @@ public class Batcher<T> {
     private void reportRemainingAsDropped() {
         List<T> remaining;
         synchronized (this) {
+            // Raised before the early return below too: an empty batch is still a drained one, and a
+            // requeue landing after this point must report its elements rather than stack them here.
+            drained = true;
             if (batch.isEmpty()) {
                 return;
             }

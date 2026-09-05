@@ -532,6 +532,50 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Reports elements a transmission hands back after closing drained the batch")
+    void testElementsRequeuedAfterCloseDrainedAreReported() throws Exception {
+        // given: a transport holding its future open, so closing gives up on it and drains the batch while
+        // that transmission is still in flight. Completing it afterwards puts its elements back into a batch
+        // nothing is left to transmit or report, which used to lose them without a trace.
+        var dropped = new CopyOnWriteArrayList<String>();
+        var reasons = new CopyOnWriteArrayList<String>();
+        var inFlight = new CopyOnWriteArrayList<CompletableFuture<TransmissionResult<String>>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1L)
+                .maxConsecutiveFailures(() -> 0)
+                .transport(elements -> {
+                    var future = new CompletableFuture<TransmissionResult<String>>();
+                    inFlight.add(future);
+                    return future;
+                })
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                        reasons.add(reason);
+                    }
+                })
+                .build();
+        batcher.add(List.of("stuck"));
+        // Dispatch hands the batch to a virtual thread, so the transport is reached shortly after add()
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+        while (inFlight.isEmpty() && System.nanoTime() < deadlineNanos) {
+            Thread.sleep(5);
+        }
+        assertEquals(1, inFlight.size(), "The element should have been dispatched");
+
+        // when: closing gives up on the transmission, then it finally fails and hands its element back
+        batcher.close(Duration.ofMillis(200));
+        assertTrue(dropped.isEmpty(), "The element is still held by the transport, not dropped yet");
+        inFlight.get(0).complete(TransmissionResult.failure(null));
+        awaitDropped(dropped, 1);
+
+        // then: it is reported rather than merged back into a batch nobody will ever look at again
+        assertEquals(List.of("stuck"), dropped);
+        assertEquals(List.of("still pending when closed"), reasons);
+    }
+
+    @Test
     @DisplayName("Reports elements submitted after being closed as dropped instead of stacking them for nobody")
     void testElementsSubmittedAfterCloseAreReported() {
         // given
