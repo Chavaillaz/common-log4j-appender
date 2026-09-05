@@ -629,6 +629,57 @@ class BatcherTest {
         }
     }
 
+    @Test
+    @DisplayName("Bounds how many drop notifications a slow listener can have in flight at once")
+    void testSlowListenerCannotAccumulateDropNotifications() throws Exception {
+        // given: a listener that never returns, and a pending cap of one so that every add() past the first
+        // discards. Handing each notification to its own thread would let them (and the elements each one
+        // holds) pile up without bound, turning the cap that bounds memory into the thing consuming it.
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var inFlight = new AtomicInteger();
+        var peak = new AtomicInteger();
+        Batcher<String> batcher = Batcher.<String>builder()
+                // Never reached, so nothing ever drains the batch and every add() trips the pending cap
+                .flushThreshold(() -> Long.MAX_VALUE)
+                .maxPendingElements(() -> 1)
+                .transport(elements -> new CompletableFuture<>())
+                .listener(new BatcherListener<String>() {
+                    @Override
+                    public void onDropped(List<String> dropped, String reason) {
+                        peak.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+                        try {
+                            release.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        inFlight.decrementAndGet();
+                    }
+                })
+                .build();
+
+        // when: adding from a thread of its own, since saturating the bound makes add() notify inline and
+        // therefore block on the listener above, which is the backpressure being asserted
+        var adder = new Thread(() -> {
+            for (int i = 0; i < 500; i++) {
+                batcher.add(List.of("element-" + i));
+            }
+        });
+        adder.setDaemon(true);
+        adder.start();
+
+        // then: notifications stop being handed off well before the 500 adds, rather than one per add
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+        while (inFlight.get() < 5 && System.nanoTime() < deadlineNanos) {
+            Thread.sleep(5);
+        }
+        Thread.sleep(200);
+        assertTrue(peak.get() <= 5,
+                "At most four notifications should be in flight, plus the one blocking the caller, but peaked at " + peak.get());
+
+        release.countDown();
+        adder.join(SECONDS.toMillis(5));
+    }
+
     private static Batcher<String> batcher(long flushThreshold,
             Function<List<String>, CompletableFuture<TransmissionResult<String>>> transport, BatcherListener<String> listener) {
         return Batcher.<String>builder()

@@ -103,6 +103,13 @@ public class Batcher<T> {
      */
     private static final long MAX_TIMEOUT_MILLIS = Duration.ofDays(365).toMillis();
 
+    /**
+     * How many {@link #notifyDropped(List, String)} notifications may be in flight at once before the rest
+     * are delivered on the calling thread instead. Small on purpose: this exists to keep a slow listener
+     * from piling up notifications (and the elements each one holds) without bound, not to parallelize it.
+     */
+    private static final int MAX_CONCURRENT_DROP_NOTIFICATIONS = 4;
+
     private final LongSupplier flushThreshold;
     private final IntSupplier maxPendingElements;
     private final IntSupplier maxRequestElements;
@@ -164,6 +171,14 @@ public class Batcher<T> {
      * Bounds the number of batches transmitted concurrently to {@link #maxConcurrentTransmissions}.
      */
     private final Semaphore transmissionPermits;
+
+    /**
+     * Bounds the number of drop notifications handed to {@link #transmissionExecutor} at once to
+     * {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS}. Deliberately separate from {@link #transmissionPermits}:
+     * a notification is best-effort and must not consume a slot a real transmission could use, nor make
+     * {@link #awaitPendingTransmissions()} wait on a listener.
+     */
+    private final Semaphore dropNotificationPermits = new Semaphore(MAX_CONCURRENT_DROP_NOTIFICATIONS);
 
     /**
      * Whether the last completed transmission attempt failed, used to avoid retrying on every single new
@@ -722,6 +737,11 @@ public class Batcher<T> {
      * reached directly from the caller; every other discard in this class is already off that path and
      * notified directly instead.
      * <p>
+     * Bounded to {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS} in flight at once: past that, the notification
+     * happens on the calling thread instead, so a slow listener cannot have them (and the elements each one
+     * holds) accumulate without bound exactly when sustained overload is making every {@link #add(List)}
+     * discard.
+     * <p>
      * Best-effort: not tracked by {@link #transmissionPermits}, so {@link #awaitPendingTransmissions()} (and
      * transitively {@link #close()}) does not wait for it; falls back to notifying on the calling thread if
      * the executor is already shutting down, rather than losing the notification entirely.
@@ -730,9 +750,27 @@ public class Batcher<T> {
      * @param reason   A short, human-readable explanation of why they were discarded
      */
     private void notifyDropped(List<T> elements, String reason) {
+        if (!dropNotificationPermits.tryAcquire()) {
+            // Every slot is still held by a listener that has not returned yet. Handing this notification to
+            // yet another thread would let a slow one (a file write, a lock, a network call) accumulate them
+            // without bound, each pinning the elements it was given -- and the moment that happens is
+            // precisely when the pending cap is already discarding under overload, so the mechanism meant to
+            // bound memory would be the one growing it. Notifying inline instead applies backpressure to the
+            // accumulating thread, which is never an application thread (see the class documentation).
+            notifyListener(() -> listener.onDropped(elements, reason));
+            return;
+        }
+
         try {
-            transmissionExecutor.execute(() -> notifyListener(() -> listener.onDropped(elements, reason)));
+            transmissionExecutor.execute(() -> {
+                try {
+                    notifyListener(() -> listener.onDropped(elements, reason));
+                } finally {
+                    dropNotificationPermits.release();
+                }
+            });
         } catch (RejectedExecutionException e) {
+            dropNotificationPermits.release();
             log.warn("Notifying the listener of {} dropped {}(s) on the calling thread, the engine is shutting down",
                     elements.size(), elementNoun);
             notifyListener(() -> listener.onDropped(elements, reason));
