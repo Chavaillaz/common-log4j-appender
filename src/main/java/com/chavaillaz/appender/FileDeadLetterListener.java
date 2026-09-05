@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 import lombok.extern.log4j.Log4j2;
 
@@ -40,10 +41,19 @@ import lombok.extern.log4j.Log4j2;
  * {@link Boolean}, {@link Number}, {@link Map} and {@link Iterable} values are written as their natural JSON
  * counterpart (recursively for the latter two), anything else (including {@link String}) is written as a
  * JSON string via {@link String#valueOf(Object)}. A key's own iteration order is preserved as-is, without
- * imposing any sorting.
+ * imposing any sorting. A number JSON has no notion of ({@link Double#NaN}, either infinity, or whatever a
+ * custom {@link Number} subclass renders as) falls back to a JSON string, so a single such value cannot
+ * leave a line no parser can read.
  */
 @Log4j2
 public class FileDeadLetterListener implements LogDeliveryListener {
+
+    /**
+     * The grammar JSON allows for a number (RFC 8259), used by {@link #writeJsonNumber(StringBuilder, Number)}
+     * to tell a {@link Number} that renders as one from a {@link Double#NaN}, an infinity, or a custom
+     * subclass rendering as something else entirely.
+     */
+    private static final Pattern JSON_NUMBER = Pattern.compile("-?(0|[1-9]\\d*)(\\.\\d+)?([eE][-+]?\\d+)?");
 
     private final Path file;
 
@@ -138,10 +148,33 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         switch (value) {
             case null -> builder.append("null");
             case Boolean bool -> builder.append(bool);
-            case Number number -> builder.append(number);
+            case Number number -> writeJsonNumber(builder, number);
             case Map<?, ?> map -> writeJsonObject(builder, map);
             case Iterable<?> iterable -> writeJsonArray(builder, iterable);
             default -> writeJsonString(builder, String.valueOf(value));
+        }
+    }
+
+    /**
+     * Writes the given number as a JSON number, falling back to a JSON string whenever its rendering is not
+     * one JSON actually accepts.
+     * <p>
+     * {@link Double#NaN} and both infinities render as a bare {@code NaN}, {@code Infinity} or
+     * {@code -Infinity}, none of which JSON has any notion of, and a custom {@link Number} subclass is free
+     * to render as absolutely anything (a thousands separator, a currency symbol, a locale-specific decimal
+     * comma). Appending either verbatim would leave a line no parser can read, which for a file whose whole
+     * purpose is to be machine-readable later means the dropped documents are lost a second time — so the
+     * value is preserved as a string instead of quietly corrupting the line carrying it.
+     *
+     * @param builder The builder to append to
+     * @param number  The number to write
+     */
+    private static void writeJsonNumber(StringBuilder builder, Number number) {
+        String rendered = String.valueOf(number);
+        if (JSON_NUMBER.matcher(rendered).matches()) {
+            builder.append(rendered);
+        } else {
+            writeJsonString(builder, rendered);
         }
     }
 
