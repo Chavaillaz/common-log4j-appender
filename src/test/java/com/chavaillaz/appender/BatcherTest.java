@@ -363,8 +363,9 @@ class BatcherTest {
     void testOversizedElementIsStillDispatchedAlone() throws Exception {
         // given: "big" alone weighs more than a whole request is allowed to, and cannot be split any further
         var attempts = new CopyOnWriteArrayList<List<String>>();
-                // One at a time, so the chunks arrive in the order they were cut rather than racing each other
         Batcher<String> batcher = Batcher.<String>builder()
+                // One at a time, so the chunks arrive in the order they were cut rather than racing each other
+                .maxConcurrentTransmissions(1)
                 .flushThreshold(() -> 3L)
                 .elementSize(element -> element.equals("big") ? 500 : 10)
                 .maxRequestBytes(() -> 100L)
