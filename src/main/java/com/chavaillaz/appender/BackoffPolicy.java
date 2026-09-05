@@ -3,6 +3,8 @@ package com.chavaillaz.appender;
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * How long a {@link Batcher} waits before retrying after a failed transmission, so a downstream system that
  * is down, overloaded or rate-limiting is not hit again immediately (and then again, and again) by the very
@@ -44,26 +46,58 @@ public interface BackoffPolicy {
      * the very thundering herd the backoff exists to avoid, and would keep doing so on every subsequent
      * attempt since their delays stay identical.
      *
-     * @param initial The base delay after a first failure, {@link Duration#ZERO} or less disabling the
-     *                policy entirely (equivalent to {@link #none()})
-     * @param max     The cap the delay never grows past, ignored if smaller than {@code initial}
+     * @param initial The base delay after a first failure, {@link Duration#ZERO} or less (or {@code null})
+     *                disabling the policy entirely (equivalent to {@link #none()})
+     * @param max     The cap the delay never grows past, ignored if smaller than {@code initial} or
+     *                {@code null}
      * @return An exponential backoff policy with full jitter
      */
     static BackoffPolicy exponential(Duration initial, Duration max) {
-        long initialMillis = initial != null ? initial.toMillis() : 0L;
-        long maxMillis = max != null ? max.toMillis() : 0L;
+        long initialMillis = toMillis(initial);
+        long maxMillis = toMillis(max);
         if (initialMillis <= 0) {
             return none();
         }
         long cappedMaxMillis = Math.max(initialMillis, maxMillis);
         return consecutiveFailures -> {
-            // Shifting by 62 or more would overflow (or, past 63, wrap around to a nonsensical small value),
-            // and any exponent that large is already far past the cap anyway.
+            // Shifting by 63 or more is undefined for a long (only the low six bits of the shift distance
+            // count, so it would start over from zero), and any exponent that large is already far past the
+            // cap anyway.
             int exponent = Math.min(Math.max(consecutiveFailures, 1) - 1, 62);
             long unbounded = initialMillis << exponent;
-            long ceiling = unbounded < 0 ? cappedMaxMillis : Math.min(unbounded, cappedMaxMillis);
+            // Shifting past the width of a long drops the high bits silently, and what is left is not
+            // always the negative value one might expect: it can wrap to a small positive number, or to
+            // exactly 0, which would remove the very delay this policy exists to impose (the default one
+            // second base delay lands on 0 from the 62nd consecutive failure onwards, precisely during the
+            // long outage the cap is meant to keep retries slow for). Doubling can only ever grow a
+            // positive value, so anything that came back smaller than the base delay is one of those
+            // wrapped results, and is by definition far past the cap.
+            boolean overflowed = unbounded < initialMillis;
+            long ceiling = overflowed ? cappedMaxMillis : Math.min(unbounded, cappedMaxMillis);
             return ThreadLocalRandom.current().nextLong(ceiling + 1);
         };
+    }
+
+    /**
+     * Converts the given duration to a delay in milliseconds, treating {@code null} as none and clamping one
+     * too large to a year, so neither {@link Duration#toMillis()} throwing on an absurd value nor the
+     * {@code ceiling + 1} bound computed above overflowing can propagate out of building a policy. A year of
+     * backoff is already indistinguishable from never retrying at all.
+     *
+     * @param duration The duration to convert, or {@code null} for none
+     * @return The duration in milliseconds, never negative
+     */
+    private static long toMillis(@Nullable Duration duration) {
+        long maxMillis = Duration.ofDays(365).toMillis();
+        if (duration == null) {
+            return 0L;
+        }
+        try {
+            return Math.clamp(duration.toMillis(), 0L, maxMillis);
+        } catch (ArithmeticException e) {
+            // Too large to even be expressed in milliseconds, so necessarily past the clamp above.
+            return maxMillis;
+        }
     }
 
     /**

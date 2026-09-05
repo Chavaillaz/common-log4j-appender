@@ -54,18 +54,63 @@ class BackoffPolicyTest {
         assertCeiling(policy, 5, 800);
     }
 
-    @Test
-    @DisplayName("Stays within the cap for a failure count large enough to overflow the exponential")
-    void testHugeFailureCountStaysWithinTheCap() {
+    @ParameterizedTest
+    @ValueSource(ints = {62, 63, 64, 1_000, Integer.MAX_VALUE})
+    @DisplayName("Keeps backing off at the cap for a failure count large enough to overflow the exponential")
+    void testHugeFailureCountStaysAtTheCap(int consecutiveFailures) {
         BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(30));
 
-        // when/then: a shift by this much would overflow a long several times over; the delay must still be
-        // a sane value within the cap rather than a wrapped-around (possibly negative) one
-        for (int consecutiveFailures : new int[] {62, 63, 64, 1_000, Integer.MAX_VALUE}) {
-            long delay = policy.delayMillis(consecutiveFailures);
-            assertTrue(delay >= 0 && delay <= 30_000,
-                    "Delay for " + consecutiveFailures + " failures should be within [0, 30000] but was " + delay);
+        // when/then: a shift by this much overflows a long several times over, and the truncated result is
+        // not necessarily negative — a one second base delay wraps to exactly 0 here. Asserting only an
+        // upper bound would accept that, so the ceiling is asserted in full: a batch that failed this many
+        // times is deep into an outage, which is when retrying without any delay at all hurts the most.
+        assertCeiling(policy, consecutiveFailures, 30_000);
+    }
+
+    @Test
+    @DisplayName("Keeps backing off at the cap across every consecutive failure count in a long outage")
+    void testEveryFailureCountKeepsSomeDelay() {
+        BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(30));
+
+        // when/then: walks the whole range rather than a few hand-picked points, since which counts
+        // overflow depends on the base delay; none of them may silently drop back to no delay at all
+        for (int consecutiveFailures = 1; consecutiveFailures < 200; consecutiveFailures++) {
+            long ceiling = 0;
+            for (int i = 0; i < 200; i++) {
+                ceiling = Math.max(ceiling, policy.delayMillis(consecutiveFailures));
+            }
+            assertTrue(ceiling > 0, "Delay for " + consecutiveFailures + " failures collapsed to no delay at all");
+            assertTrue(ceiling <= 30_000, "Delay for " + consecutiveFailures + " failures exceeded the cap: " + ceiling);
         }
+    }
+
+    @Test
+    @DisplayName("Tolerates durations too large to be expressed in milliseconds")
+    void testDurationsTooLargeToConvertAreClamped() {
+        // given: Duration.toMillis() throws rather than saturating past roughly 292 million years, which
+        // must not propagate out of building a policy (nor overflow the jitter bound derived from it)
+        BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofSeconds(Long.MAX_VALUE), Duration.ofSeconds(Long.MAX_VALUE));
+
+        assertTrue(policy.delayMillis(1) >= 0);
+        assertTrue(policy.delayMillis(Integer.MAX_VALUE) >= 0);
+    }
+
+    @Test
+    @DisplayName("Falls back to never delaying when the initial delay is null")
+    void testNullInitialDelayDisablesBackoff() {
+        BackoffPolicy policy = BackoffPolicy.exponential(null, Duration.ofSeconds(30));
+
+        assertEquals(0, policy.delayMillis(1));
+        assertEquals(0, policy.delayMillis(5));
+    }
+
+    @Test
+    @DisplayName("Treats a null maximum as no cap beyond the initial delay")
+    void testNullMaximumFallsBackToTheInitialDelay() {
+        BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofMillis(100), null);
+
+        assertCeiling(policy, 1, 100);
+        assertCeiling(policy, 10, 100);
     }
 
     @Test
