@@ -500,7 +500,7 @@ public class Batcher<T> {
         PendingBatch<T> snapshot = null;
         List<T> discarded = null;
         List<T> oversized = null;
-        boolean rejected = false;
+        boolean rejected;
         int maxPending = 0;
         synchronized (this) {
             // Read while holding the monitor rather than before taking it. close() raises this flag before
@@ -539,8 +539,9 @@ public class Batcher<T> {
             notifyListener(() -> listener.onDropped(copy, "submitted after close"));
             return;
         }
-        // Notified asynchronously (see notifyDropped()) since this runs directly on whatever thread called
-        // add(): a slow listener must not stall it.
+        // Notified off this thread where possible (see notifyDropped()) since this runs directly on whatever
+        // thread called add(): a slow listener should not stall it, and only stalls it once enough
+        // notifications are already in flight that queueing another would grow without bound.
         if (discarded != null) {
             log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while accumulating",
                     discarded.size(), elementNoun, elementNoun, maxPending);
