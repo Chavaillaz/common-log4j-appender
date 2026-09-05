@@ -43,7 +43,8 @@ import lombok.extern.log4j.Log4j2;
  * JSON string via {@link String#valueOf(Object)}. A key's own iteration order is preserved as-is, without
  * imposing any sorting. A number JSON has no notion of ({@link Double#NaN}, either infinity, or whatever a
  * custom {@link Number} subclass renders as) falls back to a JSON string, so a single such value cannot
- * leave a line no parser can read.
+ * leave a line no parser can read. Nesting is followed to a bounded depth, past which a value is replaced
+ * by a marker, so a document that (however unusually) contains itself cannot recurse forever.
  */
 @Log4j2
 public class FileDeadLetterListener implements LogDeliveryListener {
@@ -54,6 +55,21 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      * subclass rendering as something else entirely.
      */
     private static final Pattern JSON_NUMBER = Pattern.compile("-?(0|[1-9]\\d*)(\\.\\d+)?([eE][-+]?\\d+)?");
+
+    /**
+     * Maximum nesting depth written before a value is replaced by {@link #TRUNCATED_MARKER}, guarding
+     * against a structure that contains itself (which would otherwise recurse until the stack runs out).
+     * Far deeper than any log document has reason to be, and the same bound
+     * {@link DocumentSizeEstimator#estimate(Map)} stops measuring at, so what is estimated and what is
+     * written stay in step.
+     */
+    private static final int MAX_DEPTH = 16;
+
+    /**
+     * Written in place of a value nested deeper than {@link #MAX_DEPTH}, so a truncated document says so on
+     * the line itself rather than looking like it simply held that value.
+     */
+    private static final String TRUNCATED_MARKER = "<truncated: maximum nesting depth of " + MAX_DEPTH + " reached>";
 
     private final Path file;
 
@@ -140,17 +156,26 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      */
     private static String toJson(Object value) {
         StringBuilder builder = new StringBuilder();
-        writeJson(builder, value);
+        writeJson(builder, value, 0);
         return builder.toString();
     }
 
-    private static void writeJson(StringBuilder builder, Object value) {
+    private static void writeJson(StringBuilder builder, Object value, int depth) {
+        if (depth > MAX_DEPTH) {
+            // Cut rather than followed any further: a document that (however unusually) contains itself
+            // would otherwise recurse until the stack runs out, and a StackOverflowError is an Error, so it
+            // slips past every "a misbehaving listener must not break the pipeline" guard in Batcher and
+            // AbstractLogDeliveryAppender -- all of which catch Exception -- and escapes through close(),
+            // taking down the shutdown path this sink is most likely to be called on.
+            writeJsonString(builder, TRUNCATED_MARKER);
+            return;
+        }
         switch (value) {
             case null -> builder.append("null");
             case Boolean bool -> builder.append(bool);
             case Number number -> writeJsonNumber(builder, number);
-            case Map<?, ?> map -> writeJsonObject(builder, map);
-            case Iterable<?> iterable -> writeJsonArray(builder, iterable);
+            case Map<?, ?> map -> writeJsonObject(builder, map, depth);
+            case Iterable<?> iterable -> writeJsonArray(builder, iterable, depth);
             default -> writeJsonString(builder, String.valueOf(value));
         }
     }
@@ -178,7 +203,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         }
     }
 
-    private static void writeJsonObject(StringBuilder builder, Map<?, ?> map) {
+    private static void writeJsonObject(StringBuilder builder, Map<?, ?> map, int depth) {
         builder.append('{');
         boolean first = true;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -188,12 +213,12 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             first = false;
             writeJsonString(builder, String.valueOf(entry.getKey()));
             builder.append(':');
-            writeJson(builder, entry.getValue());
+            writeJson(builder, entry.getValue(), depth + 1);
         }
         builder.append('}');
     }
 
-    private static void writeJsonArray(StringBuilder builder, Iterable<?> iterable) {
+    private static void writeJsonArray(StringBuilder builder, Iterable<?> iterable, int depth) {
         builder.append('[');
         boolean first = true;
         for (Object element : iterable) {
@@ -201,7 +226,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
                 builder.append(',');
             }
             first = false;
-            writeJson(builder, element);
+            writeJson(builder, element, depth + 1);
         }
         builder.append(']');
     }

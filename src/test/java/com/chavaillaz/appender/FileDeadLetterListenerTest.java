@@ -201,6 +201,72 @@ class FileDeadLetterListenerTest {
                 "Unexpected line: " + line);
     }
 
+    @Test
+    @DisplayName("Truncates a self-referential document instead of overflowing the stack")
+    void testSelfReferentialDocumentIsTruncated(@TempDir Path tempDir) throws Exception {
+        // given: a document reachable from itself, e.g. an application logging a list that holds the very
+        // map being logged. A StackOverflowError here is an Error, so it slips past every catch(Exception)
+        // guard in the pipeline and escapes through close(), on the shutdown path this sink serves.
+        var file = tempDir.resolve("dead-letters.ndjson");
+        var listener = new FileDeadLetterListener(file);
+        Map<String, Object> document = new LinkedHashMap<>();
+        List<Object> holder = new java.util.ArrayList<>();
+        holder.add(document);
+        document.put("self", holder);
+
+        // when
+        assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(document), "reason"));
+
+        // then: the line is still written, truncated where the cycle was cut, and still readable
+        String line = Files.readString(file, UTF_8).strip();
+        assertTrue(line.contains("truncated: maximum nesting depth"), "Unexpected line: " + line);
+        assertBalancedJson(line);
+    }
+
+    @Test
+    @DisplayName("Truncates a document nested deeper than the limit instead of overflowing the stack")
+    void testDeeplyNestedDocumentIsTruncated(@TempDir Path tempDir) throws Exception {
+        // given: no cycle, just a structure deep enough to exhaust the stack on its own
+        var file = tempDir.resolve("dead-letters.ndjson");
+        var listener = new FileDeadLetterListener(file);
+        Map<String, Object> deepest = new LinkedHashMap<>();
+        deepest.put("bottom", "reached");
+        Object current = deepest;
+        for (int i = 0; i < 10_000; i++) {
+            Map<String, Object> wrapper = new LinkedHashMap<>();
+            wrapper.put("next", current);
+            current = wrapper;
+        }
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("chain", current);
+
+        // when
+        assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(document), "reason"));
+
+        // then
+        String line = Files.readString(file, UTF_8).strip();
+        assertTrue(line.contains("truncated: maximum nesting depth"), "Unexpected line: " + line);
+        assertBalancedJson(line);
+    }
+
+    @Test
+    @DisplayName("Writes nesting up to the depth limit in full")
+    void testNestingWithinTheLimitIsWrittenInFull(@TempDir Path tempDir) throws Exception {
+        // given: the wrapper adds one level, so a document nested well inside the limit must survive intact
+        var file = tempDir.resolve("dead-letters.ndjson");
+        var listener = new FileDeadLetterListener(file);
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("a", Map.of("b", Map.of("c", Map.of("d", "leaf"))));
+
+        // when
+        listener.onDocumentsDropped(List.of(document), "reason");
+
+        // then
+        String line = Files.readString(file, UTF_8).strip();
+        assertTrue(line.endsWith(",\"document\":{\"a\":{\"b\":{\"c\":{\"d\":\"leaf\"}}}}}"), "Unexpected line: " + line);
+        assertTrue(!line.contains("truncated"), "Should not have truncated: " + line);
+    }
+
     /**
      * Asserts that the given line is structurally balanced JSON, catching a value written as a bare token
      * (rather than quoted) that would leave a parser mid-object.
