@@ -113,6 +113,14 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 throw new RejectedExecutionException("Task " + task + " rejected from " + executor);
             }
 
+            // Retried before evicting anything: the offer that failed and brought us here did so a moment
+            // ago, and the worker thread may well have taken an event since. Going straight to the eviction
+            // below would then discard a perfectly deliverable event to make room this queue already has --
+            // a small window, but one every rejection races under the sustained overload that gets here.
+            if (executor.getQueue().offer(newTask)) {
+                return;
+            }
+
             // A race against the worker thread dequeuing the same event is harmless: nothing left to evict.
             if (executor.getQueue().poll() instanceof EventTask evictedTask) {
                 error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
