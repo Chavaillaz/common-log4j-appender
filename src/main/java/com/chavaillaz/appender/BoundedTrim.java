@@ -43,7 +43,12 @@ public class BoundedTrim {
      * @return The trimmed list and whatever was discarded, if anything
      */
     public static <T> Trimmed<T> trim(List<T> elements, int maxSize) {
-        int overflow = Math.min(elements.size(), Math.max(0, elements.size() - maxSize));
+        // Clamped before the subtraction rather than after it: with maxSize far enough below zero (which a
+        // caller is explicitly allowed to pass, meaning "keep nothing"), size - maxSize overflows int and
+        // comes back negative, which the Math.max() below then reads as "nothing to discard" -- keeping
+        // every element instead of discarding every one of them, the exact opposite of what was asked.
+        int cap = Math.max(0, maxSize);
+        int overflow = Math.min(elements.size(), Math.max(0, elements.size() - cap));
         if (overflow == 0) {
             return new Trimmed<>(elements, null);
         }

@@ -69,8 +69,10 @@ class BoundedTrimTest {
         assertEquals(List.of("a", "b"), result.discarded());
     }
 
+    // Integer.MIN_VALUE is not just a bigger negative: it used to make size - maxSize overflow back into a
+    // negative, which read as "nothing to discard" and kept every element instead of discarding them all
     @ParameterizedTest(name = "maxSize = {0}")
-    @ValueSource(ints = {-1, -100})
+    @ValueSource(ints = {-1, -100, Integer.MIN_VALUE + 1, Integer.MIN_VALUE})
     @DisplayName("Treats a negative cap the same as zero, discarding everything, instead of throwing")
     void testNegativeCapDiscardsEverythingWithoutThrowing(int maxSize) {
         var result = BoundedTrim.trim(List.of("a", "b"), maxSize);
