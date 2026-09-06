@@ -140,8 +140,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * The scheduler periodically triggering a flush on {@link #workerExecutor}, created only when batching
      * is enabled (a flush threshold greater than {@code 1}).
+     * <p>
+     * Volatile for the same reason as {@link #logDeliveryHandler} below: written by {@link #start()} and
+     * read by {@link #stop(long, TimeUnit)}, which Log4j2 is free to call from another thread entirely.
      */
-    private @Nullable ScheduledExecutorService flushScheduler;
+    private volatile @Nullable ScheduledExecutorService flushScheduler;
 
     @Getter
     private final C logConfiguration;
@@ -149,9 +152,16 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * The logs delivery handler, or {@code null} before {@link #start()} is called, or if
      * {@link #createLogDeliveryHandler()} threw an exception while starting it.
+     * <p>
+     * Volatile because it is written on whatever thread configures this appender and read on every other:
+     * by {@link #append(LogEvent)} and {@link #reportDropped(LogEvent, String)} on application threads, by
+     * {@link #triggerFlush()} on the worker and scheduler ones. Log4j2's own publication of a started
+     * configuration does establish that edge in the usual case, but nothing in this class requires it — and
+     * a thread that never sees the handler takes {@code append()}'s "not started yet" path forever,
+     * discarding everything it logs without so much as an error.
      */
     @Getter
-    private @Nullable LogDelivery logDeliveryHandler;
+    private volatile @Nullable LogDelivery logDeliveryHandler;
 
     /**
      * Used only as a last resort to produce a document for a logging event discarded before it could even
