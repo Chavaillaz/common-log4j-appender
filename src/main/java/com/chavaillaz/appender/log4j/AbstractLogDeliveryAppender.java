@@ -146,8 +146,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final ThreadPoolExecutor workerExecutor;
 
     /**
-     * The scheduler periodically triggering a flush on {@link #workerExecutor}, created only when batching
-     * is enabled (a flush threshold greater than {@code 1}).
+     * The scheduler periodically triggering a flush on {@link #workerExecutor}, created only when something
+     * can actually leave a partial batch waiting (see {@link #needsPeriodicFlush(DeliveryOptions)}).
      * <p>
      * Volatile for the same reason as {@link #logDeliveryHandler} below: written by {@link #start()} and
      * read by {@link #stop(long, TimeUnit)}, which Log4j2 is free to call from another thread entirely.
@@ -214,9 +214,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Starts the log delivery handler (see {@link #createLogDeliveryHandler()}) and, if batching is enabled
-     * (a flush threshold greater than {@code 1}), schedules the periodic flush described in the class
-     * documentation.
+     * Starts the log delivery handler (see {@link #createLogDeliveryHandler()}) and, if anything can leave a
+     * partial batch waiting (see {@link #needsPeriodicFlush(DeliveryOptions)}), schedules the periodic flush
+     * described in the class documentation.
      */
     @Override
     public void start() {
@@ -238,8 +238,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Schedules the periodic flush described in the class documentation, if batching is enabled (a flush
-     * threshold greater than {@code 1}).
+     * Schedules the periodic flush described in the class documentation, if anything can leave a partial
+     * batch waiting (see {@link #needsPeriodicFlush(DeliveryOptions)}).
      * <p>
      * Reads the delivery options once, and reports a failure to read them at all the same way
      * {@link #validateFlushInterval(Duration)} reports an unusable value: an implementation is free to
@@ -257,7 +257,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             return;
         }
 
-        if (options.flushThreshold() <= 1) {
+        if (!needsPeriodicFlush(options)) {
             return;
         }
         Long intervalMillis = validateFlushInterval(options.flushInterval());
@@ -265,6 +265,32 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
             flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
         }
+    }
+
+    /**
+     * Whether anything can leave documents sitting in a partial batch with no other trigger to send them,
+     * making the periodic flush the only thing that will.
+     * <p>
+     * Batching is the obvious one: past {@code FlushThreshold} documents accumulate on purpose. The retry
+     * backoff is the less obvious one, and it applies even with batching disabled: while it holds off
+     * transmissions after a failure, incoming documents are stacked rather than sent, and once it elapses
+     * nothing goes out until the <em>next</em> document happens to arrive. Under low or bursty traffic (an
+     * application logging an error and then falling quiet, say) that leaves everything accumulated during
+     * the backoff waiting in memory until shutdown -- and since backing off is enabled by default, so is
+     * that wait.
+     *
+     * @param options The options to inspect
+     * @return {@code true} if a periodic flush should be scheduled
+     */
+    private static boolean needsPeriodicFlush(DeliveryOptions options) {
+        if (options.flushThreshold() > 1) {
+            return true;
+        }
+        // Any positive duration counts, rather than only the ones BackoffPolicy does not round down to "no
+        // backoff at all": scheduling a flush that turns out to have nothing to do costs one wake-up per
+        // interval on an otherwise idle thread, skipping one costs whatever a real backoff stacked up.
+        Duration retryBackoff = options.retryBackoff();
+        return retryBackoff != null && !retryBackoff.isZero() && !retryBackoff.isNegative();
     }
 
     /**
@@ -279,8 +305,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private @Nullable Long validateFlushInterval(@Nullable Duration flushInterval) {
         if (flushInterval == null) {
-            error("FlushInterval is not set although FlushThreshold is greater than 1, "
-                    + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
+            error("FlushInterval is not set although FlushThreshold is greater than 1 or a retry backoff is "
+                    + "configured, no periodic flush will be scheduled and partial batches may be delayed indefinitely");
             return null;
         }
 

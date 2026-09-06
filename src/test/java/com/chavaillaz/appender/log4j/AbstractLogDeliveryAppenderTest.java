@@ -322,6 +322,34 @@ class AbstractLogDeliveryAppenderTest {
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
 
+        @Test
+        @DisplayName("Schedules a periodic flush when batching is disabled but a retry backoff can hold documents back")
+        void testSchedulesPeriodicFlushForRetryBackoffWithoutBatching() throws Exception {
+            // given: no batching, so the threshold alone would not schedule anything -- but a retry backoff
+            // (enabled by default in production, unlike in this test configuration) stacks documents while
+            // it holds off transmissions, and once it elapses nothing sends them until the next document
+            // happens to arrive. Under low traffic the periodic flush is the only thing that ever will.
+            var logEvent = mockLogEvent();
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .retryBackoff(Duration.ofSeconds(1))
+                    .maxRetryBackoff(Duration.ofSeconds(1))
+                    .flushInterval(Duration.ofMillis(200)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+
+            // when
+            appender.start();
+            appender.append(logEvent);
+            sleep(300);
+
+            // then
+            assertEquals(1, appender.getCountTaskExecuted().get());
+            verify(appender.getLogDeliveryHandler()).flush();
+
+            // cleanup
+            appender.stop();
+        }
+
     }
 
     @Nested

@@ -34,8 +34,11 @@ import org.jspecify.annotations.Nullable;
  * @param flushInterval              Maximum time between two transmissions: past this interval, a
  *                                   transmission is triggered even if {@code flushThreshold} was not reached
  *                                   yet, so a partial batch is not delayed indefinitely under low traffic.
- *                                   Only relevant when {@code flushThreshold} is above {@code 1}. Defaults to
- *                                   five seconds.
+ *                                   Relevant whenever documents can pile up with nothing else to send them:
+ *                                   when {@code flushThreshold} is above {@code 1}, and when
+ *                                   {@code retryBackoff} is enabled, since documents arriving while a
+ *                                   backoff holds off transmissions are stacked rather than sent. Defaults
+ *                                   to five seconds.
  * @param flushLevel                 Minimum severity that triggers an immediate flush right after the
  *                                   corresponding event was handed to the current batch, instead of waiting
  *                                   for {@code flushThreshold} or {@code flushInterval} as usual; every
