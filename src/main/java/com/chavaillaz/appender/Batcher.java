@@ -524,8 +524,14 @@ public class Batcher<T> {
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
 
-                boolean batchingEnabled = flushThreshold.getAsLong() > 1;
-                boolean thresholdReached = batch.size() >= flushThreshold.getAsLong();
+                long threshold = flushThreshold.getAsLong();
+                boolean batchingEnabled = threshold > 1;
+                // Never on an empty batch, however low the threshold: a non-positive one (allowed, meaning
+                // "no batching") makes "reached" trivially true, so an add() left with nothing -- an empty
+                // list, or one the caps above discarded outright -- would otherwise hand the transport an
+                // empty request to send, fail on it, and count that failure against the pending batch.
+                // flush() has always guarded this; the threshold path never did.
+                boolean thresholdReached = !batch.isEmpty() && batch.size() >= threshold;
                 if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
                     snapshot = swapBatch();
                 }

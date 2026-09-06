@@ -902,6 +902,39 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Never hands the transport an empty request, however low the flush threshold")
+    void testNeverTransmitsAnEmptyBatch() throws Exception {
+        // given: a non-positive threshold (allowed, meaning "no batching") and a pending cap that discards
+        // every element on the way in, so nothing is ever left to send
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 0L)
+                .maxPendingElements(() -> 0)
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a"));
+        batcher.awaitPendingTransmissions();
+
+        // then: the element was reported as discarded, and nothing was sent on its behalf
+        awaitDropped(dropped, 1);
+        assertEquals(List.of("a"), dropped);
+        assertEquals(List.of(), transmitted);
+        assertFalse(batcher.isTransmissionFailing());
+    }
+
+    @Test
     @DisplayName("Clamps a close timeout too large to express in milliseconds instead of waiting forever")
     void testOversizedCloseTimeoutIsClampedRatherThanUnbounded() {
         // given: a year, the cap past which every timeout is indistinguishable from waiting indefinitely
