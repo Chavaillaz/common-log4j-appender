@@ -7,6 +7,7 @@ import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLa
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -151,6 +152,33 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop();
             verify(appender.getLogDeliveryHandler()).close();
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
+        }
+
+        @Test
+        @DisplayName("Finishes starting when the delivery options cannot be read at all")
+        void testStartCompletesWhenTheDeliveryOptionsCannotBeRead() {
+            // given: a configuration that fails to resolve, which the interface invites by documenting that
+            // the options are re-read rather than captured once. start() reads them to decide whether to
+            // schedule the periodic flush, after the delivery handler has already been built
+            var configuration = new FlakyOptionsConfiguration();
+            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when
+            configuration.broken.set(true);
+            assertDoesNotThrow(appender::start);
+            configuration.broken.set(false);
+
+            // then: reported and degraded to no periodic flush, rather than handed to whatever is applying
+            // the Log4j2 configuration -- which also skipped the super.start() below it, leaving an appender
+            // that already had a working handler permanently unstarted
+            assertFalse(errors.isEmpty(), "The failure should have been reported through the error handler");
+            assertTrue(appender.isStarted(), "The appender should have finished starting");
+            assertNotNull(appender.getLogDeliveryHandler());
+
+            // cleanup
+            appender.stop(0, MILLISECONDS);
         }
 
         @Test

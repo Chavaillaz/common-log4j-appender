@@ -232,15 +232,43 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         startLogDeliveryHandler();
 
-        if (logDeliveryHandler != null && logConfiguration.getDeliveryOptions().flushThreshold() > 1) {
-            Long intervalMillis = validateFlushInterval(logConfiguration.getDeliveryOptions().flushInterval());
-            if (intervalMillis != null) {
-                flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
-                flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
-            }
+        if (logDeliveryHandler != null) {
+            startPeriodicFlush();
         }
 
         super.start();
+    }
+
+    /**
+     * Schedules the periodic flush described in the class documentation, if batching is enabled (a flush
+     * threshold greater than {@code 1}).
+     * <p>
+     * Reads the delivery options once, and reports a failure to read them at all the same way
+     * {@link #validateFlushInterval(Duration)} reports an unusable value: they come from an implementation
+     * free to resolve them dynamically, and so to fail. Letting that escape would hand it to whatever is
+     * applying the Log4j2 configuration, and skip the {@code super.start()} that marks this appender
+     * started — leaving one that already has a working delivery handler permanently unstarted, and (since
+     * having a handler is what makes a repeated {@code start()} a no-op) with no second chance at its
+     * scheduler either.
+     */
+    private void startPeriodicFlush() {
+        DeliveryOptions options;
+        try {
+            options = logConfiguration.getDeliveryOptions();
+        } catch (Throwable e) {
+            error("Unable to read the delivery options, no periodic flush will be scheduled and partial "
+                    + "batches may be delayed indefinitely", e);
+            return;
+        }
+
+        if (options.flushThreshold() <= 1) {
+            return;
+        }
+        Long intervalMillis = validateFlushInterval(options.flushInterval());
+        if (intervalMillis != null) {
+            flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
+            flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
+        }
     }
 
     /**
