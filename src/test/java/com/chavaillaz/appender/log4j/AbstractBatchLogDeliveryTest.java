@@ -402,6 +402,33 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
+        @DisplayName("Enforces a pending size limit a subclass supplies by overriding getMaxPendingBytes()")
+        void testOverriddenPendingSizeLimitIsEnforced() throws Exception {
+            // given: the limit comes from the overridable getter alone, the way its own documentation offers
+            // it ("override if the limit should depend on more than just the configuration"), while the
+            // configuration leaves MaxPendingBytes unbounded
+            var configuration = TestLogConfiguration.builder().flushThreshold(1_000).build();
+            var listener = new RecordingListener();
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 100, listener) {
+                @Override
+                protected long getMaxPendingBytes() {
+                    return 150;
+                }
+            };
+            var first = Map.<String, Object>of("id", 1);
+
+            // when: two documents of a hundred bytes each go over that limit
+            logDelivery.send(first);
+            logDelivery.send(Map.<String, Object>of("id", 2));
+
+            // then: the oldest is discarded, rather than the limit quietly enforcing nothing because the
+            // measurement it needs was decided against once, from the configuration, at construction
+            awaitDropped(listener, 1);
+            assertEquals(List.of(first), listener.dropped.get(0).documents());
+            assertEquals("maximum pending bytes exceeded", listener.dropped.get(0).reason());
+        }
+
+        @Test
         @DisplayName("Never measures a document while both size limits are left at their defaults")
         void testDocumentsAreNotMeasuredWithoutASizeLimit() throws Exception {
             // given: the default configuration, with a delivery that records every measurement it is asked for

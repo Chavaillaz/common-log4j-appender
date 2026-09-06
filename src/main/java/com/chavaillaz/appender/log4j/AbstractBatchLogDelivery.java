@@ -133,13 +133,13 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     }
                 });
 
-        // Measuring documents costs something on the path every one of them takes, so it is only wired in
-        // when there is actually a byte limit to enforce. Decided once here rather than per call, unlike the
-        // count limits: the pending total is maintained incrementally as documents come and go, so it could
-        // not be started midway through an already-accumulating batch and still describe all of it.
-        if (isBounded(options.maxPendingBytes()) || isBounded(options.maxRequestBytes())) {
-            batcherBuilder.elementSize(this::estimateDocumentSize);
-        }
+        // Always wired in, but only measuring anything while a byte limit is actually in effect (see
+        // measureIfBounded below). Reading the configuration once here instead, to decide whether to wire it
+        // at all, made getMaxPendingBytes()/getMaxRequestBytes() useless as the overridable hooks their own
+        // documentation offers them as: a subclass raising a limit through one of them, and nothing else,
+        // got a limit that silently enforced nothing at all, since the measurement it needs was never
+        // wired up.
+        batcherBuilder.elementSize(this::measureIfBounded);
         this.batcher = batcherBuilder.build();
     }
 
@@ -152,6 +152,26 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     private static boolean isBounded(long limit) {
         return limit > 0 && limit < Long.MAX_VALUE;
+    }
+
+    /**
+     * Measures the given document through {@link #estimateDocumentSize(Map)}, or counts it as weightless
+     * while neither byte limit is in effect: measuring costs something on the path every document takes, and
+     * a delivery with no size limit to enforce should not pay it.
+     * <p>
+     * Checked per document rather than once at construction, so that both limits keep working through the
+     * overridable getters below (a constructor cannot ask a subclass anything: its fields are not
+     * initialized yet). A limit that only comes into effect once documents are already accumulating starts
+     * out under-counting them, since what came before was never measured; the running total re-anchors on
+     * the next batch, so such a limit is at worst enforced a little late rather than not at all.
+     *
+     * @param document The document to measure
+     * @return The estimated size of the document in bytes, or {@code 0} while no byte limit is in effect
+     */
+    private long measureIfBounded(Map<String, Object> document) {
+        return isBounded(getMaxPendingBytes()) || isBounded(getMaxRequestBytes())
+                ? estimateDocumentSize(document)
+                : 0;
     }
 
     /**
