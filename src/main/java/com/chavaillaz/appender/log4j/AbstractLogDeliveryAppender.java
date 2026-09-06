@@ -122,12 +122,18 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             }
 
             // A race against the worker thread dequeuing the same event is harmless: nothing left to evict.
-            if (executor.getQueue().poll() instanceof EventTask evictedTask) {
+            Runnable evicted = executor.getQueue().poll();
+            boolean queued = executor.getQueue().offer(newTask);
+
+            // Both reports come after the slot has been claimed, never between freeing and refilling it:
+            // reporting a drop calls the application's own listener (a dead-letter file write, typically),
+            // and leaving the slot open for that long invites another thread to take it -- turning an
+            // eviction that made room for this event into one that discarded two events for someone else.
+            if (evicted instanceof EventTask evictedTask) {
                 error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
                 reportDropped(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
             }
-
-            if (!executor.getQueue().offer(newTask)) {
+            if (!queued) {
                 // Lost a race against another concurrent event refilling the freed slot first: falls back
                 // to discarding this new one instead, the same outcome the default policy would have produced.
                 error("Log delivery task rejected: the internal queue is full, or the appender is stopping");

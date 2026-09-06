@@ -590,6 +590,43 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Claims the slot freed by an eviction before notifying the listener about it")
+        void testEvictedSlotIsClaimedBeforeTheDiscardIsReported() throws Exception {
+            // given: the same full-queue setup, with a listener that observes the queue from inside its own
+            // onDocumentsDropped -- which is where a real one writes to a file or a dead-letter queue, and
+            // so where it spends whatever time it spends. Leaving the freed slot open for that long lets
+            // another appending thread take it, so the eviction that was supposed to make room for this
+            // event ends up discarding two events for someone else's benefit.
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var queuedWhileReporting = new AtomicInteger(-1);
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    queuedWhileReporting.set(appender.getQueuedEventCount());
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+            appender.append(realLogEvent("C")); // evicts B and takes its place
+
+            // then: C was already back in the queue while B's discard was being reported
+            assertEquals(1, queuedWhileReporting.get());
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+        }
+
+        @Test
         @DisplayName("Does not crash construction when MaxQueuedEvents is zero or negative")
         void testNonPositiveMaxQueuedEventsDoesNotThrow() throws Exception {
             // given: the worker executor (and its bounded queue) is created at construction time
