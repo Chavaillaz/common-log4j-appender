@@ -107,6 +107,12 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      */
     @Override
     public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+        if (documents.isEmpty()) {
+            // Nothing to append, and nothing worth creating the file for either: an empty dead-letter file
+            // sitting next to an application is read as "logs were lost here", which is the one thing that
+            // did not happen. Reachable from any listener chain forwarding a notification it did not filter.
+            return;
+        }
         Instant droppedAt = Instant.now();
         List<String> lines = new ArrayList<>(documents.size());
         for (Map<String, Object> document : documents) {

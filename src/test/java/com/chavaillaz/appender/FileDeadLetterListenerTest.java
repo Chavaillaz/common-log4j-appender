@@ -3,6 +3,7 @@ package com.chavaillaz.appender;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -372,6 +373,20 @@ class FileDeadLetterListenerTest {
         // when / then
         assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
         assertEquals(List.of("reason"), failures);
+    }
+
+    @Test
+    @DisplayName("Does not create the file at all when there is nothing to append")
+    void testEmptyNotificationDoesNotCreateTheFile(@TempDir Path tempDir) {
+        // given: an empty notification, as a listener chain forwarding one it did not filter produces
+        var file = tempDir.resolve("dead-letters.ndjson");
+        var listener = new FileDeadLetterListener(file);
+
+        // when
+        listener.onDocumentsDropped(List.of(), "nothing was actually dropped");
+
+        // then: no file, since one sitting next to an application reads as "logs were lost here"
+        assertFalse(Files.exists(file));
     }
 
 }
