@@ -147,7 +147,8 @@ public class Batcher<T> {
      * Number of consecutive times the data currently in {@link #batch} has already failed to be transmitted
      * (0 if never attempted). Carried forward (keeping the higher of the two when merged) by
      * {@link #requeue(List, int)}, and reset to {@code 0} when {@link #swapBatch()} swaps in a fresh batch,
-     * since the returned snapshot then owns its own streak through {@link #dispatch(List, int)}.
+     * since the returned snapshot then owns its own streak through {@link #dispatch(List, int)}, or when the
+     * elements that earned it are all gone from the batch (see {@link #pendingFailureCount}).
      * <p>
      * Always guarded by the monitor of this instance, like {@link #batch} itself.
      */
