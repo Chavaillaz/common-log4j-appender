@@ -569,7 +569,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         try {
             logDeliveryHandler.close();
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: closing a delivery releases its transport client, and a class that
+            // client only needs on the way out can fail to load once the JVM is already shutting down,
+            // giving a NoClassDefFoundError rather than an exception. This runs from stop()'s finally
+            // block, so letting one escape would also skip the super.stop() right after it, leaving Log4j2
+            // holding an appender that never finished stopping and still reports itself as started.
             error("Log delivery closing error", e);
         }
     }

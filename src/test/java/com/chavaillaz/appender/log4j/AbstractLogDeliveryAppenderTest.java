@@ -604,6 +604,27 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Finishes stopping even when closing the delivery fails with an Error")
+        void testStopCompletesWhenClosingTheDeliveryThrowsAnError() {
+            // given: closing a delivery releases its transport client, and a class that client only needs on
+            // the way out can fail to load once the JVM is already shutting down
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new ErrorOnCloseLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            appender.start();
+
+            // when / then: reported rather than propagated, and the lifecycle still completes -- this runs
+            // from stop()'s finally block, so an escaping failure also skipped the super.stop() after it and
+            // left Log4j2 holding an appender still reporting itself as started
+            assertDoesNotThrow(() -> appender.stop(0, MILLISECONDS));
+            assertFalse(errors.isEmpty(), "The closing failure should have been reported through the error handler");
+            assertTrue(appender.isStopped(), "The appender should have finished stopping");
+        }
+
+        @Test
         @DisplayName("Rejects further appends without throwing back to the calling thread")
         void testAppendAfterStopDoesNotThrowToCallingThread() throws Exception {
             // given
@@ -1102,6 +1123,49 @@ class AbstractLogDeliveryAppenderTest {
                     Thread.currentThread().interrupt();
                 }
                 events.add("send");
+            };
+        }
+
+    }
+
+    /**
+     * An appender whose delivery fails to close with an {@link Error}, as a transport client needing a
+     * class that can no longer be loaded during shutdown does.
+     */
+    static class ErrorOnCloseLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        protected ErrorOnCloseLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
+            super(name, filter, layout, configuration);
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            return new LogDelivery() {
+                @Override
+                public void send(Map<String, Object> document) {
+                    // Not used in this test
+                }
+
+                @Override
+                public void send(List<Map<String, Object>> documents) {
+                    // Not used in this test
+                }
+
+                @Override
+                public void flush() {
+                    // Not used in this test
+                }
+
+                @Override
+                public void close() {
+                    throw new NoClassDefFoundError("com/example/transport/RestClient$Closer");
+                }
+            };
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            return () -> {
             };
         }
 
