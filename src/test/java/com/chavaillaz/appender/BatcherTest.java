@@ -902,6 +902,74 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Keeps a batch whose request limit could not be read, instead of losing it on the way out")
+    void testThrowingRequestLimitDoesNotLoseTheBatch() throws Exception {
+        // given: a limit supplier that throws, which is the shape a delivery reading a configuration it
+        // re-reads at runtime takes when that configuration is momentarily unavailable. It is read after
+        // the batch has been swapped out but before anything has taken responsibility for it
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        var broken = new AtomicBoolean(true);
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 2L)
+                .maxRequestElements(() -> {
+                    if (broken.get()) {
+                        throw new IllegalStateException("configuration unavailable");
+                    }
+                    return Integer.MAX_VALUE;
+                })
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when: the threshold is reached while the limit cannot be read
+        batcher.add(List.of("a", "b"));
+        batcher.awaitPendingTransmissions();
+
+        // then: the chunking limit simply went unenforced and the batch went out whole, rather than being
+        // carried off by the exception -- never transmitted, never put back, never reported
+        assertEquals(List.of(List.of("a", "b")), transmitted);
+    }
+
+    @Test
+    @DisplayName("Keeps a failed batch whose pending limit could not be read while putting it back")
+    void testThrowingPendingLimitDoesNotLoseTheRequeue() throws Exception {
+        // given: the same kind of supplier, read this time while a failed transmission is being put back
+        var dropped = new CopyOnWriteArrayList<String>();
+        var broken = new AtomicBoolean(false);
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> Long.MAX_VALUE)
+                .maxPendingElements(() -> {
+                    if (broken.get()) {
+                        throw new IllegalStateException("configuration unavailable");
+                    }
+                    return 1_000;
+                })
+                .maxConsecutiveFailures(() -> 0)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("a"));
+
+        // when: the transmission fails while the limit cannot be read
+        broken.set(true);
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        broken.set(false);
+        batcher.close();
+
+        // then: the element made it back into the batch and was reported on close, rather than being
+        // dropped on the floor between the failure and the requeue
+        assertEquals(List.of("a"), dropped);
+    }
+
+    @Test
     @DisplayName("Never charges a failure streak to elements the requeue that carried it kept none of")
     void testFailureStreakIsNotInheritedByUntaintedElements() throws Exception {
         // given: a pending cap of three and a limit of two consecutive failures, the shape a sustained

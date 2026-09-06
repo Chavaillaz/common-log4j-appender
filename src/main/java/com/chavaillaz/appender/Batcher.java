@@ -500,7 +500,7 @@ public class Batcher<T> {
     }
 
     private List<T> newBatch() {
-        long threshold = flushThreshold.getAsLong();
+        long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
         int capacity = threshold > 0 ? (int) Math.min(threshold, MAX_INITIAL_BATCH_CAPACITY) : 16;
         return new ArrayList<>(capacity);
     }
@@ -528,11 +528,15 @@ public class Batcher<T> {
             if (!rejected) {
                 batch.addAll(elements);
                 pendingBytes += sizeOf(elements);
-                log.trace("Stacking batch {}/{}", batch.size(), flushThreshold.getAsLong());
+                // Read once and reused by the threshold check below, rather than asked again there: the
+                // supplier is caller-supplied code on the path every element takes, and a second reading
+                // would only give the two an opportunity to disagree.
+                long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
+                log.trace("Stacking batch {}/{}", batch.size(), threshold);
 
                 // Enforces the same cap as requeue() here too, so maxPendingElements bounds memory even when
                 // flushThreshold is set higher (or effectively unbounded) and nothing is actually failing.
-                maxPending = maxPendingElements.getAsInt();
+                maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
                 BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(batch, maxPending);
                 batch = trimmed.kept();
                 discarded = trimmed.discarded();
@@ -543,7 +547,6 @@ public class Batcher<T> {
                 // streak goes with it, instead of being charged to the newer elements left behind.
                 dropFailedPrefix(size(discarded) + size(oversized));
 
-                long threshold = flushThreshold.getAsLong();
                 boolean batchingEnabled = threshold > 1;
                 // Never on an empty batch, however low the threshold: a non-positive one (allowed, meaning
                 // "no batching") makes "reached" trivially true, so an add() left with nothing -- an empty
@@ -630,7 +633,7 @@ public class Batcher<T> {
                         batch.size(), elementNoun);
                 return;
             }
-            log.debug("Sending partial batch of {}/{}", batch.size(), flushThreshold.getAsLong());
+            log.debug("Sending partial batch of {}/{}", batch.size(), readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold"));
             snapshot = swapBatch();
         }
         dispatch(snapshot.elements(), snapshot.failureStreak());
@@ -708,6 +711,54 @@ public class Batcher<T> {
     }
 
     /**
+     * Reads one of the dynamic limits, treating a supplier that throws as that limit simply not applying
+     * for now and carrying on with the value that leaves it unenforced.
+     * <p>
+     * These suppliers are the last piece of caller-supplied code here that ran unguarded, and the only one
+     * whose failure could lose elements outright rather than merely degrade a limit: they are read after a
+     * batch has been swapped out for transmission but before anything has taken responsibility for it, so a
+     * throw carried that batch away with it — never transmitted, never put back, never reported. It reaches
+     * further than a hand-written supplier suggests, too: the delivery built on this engine wires every one
+     * of them to an overridable {@code getMaxPendingDocuments()}-style method reading a configuration
+     * deliberately re-read at runtime, so anything that can fail in there fails here.
+     * <p>
+     * The fallback is always the value documented as "unbounded" or "disabled" for that particular limit,
+     * never one that discards: an unenforced limit costs some memory or an oversized request until the
+     * supplier recovers, while the alternative is exactly the silent data loss the limits exist to make
+     * visible.
+     *
+     * @param limit      The supplier to read
+     * @param unenforced The value to fall back to, leaving the limit unenforced
+     * @param name       The name of the limit, used to phrase the warning logged
+     * @return The limit, or {@code unenforced} if the supplier threw
+     */
+    private long readLimit(LongSupplier limit, long unenforced, String name) {
+        try {
+            return limit.getAsLong();
+        } catch (Throwable e) {
+            log.warn("Unhandled exception thrown while reading {}, leaving it unenforced for now", name, e);
+            return unenforced;
+        }
+    }
+
+    /**
+     * Reads one of the dynamic count limits (see {@link #readLimit(LongSupplier, long, String)}).
+     *
+     * @param limit      The supplier to read
+     * @param unenforced The value to fall back to, leaving the limit unenforced
+     * @param name       The name of the limit, used to phrase the warning logged
+     * @return The limit, or {@code unenforced} if the supplier threw
+     */
+    private int readLimit(IntSupplier limit, int unenforced, String name) {
+        try {
+            return limit.getAsInt();
+        } catch (Throwable e) {
+            log.warn("Unhandled exception thrown while reading {}, leaving it unenforced for now", name, e);
+            return unenforced;
+        }
+    }
+
+    /**
      * The size of a list of discarded elements, {@code null} standing for none of them.
      *
      * @param elements The elements to count, or {@code null} for none
@@ -745,7 +796,7 @@ public class Batcher<T> {
      * @return The elements discarded, or {@code null} if none were
      */
     private @Nullable List<T> trimToPendingBytes() {
-        long maxBytes = maxPendingBytes.getAsLong();
+        long maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
         if (elementSize == null || maxBytes <= 0 || pendingBytes <= maxBytes) {
             return null;
         }
@@ -808,7 +859,7 @@ public class Batcher<T> {
                 // for transmission, so they are measured again on the way back in rather than remembered.
                 pendingBytes += sizeOf(elements);
 
-                maxPending = maxPendingElements.getAsInt();
+                maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
                 BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(merged, maxPending);
                 batch = trimmed.kept();
                 discarded = trimmed.discarded();
@@ -912,8 +963,8 @@ public class Batcher<T> {
      *                      transmitted, inherited by every chunk split off from it
      */
     private void dispatch(List<T> elements, int failureStreak) {
-        int maxCount = maxRequestElements.getAsInt();
-        long maxBytes = maxRequestBytes.getAsLong();
+        int maxCount = readLimit(maxRequestElements, Integer.MAX_VALUE, "the maximum request elements");
+        long maxBytes = readLimit(maxRequestBytes, Long.MAX_VALUE, "the maximum request bytes");
         boolean countLimited = maxCount > 0 && elements.size() > maxCount;
         // A single element is never worth measuring: there is nothing to split it against, and it goes out
         // on its own either way.
@@ -1238,7 +1289,7 @@ public class Batcher<T> {
      *                      this attempt
      */
     private void onTransmissionFailure(List<T> elements, int failureStreak) {
-        int maxFailures = maxConsecutiveFailures.getAsInt();
+        int maxFailures = readLimit(maxConsecutiveFailures, 0, "the maximum consecutive failures");
         int newFailureStreak = failureStreak + 1;
         if (maxFailures > 0 && newFailureStreak >= maxFailures) {
             log.error("Giving up on {} {}(s) after {} consecutive failed transmission attempts, they will be discarded",
