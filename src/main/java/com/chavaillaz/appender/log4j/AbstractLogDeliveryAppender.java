@@ -5,7 +5,9 @@ import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -364,12 +366,31 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param reason A short, human-readable explanation of why it was discarded
      */
     private void reportDropped(LogEvent event, String reason) {
+        reportDropped(List.of(event), reason);
+    }
+
+    /**
+     * Reports several logging events discarded together as one notification, rather than one per event: a
+     * listener's whole reason to receive the documents is to save them somewhere, and doing so usually costs
+     * something per call (opening a file, a round trip to a queue). {@link #stop(long, TimeUnit)} can abandon
+     * a full queue's worth at once — {@link DeliveryOptions#maxQueuedEvents()}, ten thousand by default —
+     * which one call each would turn into ten thousand of those, on the shutdown path where the delay is
+     * least affordable.
+     *
+     * @param events The logging events being discarded
+     * @param reason A short, human-readable explanation of why they were discarded
+     */
+    private void reportDropped(List<LogEvent> events, String reason) {
         LogDelivery handler = logDeliveryHandler;
-        if (handler == null) {
+        if (handler == null || events.isEmpty()) {
             return;
         }
         try {
-            handler.getListener().onDocumentsDropped(List.of(fallbackConverter.convert(event)), reason);
+            List<Map<String, Object>> documents = new ArrayList<>(events.size());
+            for (LogEvent event : events) {
+                documents.add(fallbackConverter.convert(event));
+            }
+            handler.getListener().onDocumentsDropped(List.copyOf(documents), reason);
         } catch (Exception e) {
             error("Failed to report a discarded logging event to the delivery listener", e);
         }
@@ -471,12 +492,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 // stopped instead of finishing on its own after the handler is already gone.
                 // Every task still sitting in the queue at this point (as opposed to the one actively
                 // running, if any) never even started, so it can still be reported instead of vanishing
-                // silently: shutdownNow() only removes them from the queue, it does not run them.
+                // silently: shutdownNow() only removes them from the queue, it does not run them. Collected
+                // and reported as one batch, since there can be a full queue's worth of them here.
+                List<LogEvent> abandonedEvents = new ArrayList<>();
                 for (Runnable abandoned : workerExecutor.shutdownNow()) {
                     if (abandoned instanceof EventTask task) {
-                        reportDropped(task.event(), "appender stopped before the event could be processed");
+                        abandonedEvents.add(task.event());
                     }
                 }
+                reportDropped(abandonedEvents, "appender stopped before the event could be processed");
             }
         } catch (InterruptedException e) {
             error("Thread interrupted during termination", e);

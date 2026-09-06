@@ -611,6 +611,12 @@ class AbstractLogDeliveryAppenderTest {
             assertEquals(List.of("queued-1", "queued-2"), dropped.stream().map(d -> d.get("logmessage")).toList());
             assertTrue(droppedReasons.stream().allMatch(reason -> reason.contains("stop")),
                     "Reason should mention the appender stopping: " + droppedReasons);
+
+            // and: handed over as one notification rather than one per event. A listener saving them usually
+            // pays per call (opening a file, a round trip to a queue), and a full queue's worth can be
+            // abandoned here -- ten thousand by default, on the path where a delay is least affordable
+            assertEquals(1, droppedReasons.size(),
+                    "Every abandoned event should be reported in a single call, but got " + droppedReasons.size());
         }
 
     }
