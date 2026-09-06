@@ -2,6 +2,7 @@ package com.chavaillaz.appender.log4j;
 
 import static java.util.Collections.singletonList;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +80,14 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     private final Batcher<Map<String, Object>> batcher;
 
     /**
+     * The close timeout this delivery was built with, kept only as a fallback for {@link #closeTimeout()}
+     * when reading the current one fails. Every other setting is read fresh on the path that uses it, and
+     * can simply go unenforced for a while when it cannot be read; this one is read exactly once, at the
+     * only moment that ever matters, and there is no later attempt to fall back on.
+     */
+    private final @Nullable Duration initialCloseTimeout;
+
+    /**
      * Creates a new logs delivery handler sending them by batches.
      *
      * @param configuration The configuration to use
@@ -97,6 +106,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     protected AbstractBatchLogDelivery(C configuration, @Nullable LogDeliveryListener listener) {
         this.configuration = configuration;
         DeliveryOptions options = configuration.getDeliveryOptions();
+        this.initialCloseTimeout = options.closeTimeout();
         warnAboutDegradedConfiguration(options);
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
         Batcher.Builder<Map<String, Object>> batcherBuilder = Batcher.<Map<String, Object>>builder()
@@ -401,7 +411,29 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     @Override
     public void close() throws Exception {
-        batcher.close(configuration.getDeliveryOptions().closeTimeout());
+        batcher.close(closeTimeout());
+    }
+
+    /**
+     * Reads how long to wait for in-flight transmissions while closing, falling back to the value this
+     * delivery was built with if the configuration cannot be read at all.
+     * <p>
+     * Guarded because of where it sits rather than because it is likely to fail: this is the argument to
+     * the one call that flushes the pending batch, waits for it, and reports whatever is left. A failure to
+     * read it never reached that call, so the batch was neither sent nor reported — silently lost on the
+     * one path that exists to prevent exactly that — and the batching engine was left running, holding its
+     * executor, with nothing left to close it.
+     *
+     * @return The close timeout, or {@code null} to wait indefinitely
+     */
+    private @Nullable Duration closeTimeout() {
+        try {
+            return configuration.getDeliveryOptions().closeTimeout();
+        } catch (Throwable e) {
+            log.warn("Unable to read the close timeout, falling back to the one configured at startup ({})",
+                    initialCloseTimeout, e);
+            return initialCloseTimeout;
+        }
     }
 
     /**

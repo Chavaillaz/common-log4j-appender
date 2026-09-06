@@ -37,6 +37,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import com.chavaillaz.appender.DeliveryOptions;
+import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDeliveryListener;
 import com.chavaillaz.appender.TransmissionResult;
 
@@ -486,6 +488,35 @@ class AbstractBatchLogDeliveryTest {
 
             // then: a dead-letter sink gets its last chance at them, rather than the pending batch simply
             // going away with the delivery
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(document), listener.dropped.get(0).documents());
+            assertEquals("still pending when closed", listener.dropped.get(0).reason());
+        }
+
+        @Test
+        @DisplayName("Still closes, and still reports what was pending, when the close timeout cannot be read")
+        void testCloseReportsPendingDocumentsWhenTheTimeoutCannotBeRead() throws Exception {
+            // given: the same "downstream is down, nothing can be retried" setup as above, plus a
+            // configuration that stops resolving right before the delivery is closed
+            var configuration = new FlakyCloseTimeoutConfiguration();
+            var listener = new RecordingListener();
+            var logDelivery = new AbstractBatchLogDelivery<FlakyCloseTimeoutConfiguration>(configuration, listener) {
+                @Override
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                    return completedFuture(TransmissionResult.failure(null));
+                }
+            };
+            var document = Map.<String, Object>of("logmessage", "last words");
+            logDelivery.send(document);
+
+            // when: the close timeout is the argument to the one call that flushes, waits and reports, so
+            // failing to read it used to mean that call never happened at all
+            configuration.broken.set(true);
+            logDelivery.close();
+            configuration.broken.set(false);
+
+            // then: the pending document still got its last chance, instead of being lost in silence by the
+            // very call meant to save it -- and the batching engine was closed rather than left running
             assertEquals(1, listener.dropped.size());
             assertEquals(List.of(document), listener.dropped.get(0).documents());
             assertEquals("still pending when closed", listener.dropped.get(0).reason());
@@ -1363,6 +1394,48 @@ class AbstractBatchLogDeliveryTest {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+        }
+
+    }
+
+    /**
+     * A configuration that can be made to stop resolving its delivery options, standing in for one built
+     * from something external — which {@link com.chavaillaz.appender.LogConfiguration} invites by
+     * documenting that they are re-read rather than captured once.
+     */
+    static class FlakyCloseTimeoutConfiguration implements LogConfiguration {
+
+        final AtomicBoolean broken = new AtomicBoolean();
+
+        private final DeliveryOptions options = DeliveryOptions.builder()
+                .flushThreshold(10)
+                .maxConsecutiveFailures(0)
+                .retryBackoff(Duration.ZERO)
+                .maxRetryBackoff(Duration.ZERO)
+                .closeTimeout(Duration.ofSeconds(10))
+                .build();
+
+        @Override
+        public String getApplication() {
+            return "test-application";
+        }
+
+        @Override
+        public String getHost() {
+            return "test-host";
+        }
+
+        @Override
+        public String getEnvironment() {
+            return "test-environment";
+        }
+
+        @Override
+        public DeliveryOptions getDeliveryOptions() {
+            if (broken.get()) {
+                throw new IllegalStateException("Simulated configuration failure");
+            }
+            return options;
         }
 
     }
