@@ -902,6 +902,42 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Never charges a failure streak to elements the requeue that carried it kept none of")
+    void testFailureStreakIsNotInheritedByUntaintedElements() throws Exception {
+        // given: a pending cap of three and a limit of two consecutive failures, the shape a sustained
+        // outage settles into -- the batch sitting at its cap, so each retry cycle trims away exactly the
+        // elements it just put back
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> Long.MAX_VALUE)
+                .maxPendingElements(() -> 3)
+                .maxConsecutiveFailures(() -> 2)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+
+        // when: three elements fail once and are put back, carrying a streak of one
+        batcher.add(List.of("old-1", "old-2", "old-3"));
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // and: three newer ones push every one of them out of the batch, then fail once themselves
+        batcher.add(List.of("new-1", "new-2", "new-3"));
+        awaitDropped(dropped, 3);
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: only the elements that really did fail twice were given up on. The newer ones have a single
+        // failure of their own, and used to be discarded alongside them on a streak they never earned
+        assertEquals(List.of("old-1", "old-2", "old-3"), dropped);
+    }
+
+    @Test
     @DisplayName("Never hands the transport an empty request, however low the flush threshold")
     void testNeverTransmitsAnEmptyBatch() throws Exception {
         // given: a non-positive threshold (allowed, meaning "no batching") and a pending cap that discards

@@ -154,6 +154,20 @@ public class Batcher<T> {
     private int pendingFailureStreak;
 
     /**
+     * How many of the leading elements of {@link #batch} are the ones {@link #pendingFailureStreak} was
+     * earned by, {@code 0} meaning none of them are left and the streak no longer describes anything.
+     * <p>
+     * A streak belongs to the elements that failed, not to the batch holding them, and both places that
+     * shrink the batch — {@link BoundedTrim} and {@link #trimToPendingBytes()} — cut from the front, which
+     * is exactly where {@link #requeue(List, int)} puts what it hands back. So counting how far that failed
+     * region still reaches is enough to know when the last of it is gone, at which point the streak is
+     * dropped rather than charged to elements that never failed at all.
+     * <p>
+     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     */
+    private int pendingFailureCount;
+
+    /**
      * Estimated total size of {@link #batch}, kept up to date as elements are added and discarded rather than
      * recomputed on demand: summing it per call would make every {@link #add(List)} walk the whole pending
      * batch, turning an O(1) accumulation into an O(n) one exactly when the batch is at its largest. Always
@@ -523,6 +537,10 @@ public class Batcher<T> {
                 discarded = trimmed.discarded();
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
+                // Only ever appends at the end, so whatever the two trims above cut came off the front,
+                // where the elements a failure streak was earned by sit. Once the last of them is gone the
+                // streak goes with it, instead of being charged to the newer elements left behind.
+                dropFailedPrefix(size(discarded) + size(oversized));
 
                 long threshold = flushThreshold.getAsLong();
                 boolean batchingEnabled = threshold > 1;
@@ -642,8 +660,25 @@ public class Batcher<T> {
         PendingBatch<T> previous = new PendingBatch<>(batch, pendingFailureStreak);
         batch = newBatch();
         pendingFailureStreak = 0;
+        pendingFailureCount = 0;
         pendingBytes = 0;
         return previous;
+    }
+
+    /**
+     * Accounts for elements discarded from the front of {@link #batch}, forgetting
+     * {@link #pendingFailureStreak} once the last element that earned it is gone (see
+     * {@link #pendingFailureCount}).
+     * <p>
+     * Must be called while holding the monitor of this instance.
+     *
+     * @param discardedFromFront How many elements were just discarded from the front of the batch
+     */
+    private void dropFailedPrefix(int discardedFromFront) {
+        pendingFailureCount = Math.max(0, pendingFailureCount - discardedFromFront);
+        if (pendingFailureCount == 0) {
+            pendingFailureStreak = 0;
+        }
     }
 
     /**
@@ -669,6 +704,16 @@ public class Batcher<T> {
             log.warn("Unhandled exception thrown while measuring a {}, counting it as empty", elementNoun, e);
             return 0;
         }
+    }
+
+    /**
+     * The size of a list of discarded elements, {@code null} standing for none of them.
+     *
+     * @param elements The elements to count, or {@code null} for none
+     * @return The number of elements
+     */
+    private static int size(@Nullable List<?> elements) {
+        return elements == null ? 0 : elements.size();
     }
 
     /**
@@ -769,11 +814,21 @@ public class Batcher<T> {
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
 
-                // The live batch might already carry forward a streak of its own (from a different failed
-                // chunk merged in moments earlier by a concurrent transmission); keeping the higher of the
-                // two is the conservative choice, since the merged batch is at least as "tainted" as its
-                // worst ingredient.
-                pendingFailureStreak = Math.max(pendingFailureStreak, failureStreak);
+                // Both trims above cut from the front, which is exactly where the requeued elements were
+                // just put, so anything they cut past those ate into whatever failed region was already
+                // there behind them.
+                int discardedFromFront = size(discarded) + size(oversized);
+                dropFailedPrefix(Math.max(0, discardedFromFront - elements.size()));
+
+                int keptRequeued = Math.max(0, elements.size() - discardedFromFront);
+                if (keptRequeued > 0) {
+                    // The live batch might already carry forward a streak of its own (from a different
+                    // failed chunk merged in moments earlier by a concurrent transmission); keeping the
+                    // higher of the two is the conservative choice, since the merged batch is at least as
+                    // "tainted" as its worst ingredient.
+                    pendingFailureStreak = Math.max(pendingFailureStreak, failureStreak);
+                    pendingFailureCount += keptRequeued;
+                }
             }
         }
         // Notified outside the lock: it's also needed to accumulate the next batch, and a slow listener
@@ -1298,6 +1353,7 @@ public class Batcher<T> {
             batch = new ArrayList<>(0);
             pendingBytes = 0;
             pendingFailureStreak = 0;
+            pendingFailureCount = 0;
         }
         log.error("Discarding {} {}(s) still pending once closed, they were never successfully transmitted",
                 remaining.size(), elementNoun);
