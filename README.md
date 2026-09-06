@@ -206,7 +206,7 @@ fields:
 | `level`       | Level of the logging event (e.g. `INFO`, `ERROR`)                                    |
 | `logmessage`  | Formatted message of the logging event, truncated to 32'768 characters by default (see `getMaxMessageLength()`) so a single call logging a large payload can't inflate its document, and the whole batch it travels in, enough to get the request rejected |
 | `thread`      | Name of the thread that created the logging event                                    |
-| `class`       | Canonical name of the exception class, only present if the event carries an exception |
+| `class`       | Name of the exception class (its canonical name, or its binary name for an anonymous one), only present if the event carries an exception |
 | `stacktrace`  | Stack trace, only present with an exception, truncated to 8'192 characters by default (see `getMaxStackTraceLength()`) so a deep or recursive cause chain can't inflate a document on its own |
 
 All MDC (context) entries are also added as-is, without overriding any of the fields above should a key

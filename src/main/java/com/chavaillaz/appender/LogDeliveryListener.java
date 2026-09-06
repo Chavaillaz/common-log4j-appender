@@ -43,11 +43,11 @@ public interface LogDeliveryListener {
     }
 
     /**
-     * Called when documents are irrecoverably discarded instead of kept for a later retry, either because a
-     * batch kept failing for too many consecutive attempts or because pending documents exceeded the
-     * maximum allowed. Unlike the other methods here, the actual documents are passed (as an unmodifiable
-     * list) rather than just a count, since this is a last chance to save them, e.g. to a local file or a
-     * dead-letter queue.
+     * Called when documents are irrecoverably discarded instead of kept for a later retry: a batch that
+     * kept failing, one of the pending or queued limits reached, or a delivery closing on documents it
+     * never managed to send. {@code reason} says which. Unlike the other methods here, the actual documents
+     * are passed (as an unmodifiable list) rather than just a count, since this is a last chance to save
+     * them, e.g. to a local file or a dead-letter queue.
      *
      * @param documents The documents being discarded
      * @param reason    A short, human-readable explanation of why the documents were discarded
