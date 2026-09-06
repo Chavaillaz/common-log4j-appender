@@ -391,7 +391,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 documents.add(fallbackConverter.convert(event));
             }
             handler.getListener().onDocumentsDropped(List.copyOf(documents), reason);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: this runs on the application thread whenever a full queue evicts an
+            // event, and append()'s whole contract is that logging never fails its caller. An Error out of a
+            // listener -- a StackOverflowError writing a self-referencing document to a dead-letter sink,
+            // say -- would otherwise surface in the middle of unrelated application code, which is exactly
+            // the outcome the rest of this method already guards against for an exception.
             error("Failed to report a discarded logging event to the delivery listener", e);
         }
     }

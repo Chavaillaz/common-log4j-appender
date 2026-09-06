@@ -410,6 +410,41 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Never fails the application thread when the listener notified of a discard throws an Error")
+        void testListenerThrowingAnErrorOnDiscardDoesNotReachTheApplicationThread() throws Exception {
+            // given: the same full-queue setup as above, with a listener throwing an Error rather than an
+            // exception, as one walking a self-referencing document into a dead-letter sink would
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    throw new StackOverflowError("listener blew up");
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+
+            // then: the discard reaches the error handler, not whatever application code called append()
+            assertDoesNotThrow(() -> appender.append(realLogEvent("C")));
+            assertFalse(errors.isEmpty(), "The listener failure should have been reported through the error handler");
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+        }
+
+        @Test
         @DisplayName("Discards the oldest queued event to make room for the newest instead of rejecting it")
         void testQueueCapacityExceededDiscardsOldestQueuedEvent() throws Exception {
             // given: a queue capacity of 1 and a delivery task that only blocks on its very first
