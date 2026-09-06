@@ -59,7 +59,8 @@ public interface BatcherListener<T> {
     /**
      * Called when elements are irrecoverably discarded instead of kept for a later retry.
      *
-     * @param dropped The elements being discarded
+     * @param dropped The elements being discarded, as an unmodifiable list the implementation is free to
+     *                keep a reference to (this being its last chance to save them somewhere)
      * @param reason  A short, human-readable explanation of why they were discarded
      */
     default void onDropped(List<T> dropped, String reason) {

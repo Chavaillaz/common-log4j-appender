@@ -390,6 +390,7 @@ class BatcherTest {
         // given: a batch that never transmits on its own, capped at 25 bytes with elements of 10
         var dropped = new CopyOnWriteArrayList<String>();
         var reasons = new CopyOnWriteArrayList<String>();
+        var mutableLists = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
                 .flushThreshold(() -> 100L)
                 .elementSize(element -> 10)
@@ -400,6 +401,9 @@ class BatcherTest {
                     public void onDropped(List<String> elements, String reason) {
                         dropped.addAll(elements);
                         reasons.add(reason);
+                        if (isModifiable(elements)) {
+                            mutableLists.add(elements);
+                        }
                     }
                 })
                 .build();
@@ -413,6 +417,10 @@ class BatcherTest {
         // then: the two oldest were discarded, leaving the batch back under the cap
         assertEquals(List.of("a", "b"), dropped);
         assertEquals(List.of("maximum pending bytes exceeded"), reasons.stream().distinct().toList());
+
+        // and: handed over as the unmodifiable list this callback promises, like every other discard path,
+        // rather than the working list this one used to expose to whatever the listener does with it
+        assertEquals(List.of(), mutableLists);
 
         // and: what is left is exactly what the cap allows to be kept
         batcher.flush();
@@ -890,6 +898,15 @@ class BatcherTest {
                 .transport(transport)
                 .listener(listener)
                 .build();
+    }
+
+    private static boolean isModifiable(List<String> elements) {
+        try {
+            elements.add("probe");
+            return true;
+        } catch (UnsupportedOperationException e) {
+            return false;
+        }
     }
 
     private static void awaitDropped(List<String> dropped, int expected) throws InterruptedException {

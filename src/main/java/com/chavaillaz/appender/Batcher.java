@@ -711,10 +711,18 @@ public class Batcher<T> {
             // that is not perfectly stable accumulate across the engine's whole lifetime.
             pendingBytes = 0;
         }
+        if (discarded.isEmpty()) {
+            // Only reachable when the running total drifted above the limit while the batch was already
+            // empty (a measurement that is not perfectly stable). The re-anchoring above has just healed
+            // it, and announcing a discard of zero elements would only be noise.
+            return null;
+        }
 
         log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending size of {} bytes",
                 discarded.size(), elementNoun, maxBytes);
-        return discarded.isEmpty() ? null : discarded;
+        // Copied rather than handed over as-is: this list travels to BatcherListener#onDropped, whose
+        // contract (like every other discard path here) is an unmodifiable list the listener may keep.
+        return List.copyOf(discarded);
     }
 
     /**
