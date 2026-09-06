@@ -764,6 +764,125 @@ class BatcherTest {
         adder.join(SECONDS.toMillis(5));
     }
 
+    @Test
+    @DisplayName("Retries a chunk whose transport threw an Error instead of leaking its transmission permit")
+    void testTransportThrowingAnErrorDoesNotLeakAPermit() throws Exception {
+        // given: a single transmission permit, and a transport whose first attempt throws an Error rather
+        // than an Exception (a NoClassDefFoundError from a missing runtime dependency, a StackOverflowError
+        // from serializing a self-referencing element, ...). This used to escape the virtual thread before
+        // whenComplete() was registered, so the permit was never released and the elements never came back
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        var attempts = new AtomicInteger();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1L)
+                .maxConcurrentTransmissions(1)
+                .transport(elements -> {
+                    if (attempts.incrementAndGet() == 1) {
+                        throw new StackOverflowError("transport blew up");
+                    }
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when: the first element fails on the Error, the second one needs the very permit it was holding
+        batcher.add(List.of("a"));
+        // Awaiting here rather than adding straight away makes the retry deterministic: the permit is only
+        // released once the failure has been handled, so "a" is provably back in the pending batch by then
+        batcher.awaitPendingTransmissions();
+        batcher.add(List.of("b"));
+        batcher.awaitPendingTransmissions();
+
+        // then: the Error was treated as an ordinary failure, so "a" was put back and went out with "b"
+        assertEquals(2, attempts.get());
+        assertEquals(List.of(List.of("a", "b")), transmitted);
+    }
+
+    @Test
+    @DisplayName("Still requeues a failed chunk when the listener notified of that failure throws an Error")
+    void testListenerThrowingAnErrorDoesNotLoseElements() throws Exception {
+        // given: a listener whose onFailed throws an Error, sitting between the failure and the retry
+        // handling it must never skip
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConsecutiveFailures(() -> 0)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onFailed(int count, Throwable cause) {
+                        throw new StackOverflowError("listener blew up");
+                    }
+
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("a"));
+
+        // when
+        batcher.close();
+
+        // then: the element was put back and reported on close, rather than vanishing with the notification
+        assertEquals(List.of("a"), dropped);
+    }
+
+    @Test
+    @DisplayName("Still requeues a failed chunk when the backoff policy consulted for it throws an Error")
+    void testBackoffPolicyThrowingAnErrorDoesNotLoseElements() {
+        // given: a policy throwing an Error, consulted between the decision to retry and the requeue
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConsecutiveFailures(() -> 0)
+                .backoff(consecutiveFailures -> {
+                    throw new StackOverflowError("policy blew up");
+                })
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("a"));
+
+        // when
+        batcher.close();
+
+        // then
+        assertEquals(List.of("a"), dropped);
+    }
+
+    @Test
+    @DisplayName("Treats a measurement throwing an Error as weightless instead of propagating to the caller")
+    void testElementSizeThrowingAnErrorIsTolerated() throws Exception {
+        // given: a measurement throwing an Error, called by add() on a batch already appended to but not
+        // yet accounted for in the running byte total
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 2L)
+                .elementSize(element -> {
+                    throw new StackOverflowError("cannot measure " + element);
+                })
+                .maxPendingBytes(() -> 100L)
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a", "b"));
+        batcher.awaitPendingTransmissions();
+
+        // then: the byte limit simply goes unenforced, instead of the Error reaching whoever called add()
+        assertEquals(List.of(List.of("a", "b")), transmitted);
+    }
+
     private static Batcher<String> batcher(long flushThreshold,
             Function<List<String>, CompletableFuture<TransmissionResult<String>>> transport, BatcherListener<String> listener) {
         return Batcher.<String>builder()

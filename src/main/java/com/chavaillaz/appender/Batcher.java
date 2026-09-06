@@ -655,7 +655,11 @@ public class Batcher<T> {
         }
         try {
             return Math.max(0, elementSize.applyAsLong(element));
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: a measurement walking a self-referencing element throws a
+            // StackOverflowError, which is an Error. Letting it escape would carry it out of add() through
+            // a batch already appended to but not yet accounted for in pendingBytes, leaving that running
+            // total describing a batch it no longer matches for the rest of this engine's life.
             log.warn("Unhandled exception thrown while measuring a {}, counting it as empty", elementNoun, e);
             return 0;
         }
@@ -961,14 +965,21 @@ public class Batcher<T> {
         try {
             CompletableFuture<TransmissionResult<T>> applied = transport.apply(elements);
             future = applied != null ? applied : CompletableFuture.completedFuture(null);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: an Error thrown here (a NoClassDefFoundError from a transport
+            // dependency missing at runtime, a StackOverflowError from serializing a self-referencing
+            // element, ...) would escape this virtual thread before the whenComplete() below is even
+            // registered, so its finally block would never release the permit acquired for this chunk, and
+            // these elements would be neither requeued nor reported. A handful of those wedge the engine
+            // for good: every later dispatch waits forever for a permit that will never come back, and an
+            // unbounded close() waits with it.
             future = CompletableFuture.failedFuture(e);
         }
         future.whenComplete((result, throwable) -> {
             try {
                 long durationMillis = (System.nanoTime() - start) / 1_000_000;
                 handleResult(elements, failureStreak, normalizeResult(elements, result, throwable), durationMillis);
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 // handleResult() is expected to always either notify a success/failure or requeue/drop the
                 // elements involved; a defensive catch-all in case a future bug there (or a
                 // TransmissionResult.PartialFailure inconsistent with the dispatched chunk) throws instead,
@@ -1138,7 +1149,11 @@ public class Batcher<T> {
     private void notifyListener(Runnable notification) {
         try {
             notification.run();
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: a listener writing a self-referencing element to a dead-letter sink
+            // throws a StackOverflowError, which is an Error. Since the whole point of this guard is that
+            // the onFailed notification cannot skip the onTransmissionFailure() call right after it,
+            // letting an Error through would lose exactly the elements it exists to preserve.
             log.warn("Unhandled exception thrown by a BatcherListener", e);
         }
     }
@@ -1181,7 +1196,10 @@ public class Batcher<T> {
         long delayMillis;
         try {
             delayMillis = backoff.delayMillis(consecutiveFailures);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception, for the same reason as the guards above: this runs between the
+            // decision to retry and the requeue() actually keeping the elements, so anything escaping here
+            // discards them without a retry and without a report.
             log.warn("Unhandled exception thrown by a BackoffPolicy, retrying without backing off", e);
             return;
         }
