@@ -377,12 +377,19 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         // Snapshots the event on the calling thread: log4j2 may reuse (mutate) it once this method returns.
         LogEvent immutableEvent = loggingEvent.toImmutable();
+        // Whether the event reached the worker's queue, and so is going to be delivered whatever happens
+        // next here. Reporting it dropped past that point would not just be inaccurate: onDocumentsDropped
+        // means "irrecoverably lost, this is your last chance to save it", so a dead-letter sink would file
+        // a second copy of an event about to be delivered normally, and drop metrics would show loss that
+        // never happened.
+        boolean handedOff = false;
         try {
             // Guarded so a subclass mistake (or unexpected null/exception) in createLogDeliveryTask() —
             // expected to only capture state on this thread and defer real work to the returned Runnable —
             // can never propagate to the application thread.
             Runnable task = createLogDeliveryTask(immutableEvent);
             workerExecutor.execute(new EventTask(immutableEvent, () -> executeLogDeliveryTask(task)));
+            handedOff = true;
             if (isUrgent(immutableEvent)) {
                 triggerFlush();
             }
@@ -393,10 +400,14 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
             reportDropped(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
         } catch (Throwable e) {
-            // createLogDeliveryTask() itself threw: the event never reached workerExecutor, so it is lost
-            // and must be reported the same way as a rejected one.
+            // Either createLogDeliveryTask() threw, in which case the event never reached workerExecutor and
+            // is lost, or the severity check after the hand-off did — it reads the delivery options, which
+            // an implementation is free to resolve dynamically, and so to fail at. Only the first case is a
+            // discard.
             error("Log delivery task creation error", e);
-            reportDropped(immutableEvent, "log delivery task creation error");
+            if (!handedOff) {
+                reportDropped(immutableEvent, "log delivery task creation error");
+            }
         }
     }
 

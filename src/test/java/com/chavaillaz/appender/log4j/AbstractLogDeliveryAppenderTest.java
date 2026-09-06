@@ -40,6 +40,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import com.chavaillaz.appender.DeliveryOptions;
+import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
 
@@ -953,6 +955,40 @@ class AbstractLogDeliveryAppenderTest {
             assertTrue(droppedReasons.get(0).contains("creation"), "Reason should mention task creation: " + droppedReasons.get(0));
         }
 
+        @Test
+        @DisplayName("Never reports an event as dropped once it has already been handed to the worker")
+        void testEventAlreadyHandedOffIsNotReportedDropped() throws Exception {
+            // given: a configuration that fails to resolve, which the interface documents as legitimate for
+            // an implementation varying its settings at runtime. It is read again by the severity check
+            // append() runs *after* handing the event over, so that check is what fails here
+            var configuration = new FlakyOptionsConfiguration();
+            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+
+            // when
+            appender.start();
+            configuration.broken.set(true);
+            assertDoesNotThrow(() -> appender.append(realLogEvent("delivered once")));
+            configuration.broken.set(false);
+            appender.stop(2, SECONDS);
+
+            // then: the failure is reported, but the event is not called dropped -- it reached the worker
+            // and was delivered. onDocumentsDropped means "irrecoverably lost, your last chance to save it",
+            // so a dead-letter sink would have filed a second copy of an event delivered normally
+            assertFalse(errors.isEmpty(), "The failure should still have been reported through the error handler");
+            assertEquals(1, appender.getCountTaskExecuted().get(), "The event should have been processed");
+            assertEquals(List.of(), dropped);
+        }
+
     }
 
     @Getter
@@ -1124,6 +1160,69 @@ class AbstractLogDeliveryAppenderTest {
                 }
                 events.add("send");
             };
+        }
+
+    }
+
+    /**
+     * A configuration whose delivery options can be made to fail to resolve, standing in for one that
+     * builds them from something external — which {@link com.chavaillaz.appender.LogConfiguration} invites
+     * by documenting that they are re-read rather than captured once.
+     */
+    static class FlakyOptionsConfiguration implements LogConfiguration {
+
+        final AtomicBoolean broken = new AtomicBoolean();
+
+        private final DeliveryOptions options = DeliveryOptions.builder()
+                .flushThreshold(10)
+                .flushInterval(Duration.ofSeconds(10))
+                .flushLevel(Level.ERROR)
+                .closeTimeout(Duration.ofSeconds(1))
+                .build();
+
+        @Override
+        public String getApplication() {
+            return "test-application";
+        }
+
+        @Override
+        public String getHost() {
+            return "test-host";
+        }
+
+        @Override
+        public String getEnvironment() {
+            return "test-environment";
+        }
+
+        @Override
+        public DeliveryOptions getDeliveryOptions() {
+            if (broken.get()) {
+                throw new IllegalStateException("Simulated configuration failure");
+            }
+            return options;
+        }
+
+    }
+
+    @Getter
+    static class FlakyOptionsLogDeliveryAppender extends AbstractLogDeliveryAppender<FlakyOptionsConfiguration> {
+
+        LogDelivery logDeliveryHandler = mock(LogDelivery.class);
+        AtomicInteger countTaskExecuted = new AtomicInteger();
+
+        protected FlakyOptionsLogDeliveryAppender(String name, Filter filter, Layout<?> layout, FlakyOptionsConfiguration configuration) {
+            super(name, filter, layout, configuration);
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            return () -> countTaskExecuted.incrementAndGet();
         }
 
     }
