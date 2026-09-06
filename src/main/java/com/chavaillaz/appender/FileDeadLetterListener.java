@@ -138,7 +138,10 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     private String toLine(Map<String, Object> document, String reason, Instant droppedAt) {
         try {
             return toJson(wrap(document, reason, droppedAt));
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: a value whose toString() recurses throws a StackOverflowError, and
+            // this class's own bounded nesting depth (see MAX_DEPTH) only rules out the recursion this file
+            // is responsible for, not the one inside a value being rendered.
             // Only the exception's class name is used, and it is logged as a plain value rather than as a
             // throwable: whatever threw above is application code, and so is this exception, whose own
             // toString() is free to throw in turn. Anything richer would risk failing exactly here, on the

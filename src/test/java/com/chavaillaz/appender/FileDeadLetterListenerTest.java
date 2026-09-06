@@ -324,22 +324,35 @@ class FileDeadLetterListenerTest {
                 throw new IllegalStateException("cannot render");
             }
         });
+        // An Error is the other half of the same problem: a value whose toString() recurses ends in a
+        // StackOverflowError, which the bounded nesting depth here cannot rule out, since that recursion
+        // happens inside the value rather than between the documents this class walks
+        Map<String, Object> recursive = new LinkedHashMap<>();
+        recursive.put("payload", new Object() {
+            @Override
+            public String toString() {
+                throw new StackOverflowError("recursive rendering");
+            }
+        });
 
-        // when: it is handed over in the middle of a batch, exactly as a pending batch would be
+        // when: they are handed over in the middle of a batch, exactly as a pending batch would be
         assertDoesNotThrow(() -> listener.onDocumentsDropped(
-                List.of(Map.of("logmessage", "first"), unrenderable, Map.of("logmessage", "second")), "reason"));
+                List.of(Map.of("logmessage", "first"), unrenderable, recursive, Map.of("logmessage", "second")),
+                "reason"));
 
-        // then: the two documents around it were saved, instead of being discarded a second time by the
+        // then: the documents around them were saved, instead of being discarded a second time by the
         // very sink meant to be their last resort
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(3, lines.size(), "Unexpected lines: " + lines);
+        assertEquals(4, lines.size(), "Unexpected lines: " + lines);
         assertTrue(lines.get(0).contains("\"logmessage\":\"first\""), "Unexpected line: " + lines.get(0));
-        assertTrue(lines.get(2).contains("\"logmessage\":\"second\""), "Unexpected line: " + lines.get(2));
+        assertTrue(lines.get(3).contains("\"logmessage\":\"second\""), "Unexpected line: " + lines.get(3));
 
-        // and: the one that could not be rendered still leaves a line saying so, rather than nothing at all
+        // and: each one that could not be rendered still leaves a line saying so, rather than nothing at all
         assertTrue(lines.get(1).contains("\"unrenderable\":\"java.lang.IllegalStateException\""),
                 "Unexpected line: " + lines.get(1));
         assertTrue(lines.get(1).contains("\"reason\":\"reason\""), "Unexpected line: " + lines.get(1));
+        assertTrue(lines.get(2).contains("\"unrenderable\":\"java.lang.StackOverflowError\""),
+                "Unexpected line: " + lines.get(2));
     }
 
     @Test
