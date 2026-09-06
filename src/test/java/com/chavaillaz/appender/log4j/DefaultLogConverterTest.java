@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import com.chavaillaz.appender.LogConfiguration;
+
 @DisplayName("DefaultLogConverter")
 class DefaultLogConverterTest {
 
@@ -441,6 +443,47 @@ class DefaultLogConverterTest {
             // then
             assertEquals(ThrowingThrowable.class.getCanonicalName(), document.get("class"));
             assertFalse(document.containsKey("stacktrace"));
+        }
+
+        @Test
+        @DisplayName("Keeps the rest of the document when the configuration cannot answer for its own fields")
+        void testConversionToleratesAThrowingConfiguration() {
+            // given: a configuration resolving a value on demand rather than answering from a field, and
+            // failing at it -- the last caller-supplied code in writeBasic() left unguarded, while the
+            // message, MDC and stack trace around it each already fall back instead
+            var converter = new DefaultLogConverter();
+            converter.configure(new LogConfiguration() {
+                @Override
+                public String getApplication() {
+                    return "my-application";
+                }
+
+                @Override
+                public String getHost() {
+                    return "my-host";
+                }
+
+                @Override
+                public String getEnvironment() {
+                    throw new IllegalStateException("Simulated configuration failure");
+                }
+            });
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Correct horse battery staple"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.ERROR)
+                    .build();
+
+            // when
+            var document = assertDoesNotThrow(() -> converter.convert(event));
+
+            // then: only the fields the configuration could not provide are omitted, instead of the whole
+            // document -- the log message included -- being lost with it
+            assertEquals("Correct horse battery staple", document.get("logmessage"));
+            assertEquals("ERROR", document.get("level"));
+            assertEquals("my-host", document.get("host"), "The field read before the failure should be kept");
+            assertNull(document.get("environment"));
+            assertNull(document.get("application"));
         }
 
         @Test

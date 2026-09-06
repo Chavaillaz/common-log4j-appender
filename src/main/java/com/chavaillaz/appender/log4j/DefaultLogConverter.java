@@ -122,10 +122,30 @@ public class DefaultLogConverter implements LogConverter {
             // a far better outcome for a misconfigured converter than losing every document outright.
             log.warn("The converter was never configured, the host/environment/application fields will be omitted");
         }
+        String host = null;
+        String environment = null;
+        String application = null;
+        if (settings != null) {
+            try {
+                host = settings.getHost();
+                environment = settings.getEnvironment();
+                application = settings.getApplication();
+            } catch (Throwable e) {
+                // The last piece of caller-supplied code in this method left unguarded, while the message,
+                // the MDC and the stack trace around it each already fall back rather than take the document
+                // down. An implementation is meant to be immutable and to answer from a field, but nothing
+                // enforces that, and one resolving a value on demand can fail — for the same reason
+                // CommonUtils.getInitialHostname() exists at all. Whichever of the three was read before the
+                // failure is kept; the rest are omitted, exactly as they are for a converter never
+                // configured at all.
+                log.warn("Unable to read the host/environment/application from the configuration, "
+                        + "the fields it did not provide will be omitted", e);
+            }
+        }
         document.put("datetime", Instant.ofEpochMilli(event.getInstant().getEpochMillisecond()).toString());
-        document.put("host", settings != null ? settings.getHost() : null);
-        document.put("environment", settings != null ? settings.getEnvironment() : null);
-        document.put("application", settings != null ? settings.getApplication() : null);
+        document.put("host", host);
+        document.put("environment", environment);
+        document.put("application", application);
         document.put("logger", Optional.ofNullable(event.getLoggerName())
                 .orElse(event.getLoggerFqcn()));
         document.put("level", Optional.ofNullable(event.getLevel())
