@@ -719,6 +719,30 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Reports a delivery handler that comes back null instead of discarding every event in silence")
+        void testStartReportsANullHandler() {
+            // given: a subclass returning null rather than throwing, which leaves exactly the state a failed
+            // creation does -- except nothing went wrong loudly enough for anyone to notice
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new NullHandlerLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("goes nowhere"));
+
+            // then: the appender says so, instead of quietly swallowing everything logged for its lifetime
+            assertEquals(1, errors.size(), "The missing handler should have been reported exactly once");
+            assertNull(appender.getLogDeliveryHandler());
+
+            // cleanup
+            appender.stop(0, MILLISECONDS);
+        }
+
+        @Test
         @DisplayName("Reports an Error from the handler's creation instead of failing the whole configuration")
         void testStartReportsAnErrorFromHandlerCreation() {
             // given: building a delivery handler is where its transport client is constructed, and a client
@@ -1078,6 +1102,30 @@ class AbstractLogDeliveryAppenderTest {
                     Thread.currentThread().interrupt();
                 }
                 events.add("send");
+            };
+        }
+
+    }
+
+    /**
+     * An appender whose {@code createLogDeliveryHandler()} answers {@code null} rather than throwing,
+     * breaking a contract nothing enforces at runtime.
+     */
+    static class NullHandlerLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        protected NullHandlerLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
+            super(name, filter, layout, configuration);
+        }
+
+        @Override
+        @SuppressWarnings("NullAway")
+        public LogDelivery createLogDeliveryHandler() {
+            return null;
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            return () -> {
             };
         }
 

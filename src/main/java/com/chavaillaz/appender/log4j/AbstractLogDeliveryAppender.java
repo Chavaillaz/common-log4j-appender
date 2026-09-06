@@ -331,6 +331,14 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private void startLogDeliveryHandler() {
         try {
             logDeliveryHandler = createLogDeliveryHandler();
+            if (logDeliveryHandler == null) {
+                // Never happens for a subclass honouring the contract, and is silent when it does: a null
+                // handler is indistinguishable from one whose creation threw, so append() takes its cheap
+                // "already reported, nothing to do" path for every event -- except nothing was reported,
+                // and the appender discards everything it is ever given without a word.
+                error("Log delivery starting error: createLogDeliveryHandler() returned null, "
+                        + "every logging event will be discarded");
+            }
         } catch (Throwable e) {
             // Throwable, not Exception: building a delivery handler is where its transport client is
             // constructed, and a client library missing (or unloadable) at runtime surfaces as a
