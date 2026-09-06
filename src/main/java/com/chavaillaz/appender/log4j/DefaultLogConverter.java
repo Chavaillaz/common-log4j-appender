@@ -131,13 +131,10 @@ public class DefaultLogConverter implements LogConverter {
                 environment = settings.getEnvironment();
                 application = settings.getApplication();
             } catch (Throwable e) {
-                // The last piece of caller-supplied code in this method left unguarded, while the message,
-                // the MDC and the stack trace around it each already fall back rather than take the document
-                // down. An implementation is meant to be immutable and to answer from a field, but nothing
-                // enforces that, and one resolving a value on demand can fail — for the same reason
-                // CommonUtils.getInitialHostname() exists at all. Whichever of the three was read before the
-                // failure is kept; the rest are omitted, exactly as they are for a converter never
-                // configured at all.
+                // An implementation is meant to be immutable and answer from a field, but nothing enforces
+                // that, and one resolving a value on demand can fail -- the reason
+                // CommonUtils.getInitialHostname() exists at all. Whichever fields were read before the
+                // failure are kept, the rest omitted, as they are for a converter never configured.
                 log.warn("Unable to read the host/environment/application from the configuration, "
                         + "the fields it did not provide will be omitted", e);
             }
@@ -172,10 +169,9 @@ public class DefaultLogConverter implements LogConverter {
         try {
             return truncate(message.getFormattedMessage(), getMaxMessageLength());
         } catch (Throwable e) {
-            // Throwable, not Exception: formatting is the custom Message implementation's own code, and a
-            // message built by walking a structure that refers back to itself throws a StackOverflowError.
-            // Letting one escape would lose the whole document over a single field, which is precisely what
-            // this placeholder exists to avoid.
+            // Throwable, not Exception: formatting is the custom Message's own code, and one built from a
+            // structure that refers back to itself throws a StackOverflowError. Letting it escape would
+            // lose the whole document over a single field, which is what this placeholder exists to avoid.
             log.warn("Unable to format the message of a logging event, using a placeholder instead", e);
             return "<unable to format message: " + e + ">";
         }
@@ -185,12 +181,10 @@ public class DefaultLogConverter implements LogConverter {
      * Truncates the given value to at most {@code maxLength} characters, appending how much was cut off so a
      * truncated value is never mistaken for a complete one.
      * <p>
-     * Cuts one character earlier when the limit falls between the two halves of a surrogate pair, rather
-     * than splitting it: the trailing half left behind is not a character at all, and encoding it (to the
-     * UTF-8 of whatever request carries this document) turns it into a replacement character, so the very
-     * last thing a truncated message says would be mojibake — and any consumer validating its input, rather
-     * than substituting, rejects the document outright. Emoji and most non-BMP scripts are pairs, so this
-     * is a matter of where a message happens to reach the limit, not of anything exotic.
+     * Cuts one character earlier when the limit falls between the two halves of a surrogate pair: the half
+     * left behind is not a character, and encoding it turns it into a replacement one, so a consumer
+     * validating its input rejects the document outright. Emoji and most non-BMP scripts are pairs, so this
+     * is a matter of where a message reaches the limit, not of anything exotic.
      *
      * @param value     The value to truncate, or {@code null}
      * @param maxLength The maximum length allowed, a non-positive value disabling truncation
@@ -243,9 +237,8 @@ public class DefaultLogConverter implements LogConverter {
                 document.put("stacktrace", getStackTrace(throwable));
             } catch (Throwable e) {
                 // Throwable, not Exception: printStackTrace() walks the cause chain by recursion, so a deep
-                // enough one (a retry wrapper nesting a cause per attempt, say) overflows the stack rather
-                // than throwing -- and this guard exists so that costs the stacktrace field, not the
-                // document that would have carried it.
+                // enough one overflows the stack rather than throwing -- and this guard exists so that costs
+                // the stacktrace field, not the document carrying it.
                 log.warn("Unable to compute the stack trace of a logging event, the field will be omitted", e);
             }
         }
@@ -255,11 +248,9 @@ public class DefaultLogConverter implements LogConverter {
      * Names the class of a logged exception, preferring the canonical name (the one written in source, dots
      * all the way down) but falling back to the binary name when there is none.
      * <p>
-     * {@link Class#getCanonicalName()} answers {@code null} for a class that has no source-level name at
-     * all — an anonymous or local one, which is exactly what {@code throw new RuntimeException(...) {}} and
-     * every exception declared inside a method produces. Written straight into the document, that
-     * {@code null} loses the one field saying what actually went wrong, on the very events worth looking
-     * at.
+     * {@link Class#getCanonicalName()} answers {@code null} for a class with no source-level name -- an
+     * anonymous or local one, which is what {@code throw new RuntimeException(...) {}} produces. Written
+     * straight in, that {@code null} loses the one field saying what went wrong.
      *
      * @param type The class of the logged exception
      * @return A non-{@code null} name for it

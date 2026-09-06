@@ -48,8 +48,9 @@ import org.jspecify.annotations.Nullable;
  * neither can grow memory without bound or wedge the pipeline forever: the pending batch is capped at
  * {@code maxPendingElements} via {@link BoundedTrim} (oldest elements discarded past that, both while
  * accumulating and while requeuing after a failure), and a batch that fails {@code maxConsecutiveFailures}
- * times in a row (tracked per batch, not engine-wide, so an unrelated batch succeeding concurrently can
- * never reset it) is discarded instead of retried indefinitely. Both are reported through
+ * times in a row (counted for the elements that failed, not engine-wide, so neither an unrelated batch
+ * succeeding concurrently nor a newer element joining them can reset it) is discarded instead of retried
+ * indefinitely. Both are reported through
  * {@link BatcherListener#onDropped(List, String)}, so this data loss is never silent.
  * <p>
  * A batch due for (re)transmission bigger than {@code maxRequestElements} is first split into chunks of at
@@ -156,13 +157,11 @@ public class Batcher<T> {
 
     /**
      * How many of the leading elements of {@link #batch} are the ones {@link #pendingFailureStreak} was
-     * earned by, {@code 0} meaning none of them are left and the streak no longer describes anything.
+     * earned by, {@code 0} meaning none are left and the streak no longer describes anything.
      * <p>
-     * A streak belongs to the elements that failed, not to the batch holding them, and both places that
-     * shrink the batch — {@link BoundedTrim} and {@link #trimToPendingBytes()} — cut from the front, which
-     * is exactly where {@link #requeue(List, int)} puts what it hands back. So counting how far that failed
-     * region still reaches is enough to know when the last of it is gone, at which point the streak is
-     * dropped rather than charged to elements that never failed at all.
+     * A streak belongs to the elements that failed, not to the batch holding them. Both trims cut from the
+     * front, which is where {@link #requeue(List, int)} puts what it hands back, so this one count is
+     * enough to know when the last of those elements is gone.
      * <p>
      * Always guarded by the monitor of this instance, like {@link #batch} itself.
      */
@@ -528,9 +527,7 @@ public class Batcher<T> {
             if (!rejected) {
                 batch.addAll(elements);
                 pendingBytes += sizeOf(elements);
-                // Read once and reused by the threshold check below, rather than asked again there: the
-                // supplier is caller-supplied code on the path every element takes, and a second reading
-                // would only give the two an opportunity to disagree.
+                // Read once and reused below, so the two readings cannot disagree.
                 long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
                 log.trace("Stacking batch {}/{}", batch.size(), threshold);
 
@@ -542,17 +539,14 @@ public class Batcher<T> {
                 discarded = trimmed.discarded();
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
-                // Only ever appends at the end, so whatever the two trims above cut came off the front,
-                // where the elements a failure streak was earned by sit. Once the last of them is gone the
-                // streak goes with it, instead of being charged to the newer elements left behind.
+                // This only appends at the end, so both trims above cut off the front, where the elements a
+                // streak was earned by sit.
                 dropFailedPrefix(size(discarded) + size(oversized));
 
                 boolean batchingEnabled = threshold > 1;
-                // Never on an empty batch, however low the threshold: a non-positive one (allowed, meaning
-                // "no batching") makes "reached" trivially true, so an add() left with nothing -- an empty
-                // list, or one the caps above discarded outright -- would otherwise hand the transport an
-                // empty request to send, fail on it, and count that failure against the pending batch.
-                // flush() has always guarded this; the threshold path never did.
+                // Never on an empty batch: a non-positive threshold (allowed, meaning "no batching") makes
+                // "reached" trivially true, so an add() left with nothing -- an empty list, or one the caps
+                // above discarded outright -- would otherwise send an empty request and fail on it.
                 boolean thresholdReached = !batch.isEmpty() && batch.size() >= threshold;
                 if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
                     snapshot = swapBatch();
@@ -701,10 +695,9 @@ public class Batcher<T> {
         try {
             return Math.max(0, elementSize.applyAsLong(element));
         } catch (Throwable e) {
-            // Throwable, not Exception: a measurement walking a self-referencing element throws a
-            // StackOverflowError, which is an Error. Letting it escape would carry it out of add() through
-            // a batch already appended to but not yet accounted for in pendingBytes, leaving that running
-            // total describing a batch it no longer matches for the rest of this engine's life.
+            // Throwable, not Exception: measuring a self-referencing element throws a StackOverflowError,
+            // which would escape add() through a batch already appended to but not yet accounted for,
+            // leaving pendingBytes permanently out of step with it.
             log.warn("Unhandled exception thrown while measuring a {}, counting it as empty", elementNoun, e);
             return 0;
         }
@@ -712,20 +705,14 @@ public class Batcher<T> {
 
     /**
      * Reads one of the dynamic limits, treating a supplier that throws as that limit simply not applying
-     * for now and carrying on with the value that leaves it unenforced.
+     * for now. These suppliers are caller-supplied code -- the delivery built on this engine wires each to
+     * an overridable {@code getMaxPendingDocuments()}-style method reading a configuration re-read at
+     * runtime -- and the request limits are read after a batch has been swapped out but before anything has
+     * taken responsibility for it, so a throw used to carry that batch away with it.
      * <p>
-     * These suppliers are the last piece of caller-supplied code here that ran unguarded, and the only one
-     * whose failure could lose elements outright rather than merely degrade a limit: they are read after a
-     * batch has been swapped out for transmission but before anything has taken responsibility for it, so a
-     * throw carried that batch away with it — never transmitted, never put back, never reported. It reaches
-     * further than a hand-written supplier suggests, too: the delivery built on this engine wires every one
-     * of them to an overridable {@code getMaxPendingDocuments()}-style method reading a configuration
-     * deliberately re-read at runtime, so anything that can fail in there fails here.
-     * <p>
-     * The fallback is always the value documented as "unbounded" or "disabled" for that particular limit,
-     * never one that discards: an unenforced limit costs some memory or an oversized request until the
-     * supplier recovers, while the alternative is exactly the silent data loss the limits exist to make
-     * visible.
+     * The fallback is always the value that limit documents as "unbounded" or "disabled", never one that
+     * discards: going unenforced for a while costs memory or an oversized request, the alternative costs
+     * the elements.
      *
      * @param limit      The supplier to read
      * @param unenforced The value to fall back to, leaving the limit unenforced
@@ -815,16 +802,14 @@ public class Batcher<T> {
             pendingBytes = 0;
         }
         if (discarded.isEmpty()) {
-            // Only reachable when the running total drifted above the limit while the batch was already
-            // empty (a measurement that is not perfectly stable). The re-anchoring above has just healed
-            // it, and announcing a discard of zero elements would only be noise.
+            // Only reachable when the total drifted above the limit on an already empty batch, which the
+            // re-anchoring above has just healed: announcing a discard of nothing would only be noise.
             return null;
         }
 
         log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending size of {} bytes",
                 discarded.size(), elementNoun, maxBytes);
-        // Copied rather than handed over as-is: this list travels to BatcherListener#onDropped, whose
-        // contract (like every other discard path here) is an unmodifiable list the listener may keep.
+        // Copied: this travels to BatcherListener#onDropped, whose contract is an unmodifiable list.
         return List.copyOf(discarded);
     }
 
@@ -866,9 +851,8 @@ public class Batcher<T> {
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
 
-                // Both trims above cut from the front, which is exactly where the requeued elements were
-                // just put, so anything they cut past those ate into whatever failed region was already
-                // there behind them.
+                // Both trims cut from the front, where the requeued elements were just put, so anything cut
+                // past them ate into the failed region already behind them.
                 int discardedFromFront = size(discarded) + size(oversized);
                 dropFailedPrefix(Math.max(0, discardedFromFront - elements.size()));
 
@@ -1087,13 +1071,10 @@ public class Batcher<T> {
             CompletableFuture<TransmissionResult<T>> applied = transport.apply(elements);
             future = applied != null ? applied : CompletableFuture.completedFuture(null);
         } catch (Throwable e) {
-            // Throwable, not Exception: an Error thrown here (a NoClassDefFoundError from a transport
-            // dependency missing at runtime, a StackOverflowError from serializing a self-referencing
-            // element, ...) would escape this virtual thread before the whenComplete() below is even
-            // registered, so its finally block would never release the permit acquired for this chunk, and
-            // these elements would be neither requeued nor reported. A handful of those wedge the engine
-            // for good: every later dispatch waits forever for a permit that will never come back, and an
-            // unbounded close() waits with it.
+            // Throwable, not Exception: an Error here (a NoClassDefFoundError from a missing transport
+            // dependency, say) would escape before the whenComplete() below is registered, so its finally
+            // block would never release this chunk permit and the elements would be neither requeued nor
+            // reported. A handful of those wedge the engine: every later dispatch then waits forever.
             future = CompletableFuture.failedFuture(e);
         }
         future.whenComplete((result, throwable) -> {
@@ -1272,9 +1253,8 @@ public class Batcher<T> {
             notification.run();
         } catch (Throwable e) {
             // Throwable, not Exception: a listener writing a self-referencing element to a dead-letter sink
-            // throws a StackOverflowError, which is an Error. Since the whole point of this guard is that
-            // the onFailed notification cannot skip the onTransmissionFailure() call right after it,
-            // letting an Error through would lose exactly the elements it exists to preserve.
+            // throws a StackOverflowError. Since this guard exists so that onFailed cannot skip the
+            // onTransmissionFailure() after it, letting one through would lose the very elements it saves.
             log.warn("Unhandled exception thrown by a BatcherListener", e);
         }
     }
@@ -1318,9 +1298,8 @@ public class Batcher<T> {
         try {
             delayMillis = backoff.delayMillis(consecutiveFailures);
         } catch (Throwable e) {
-            // Throwable, not Exception, for the same reason as the guards above: this runs between the
-            // decision to retry and the requeue() actually keeping the elements, so anything escaping here
-            // discards them without a retry and without a report.
+            // Throwable, not Exception: this runs between the decision to retry and the requeue() that
+            // keeps the elements, so anything escaping here discards them with no retry and no report.
             log.warn("Unhandled exception thrown by a BackoffPolicy, retrying without backing off", e);
             return;
         }
@@ -1418,6 +1397,8 @@ public class Batcher<T> {
      * function (typically done right after calling this method) does not race with an in-flight transmission.
      * <p>
      * Also used by tests to deterministically wait for asynchronous transmissions to complete.
+     *
+     * @throws InterruptedException If the current thread is interrupted while waiting
      */
     public void awaitPendingTransmissions() throws InterruptedException {
         awaitPendingTransmissions(null);
@@ -1428,6 +1409,7 @@ public class Batcher<T> {
      *
      * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
      * @return {@code true} if every pending transmission completed, {@code false} if the timeout elapsed first
+     * @throws InterruptedException If the current thread is interrupted while waiting
      */
     public boolean awaitPendingTransmissions(@Nullable Duration timeout) throws InterruptedException {
         Long timeoutMillis = toMillis(timeout);
@@ -1489,11 +1471,9 @@ public class Batcher<T> {
         try {
             return Math.clamp(timeout.toMillis(), 0, MAX_TIMEOUT_MILLIS);
         } catch (ArithmeticException e) {
-            // Too large to even be expressed in milliseconds, so necessarily past the clamp above. Returning
-            // null here instead would read as "wait indefinitely", turning the largest timeout a caller can
-            // ask for into the one value that never times out: close() would leave no deadline in effect,
-            // so a transport whose future never completes would block it, and any JVM shutdown behind it,
-            // for good -- the very outcome asking for a timeout at all is meant to rule out.
+            // Too large to express in milliseconds, so necessarily past the clamp above. Returning null
+            // would read as "wait indefinitely", turning the largest timeout a caller can ask for into the
+            // one that never fires -- leaving close() with no deadline, which is what it takes one to avoid.
             return MAX_TIMEOUT_MILLIS;
         }
     }

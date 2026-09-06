@@ -48,10 +48,11 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * The queue is bounded to {@link DeliveryOptions#maxQueuedEvents()}, so events arriving faster than
  * they can be processed (e.g. while every {@link DeliveryOptions#maxConcurrentTransmissions()}
  * transmission slot is stuck on an unresponsive downstream system) cannot grow memory usage without limit.
- * Once full, the oldest queued event is discarded to make room for the new one (never blocking the
- * application thread), applying the same {@link BoundedTrim} policy {@link AbstractBatchLogDelivery}'s own
- * pending batch is bounded by, and reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}
- * so this data loss is never silent.
+ * Once full, the oldest queued event is discarded to make room for the new one rather than blocking,
+ * applying the same {@link BoundedTrim} policy {@link AbstractBatchLogDelivery}'s own pending batch is
+ * bounded by, and reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} so this
+ * data loss is never silent. That report is the one thing here that does run on the calling thread, so a
+ * listener saving documents somewhere slow costs the application that time on every discarded event.
  * <p>
  * An event at least as severe as {@link DeliveryOptions#flushLevel()} (disabled by default) triggers an
  * immediate flush of the whole current batch right after it, instead of waiting for
@@ -113,10 +114,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 throw new RejectedExecutionException("Task " + task + " rejected from " + executor);
             }
 
-            // Retried before evicting anything: the offer that failed and brought us here did so a moment
-            // ago, and the worker thread may well have taken an event since. Going straight to the eviction
-            // below would then discard a perfectly deliverable event to make room this queue already has --
-            // a small window, but one every rejection races under the sustained overload that gets here.
+            // Retried before evicting anything: the offer that brought us here failed a moment ago, and the
+            // worker may have taken an event since, in which case evicting would discard a deliverable event
+            // to make room the queue already has.
             if (executor.getQueue().offer(newTask)) {
                 return;
             }
@@ -162,11 +162,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * {@link #createLogDeliveryHandler()} threw an exception while starting it.
      * <p>
      * Volatile because it is written on whatever thread configures this appender and read on every other:
-     * by {@link #append(LogEvent)} and {@link #reportDropped(LogEvent, String)} on application threads, by
-     * {@link #triggerFlush()} on the worker and scheduler ones. Log4j2's own publication of a started
-     * configuration does establish that edge in the usual case, but nothing in this class requires it — and
-     * a thread that never sees the handler takes {@code append()}'s "not started yet" path forever,
-     * discarding everything it logs without so much as an error.
+     * by {@link #append(LogEvent)} on application threads, by {@link #triggerFlush()} on the worker and
+     * scheduler ones. Log4j2 publishing a started configuration establishes that edge in the usual case,
+     * but nothing here requires it, and a thread that never sees the handler takes {@code append()}.s "not
+     * started yet" path forever, discarding everything it logs without a word.
      */
     @Getter
     private volatile @Nullable LogDelivery logDeliveryHandler;
@@ -222,10 +221,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     @Override
     public void start() {
         if (logDeliveryHandler != null) {
-            // Nothing in Log4j2's lifecycle promises start() is called exactly once on a given appender, and
-            // going through it again would build a second delivery handler and a second flush scheduler
-            // while dropping the only references to the first pair: a scheduler thread nobody can stop any
-            // more, and a delivery whose pending documents nobody will ever flush, report or close.
+            // Nothing in Log4j2's lifecycle promises start() runs exactly once, and going through it again
+            // would build a second handler and scheduler while dropping the only references to the first
+            // pair: an unstoppable scheduler thread, and a delivery nobody will ever flush, report or close.
             super.start();
             return;
         }
@@ -244,12 +242,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * threshold greater than {@code 1}).
      * <p>
      * Reads the delivery options once, and reports a failure to read them at all the same way
-     * {@link #validateFlushInterval(Duration)} reports an unusable value: they come from an implementation
-     * free to resolve them dynamically, and so to fail. Letting that escape would hand it to whatever is
-     * applying the Log4j2 configuration, and skip the {@code super.start()} that marks this appender
-     * started — leaving one that already has a working delivery handler permanently unstarted, and (since
-     * having a handler is what makes a repeated {@code start()} a no-op) with no second chance at its
-     * scheduler either.
+     * {@link #validateFlushInterval(Duration)} reports an unusable value: an implementation is free to
+     * resolve them dynamically, and so to fail. Letting that escape would also skip the
+     * {@code super.start()} below it, leaving an appender that already has a working handler permanently
+     * unstarted -- and, since having a handler makes a repeated {@code start()} a no-op, with no retry.
      */
     private void startPeriodicFlush() {
         DeliveryOptions options;
@@ -360,19 +356,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         try {
             logDeliveryHandler = createLogDeliveryHandler();
             if (logDeliveryHandler == null) {
-                // Never happens for a subclass honouring the contract, and is silent when it does: a null
-                // handler is indistinguishable from one whose creation threw, so append() takes its cheap
-                // "already reported, nothing to do" path for every event -- except nothing was reported,
-                // and the appender discards everything it is ever given without a word.
+                // Indistinguishable from a creation that threw, so append() takes its cheap "already
+                // reported, nothing to do" path for every event -- except nothing was reported.
                 error("Log delivery starting error: createLogDeliveryHandler() returned null, "
                         + "every logging event will be discarded");
             }
         } catch (Throwable e) {
-            // Throwable, not Exception: building a delivery handler is where its transport client is
-            // constructed, and a client library missing (or unloadable) at runtime surfaces as a
-            // NoClassDefFoundError or an ExceptionInInitializerError, not as an exception. Letting one of
-            // those out of start() hands it to whatever is applying the Log4j2 configuration, taking down
-            // more than the one appender that cannot ship its logs.
+            // Throwable, not Exception: building a handler constructs its transport client, and a client
+            // library missing at runtime surfaces as a NoClassDefFoundError. Letting one out of start()
+            // hands it to whatever applies the Log4j2 configuration, taking down more than this appender.
             error("Log delivery starting error", e);
         }
     }
@@ -405,11 +397,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         // Snapshots the event on the calling thread: log4j2 may reuse (mutate) it once this method returns.
         LogEvent immutableEvent = loggingEvent.toImmutable();
-        // Whether the event reached the worker's queue, and so is going to be delivered whatever happens
-        // next here. Reporting it dropped past that point would not just be inaccurate: onDocumentsDropped
-        // means "irrecoverably lost, this is your last chance to save it", so a dead-letter sink would file
-        // a second copy of an event about to be delivered normally, and drop metrics would show loss that
-        // never happened.
+        // Whether the event reached the queue, and so is going to be delivered whatever happens next here.
+        // onDocumentsDropped means "irrecoverably lost, your last chance to save it", so reporting one past
+        // that point has a dead-letter sink file a second copy of an event on its way out.
         boolean handedOff = false;
         try {
             // Guarded so a subclass mistake (or unexpected null/exception) in createLogDeliveryTask() —
@@ -428,10 +418,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
             reportDropped(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
         } catch (Throwable e) {
-            // Either createLogDeliveryTask() threw, in which case the event never reached workerExecutor and
-            // is lost, or the severity check after the hand-off did — it reads the delivery options, which
-            // an implementation is free to resolve dynamically, and so to fail at. Only the first case is a
-            // discard.
+            // Either createLogDeliveryTask() threw, leaving the event nowhere, or the severity check after
+            // the hand-off did -- it reads the delivery options, which may be resolved dynamically. Only
+            // the first is a discard.
             error("Log delivery task creation error", e);
             if (!handedOff) {
                 reportDropped(immutableEvent, "log delivery task creation error");
@@ -451,12 +440,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Reports several logging events discarded together as one notification, rather than one per event: a
-     * listener's whole reason to receive the documents is to save them somewhere, and doing so usually costs
-     * something per call (opening a file, a round trip to a queue). {@link #stop(long, TimeUnit)} can abandon
-     * a full queue's worth at once — {@link DeliveryOptions#maxQueuedEvents()}, ten thousand by default —
-     * which one call each would turn into ten thousand of those, on the shutdown path where the delay is
-     * least affordable.
+     * Reports several discarded events as one notification rather than one per event: a listener receives
+     * the documents in order to save them somewhere, which usually costs something per call. A timed-out
+     * {@link #stop(long, TimeUnit)} can abandon a full queue's worth at once, ten thousand by default.
      *
      * @param events The logging events being discarded
      * @param reason A short, human-readable explanation of why they were discarded
@@ -474,10 +460,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             handler.getListener().onDocumentsDropped(List.copyOf(documents), reason);
         } catch (Throwable e) {
             // Throwable, not Exception: this runs on the application thread whenever a full queue evicts an
-            // event, and append()'s whole contract is that logging never fails its caller. An Error out of a
-            // listener -- a StackOverflowError writing a self-referencing document to a dead-letter sink,
-            // say -- would otherwise surface in the middle of unrelated application code, which is exactly
-            // the outcome the rest of this method already guards against for an exception.
+            // event, and append() promises never to fail its caller. An Error from a listener would
+            // otherwise surface in the middle of unrelated application code.
             error("Failed to report a discarded logging event to the delivery listener", e);
         }
     }
@@ -540,11 +524,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * gets there, which is when raising {@code MaxQueuedEvents}, lowering {@code FlushInterval} or looking at
      * the downstream system is still cheap.
      * <p>
-     * Almost every entry is a logging event awaiting conversion and batching, but not quite all of them: a
-     * flush trigger takes a slot of its own for as long as it is queued, one per {@code FlushInterval} and
-     * one more per event severe enough to reach {@link DeliveryOptions#flushLevel()}. What this measures is
-     * therefore the pressure on the queue — which is what the number is for — rather than an exact count of
-     * events waiting in it.
+     * Almost every entry is a logging event awaiting conversion and batching, but not quite all: a queued
+     * flush trigger takes a slot of its own, one per {@code FlushInterval} and one more per event reaching
+     * {@link DeliveryOptions#flushLevel()}. This measures queue pressure, not an exact count of events.
      *
      * @return The number of entries currently queued
      */
@@ -615,11 +597,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         try {
             logDeliveryHandler.close();
         } catch (Throwable e) {
-            // Throwable, not Exception: closing a delivery releases its transport client, and a class that
-            // client only needs on the way out can fail to load once the JVM is already shutting down,
-            // giving a NoClassDefFoundError rather than an exception. This runs from stop()'s finally
-            // block, so letting one escape would also skip the super.stop() right after it, leaving Log4j2
-            // holding an appender that never finished stopping and still reports itself as started.
+            // Throwable, not Exception: closing releases the transport client, and a class it only needs on
+            // the way out can fail to load once the JVM is shutting down. This runs from stop()'s finally
+            // block, so an escaping failure also skips the super.stop() marking this appender stopped.
             error("Log delivery closing error", e);
         }
     }

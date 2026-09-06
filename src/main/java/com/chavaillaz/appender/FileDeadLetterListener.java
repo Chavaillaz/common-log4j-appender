@@ -125,12 +125,10 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      * Renders one dropped document as the line to append for it, falling back to a line recording why it
      * could not be rendered rather than letting that failure escape.
      * <p>
-     * Rendering runs arbitrary application code — a value's {@code toString()}, a custom {@link Map} or
-     * {@link Iterable}'s own iteration — none of which this sink controls. Left unguarded, one document
-     * whose rendering throws takes the whole call down with it, and with it every other document handed
-     * over at the same time: up to a full pending batch, discarded a second time by the very thing meant to
-     * be their last resort. Confining the failure to its own line costs that one document and saves the
-     * rest.
+     * Rendering runs application code this sink does not control: a value's {@code toString()}, a custom
+     * {@link Map} or {@link Iterable}'s iteration. Unguarded, one document whose rendering fails takes
+     * every other document handed over with it -- up to a full pending batch, discarded a second time by
+     * the very thing meant to be their last resort.
      *
      * @param document  The document being dropped
      * @param reason    A short, human-readable explanation of why it was dropped
@@ -141,13 +139,10 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         try {
             return toJson(wrap(document, reason, droppedAt));
         } catch (Throwable e) {
-            // Throwable, not Exception: a value whose toString() recurses throws a StackOverflowError, and
-            // this class's own bounded nesting depth (see MAX_DEPTH) only rules out the recursion this file
-            // is responsible for, not the one inside a value being rendered.
-            // Only the exception's class name is used, and it is logged as a plain value rather than as a
-            // throwable: whatever threw above is application code, and so is this exception, whose own
-            // toString() is free to throw in turn. Anything richer would risk failing exactly here, on the
-            // fallback path, and lose the batch after all.
+            // Throwable, not Exception: MAX_DEPTH only rules out recursion between the documents this class
+            // walks, not inside a value whose own toString() recurses. Only the class name is used, and it
+            // is logged as a plain value: this exception is application code too, and its own toString() is
+            // free to throw in turn, right on the path meant to contain the first failure.
             String failure = e.getClass().getName();
             log.warn("Unable to render a dropped document as JSON ({}), saving a placeholder in its place", failure);
             return toJson(wrap(Map.of("unrenderable", failure), reason, droppedAt));

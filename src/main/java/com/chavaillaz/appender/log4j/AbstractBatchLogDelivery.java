@@ -43,9 +43,9 @@ import com.chavaillaz.appender.TransmissionResult;
  * is capped at {@link DeliveryOptions#maxPendingDocuments()} via the shared {@link com.chavaillaz.appender.BoundedTrim}
  * policy (oldest documents discarded past that, both while accumulating and while requeuing after a
  * failure, the same policy {@link AbstractLogDeliveryAppender}'s own pending event queue applies), and a
- * batch that fails {@link DeliveryOptions#maxConsecutiveFailures()} times in a row (tracked per batch,
- * not delivery-wide, so an unrelated batch succeeding concurrently can never reset it) is discarded instead
- * of retried indefinitely. Both are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)},
+ * batch that fails {@link DeliveryOptions#maxConsecutiveFailures()} times in a row (counted for the
+ * documents that failed, not delivery-wide, so neither an unrelated batch succeeding concurrently nor a
+ * newer document joining them can reset it) is discarded instead of retried indefinitely. Both are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)},
  * so this data loss is never silent.
  * <p>
  * A batch due for (re)transmission bigger than {@link DeliveryOptions#maxRequestDocuments()} is first
@@ -81,9 +81,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * The close timeout this delivery was built with, kept only as a fallback for {@link #closeTimeout()}
-     * when reading the current one fails. Every other setting is read fresh on the path that uses it, and
-     * can simply go unenforced for a while when it cannot be read; this one is read exactly once, at the
-     * only moment that ever matters, and there is no later attempt to fall back on.
+     * when reading the current one fails. Every other setting can go unenforced until the next read; this
+     * one is read once, at the only moment that matters, with no later attempt to fall back on.
      */
     private final @Nullable Duration initialCloseTimeout;
 
@@ -143,12 +142,10 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     }
                 });
 
-        // Always wired in, but only measuring anything while a byte limit is actually in effect (see
-        // measureIfBounded below). Reading the configuration once here instead, to decide whether to wire it
-        // at all, made getMaxPendingBytes()/getMaxRequestBytes() useless as the overridable hooks their own
-        // documentation offers them as: a subclass raising a limit through one of them, and nothing else,
-        // got a limit that silently enforced nothing at all, since the measurement it needs was never
-        // wired up.
+        // Always wired in, but only measuring while a byte limit is in effect (see measureIfBounded).
+        // Deciding that once here instead, from the configuration, made getMaxPendingBytes() and
+        // getMaxRequestBytes() useless as the overridable hooks they are documented to be: a subclass
+        // raising a limit through one of them got a limit that silently enforced nothing.
         batcherBuilder.elementSize(this::measureIfBounded);
         this.batcher = batcherBuilder.build();
     }
@@ -169,11 +166,10 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * while neither byte limit is in effect: measuring costs something on the path every document takes, and
      * a delivery with no size limit to enforce should not pay it.
      * <p>
-     * Checked per document rather than once at construction, so that both limits keep working through the
-     * overridable getters below (a constructor cannot ask a subclass anything: its fields are not
-     * initialized yet). A limit that only comes into effect once documents are already accumulating starts
-     * out under-counting them, since what came before was never measured; the running total re-anchors on
-     * the next batch, so such a limit is at worst enforced a little late rather than not at all.
+     * Checked per document rather than once at construction, so both limits keep working through the
+     * overridable getters below. A limit coming into effect while documents are already accumulating starts
+     * out under-counting them; the running total re-anchors on the next batch, so it is at worst enforced
+     * a little late rather than not at all.
      *
      * @param document The document to measure
      * @return The estimated size of the document in bytes, or {@code 0} while no byte limit is in effect
@@ -418,11 +414,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * Reads how long to wait for in-flight transmissions while closing, falling back to the value this
      * delivery was built with if the configuration cannot be read at all.
      * <p>
-     * Guarded because of where it sits rather than because it is likely to fail: this is the argument to
-     * the one call that flushes the pending batch, waits for it, and reports whatever is left. A failure to
-     * read it never reached that call, so the batch was neither sent nor reported — silently lost on the
-     * one path that exists to prevent exactly that — and the batching engine was left running, holding its
-     * executor, with nothing left to close it.
+     * Guarded because of where it sits: this is the argument to the one call that flushes the pending
+     * batch, waits for it and reports whatever is left, so a failure to read it never reached that call --
+     * losing the batch in silence and leaving the engine running with nothing left to close it.
      *
      * @return The close timeout, or {@code null} to wait indefinitely
      */
