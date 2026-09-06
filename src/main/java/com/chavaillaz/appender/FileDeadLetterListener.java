@@ -44,7 +44,10 @@ import lombok.extern.log4j.Log4j2;
  * imposing any sorting. A number JSON has no notion of ({@link Double#NaN}, either infinity, or whatever a
  * custom {@link Number} subclass renders as) falls back to a JSON string, so a single such value cannot
  * leave a line no parser can read. Nesting is followed to a bounded depth, past which a value is replaced
- * by a marker, so a document that (however unusually) contains itself cannot recurse forever.
+ * by a marker, so a document that (however unusually) contains itself cannot recurse forever. A document
+ * that cannot be rendered at all — a value whose {@code toString()} throws, a custom {@link Map} or
+ * {@link Iterable} that throws while iterated — costs only its own line, replaced by one naming the
+ * failure, rather than the whole batch it was handed over with.
  */
 @Log4j2
 public class FileDeadLetterListener implements LogDeliveryListener {
@@ -105,7 +108,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         Instant droppedAt = Instant.now();
         List<String> lines = new ArrayList<>(documents.size());
         for (Map<String, Object> document : documents) {
-            lines.add(toJson(wrap(document, reason, droppedAt)));
+            lines.add(toLine(document, reason, droppedAt));
         }
         try {
             synchronized (this) {
@@ -113,6 +116,36 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             }
         } catch (IOException e) {
             onWriteFailure(documents, reason, e);
+        }
+    }
+
+    /**
+     * Renders one dropped document as the line to append for it, falling back to a line recording why it
+     * could not be rendered rather than letting that failure escape.
+     * <p>
+     * Rendering runs arbitrary application code — a value's {@code toString()}, a custom {@link Map} or
+     * {@link Iterable}'s own iteration — none of which this sink controls. Left unguarded, one document
+     * whose rendering throws takes the whole call down with it, and with it every other document handed
+     * over at the same time: up to a full pending batch, discarded a second time by the very thing meant to
+     * be their last resort. Confining the failure to its own line costs that one document and saves the
+     * rest.
+     *
+     * @param document  The document being dropped
+     * @param reason    A short, human-readable explanation of why it was dropped
+     * @param droppedAt The instant it was dropped at
+     * @return The line to append for this document
+     */
+    private String toLine(Map<String, Object> document, String reason, Instant droppedAt) {
+        try {
+            return toJson(wrap(document, reason, droppedAt));
+        } catch (Exception e) {
+            // Only the exception's class name is used, and it is logged as a plain value rather than as a
+            // throwable: whatever threw above is application code, and so is this exception, whose own
+            // toString() is free to throw in turn. Anything richer would risk failing exactly here, on the
+            // fallback path, and lose the batch after all.
+            String failure = e.getClass().getName();
+            log.warn("Unable to render a dropped document as JSON ({}), saving a placeholder in its place", failure);
+            return toJson(wrap(Map.of("unrenderable", failure), reason, droppedAt));
         }
     }
 
