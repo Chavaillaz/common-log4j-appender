@@ -444,6 +444,32 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Names an anonymous exception class by its binary name, which it has, rather than not at all")
+        void testConversionNamesAnAnonymousThrowable() {
+            // given: an exception declared on the spot, the shape `throw new RuntimeException(...) {}` and
+            // every exception declared inside a method produce, and which has no canonical name at all
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var thrown = new RuntimeException("boom") {
+                // Anonymous on purpose: Class#getCanonicalName() answers null for it
+            };
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(thrown)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: the one field saying what went wrong is filled in, where it used to come out null on
+            // exactly the events most worth looking at
+            assertNull(thrown.getClass().getCanonicalName(), "This exception should have no canonical name");
+            assertEquals(thrown.getClass().getName(), document.get("class"));
+        }
+
+        @Test
         @DisplayName("Falls back to omitting MDC fields instead of losing the whole document when context data fails to be read")
         void testConversionToleratesThrowingContextData() {
             // given: a custom ReadOnlyStringMap (unlike the one bundled with Log4j2) whose forEach() throws,

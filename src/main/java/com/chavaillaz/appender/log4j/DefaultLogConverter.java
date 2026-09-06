@@ -212,13 +212,31 @@ public class DefaultLogConverter implements LogConverter {
     protected void writeThrowable(Map<String, Object> document, LogEvent event) {
         Throwable throwable = event.getThrown();
         if (throwable != null) {
-            document.put("class", throwable.getClass().getCanonicalName());
+            document.put("class", className(throwable.getClass()));
             try {
                 document.put("stacktrace", getStackTrace(throwable));
             } catch (Exception e) {
                 log.warn("Unable to compute the stack trace of a logging event, the field will be omitted", e);
             }
         }
+    }
+
+    /**
+     * Names the class of a logged exception, preferring the canonical name (the one written in source, dots
+     * all the way down) but falling back to the binary name when there is none.
+     * <p>
+     * {@link Class#getCanonicalName()} answers {@code null} for a class that has no source-level name at
+     * all — an anonymous or local one, which is exactly what {@code throw new RuntimeException(...) {}} and
+     * every exception declared inside a method produces. Written straight into the document, that
+     * {@code null} loses the one field saying what actually went wrong, on the very events worth looking
+     * at.
+     *
+     * @param type The class of the logged exception
+     * @return A non-{@code null} name for it
+     */
+    private static String className(Class<?> type) {
+        String canonicalName = type.getCanonicalName();
+        return canonicalName != null ? canonicalName : type.getName();
     }
 
     /**
