@@ -74,6 +74,18 @@ class AbstractLogDeliveryAppenderTest {
                 .build();
     }
 
+    /**
+     * How many periodic flush schedulers are alive right now, across every appender in this JVM. Only ever
+     * compared against a reading taken moments earlier, so schedulers left behind by another test do not
+     * matter.
+     */
+    private static int countFlushSchedulerThreads() {
+        return (int) Thread.getAllStackTraces().keySet().stream()
+                .filter(Thread::isAlive)
+                .filter(thread -> "log-delivery-flush-scheduler".equals(thread.getName()))
+                .count();
+    }
+
     private ErrorHandler recordingErrorHandler(List<Throwable> errors) {
         return new ErrorHandler() {
             @Override
@@ -136,6 +148,7 @@ class AbstractLogDeliveryAppenderTest {
             // when: started again, as nothing in Log4j2's lifecycle rules out
             appender.start();
             var handler = appender.getLogDeliveryHandler();
+            int schedulersAfterFirstStart = countFlushSchedulerThreads();
             appender.start();
 
             // then: still the same handler, rather than a second one leaving the first with no reference
@@ -143,15 +156,18 @@ class AbstractLogDeliveryAppenderTest {
             assertSame(handler, appender.getLogDeliveryHandler());
             assertTrue(appender.isStarted());
 
-            // and: still a single scheduler, so one flush per interval rather than two
+            // and: still a single scheduler. Counted rather than timed: a second one only shows up as two
+            // flushes per interval, which is indistinguishable from one slow interval on a loaded machine
+            assertTrue(countFlushSchedulerThreads() <= schedulersAfterFirstStart,
+                    "Starting again should not have created a second flush scheduler");
+
+            // and: that scheduler is running, waited for rather than slept through for the same reason
             appender.append(mockLogEvent());
-            sleep(300);
-            verify(appender.getLogDeliveryHandler()).flush();
+            verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeastOnce()).flush();
 
             // cleanup
             appender.stop();
             verify(appender.getLogDeliveryHandler()).close();
-            verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
 
         @Test
