@@ -2,8 +2,9 @@ package com.chavaillaz.appender;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -14,59 +15,53 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("BoundedTrim")
 class BoundedTrimTest {
 
-    @Test
-    @DisplayName("Keeps everything and discards nothing when under the cap")
-    void testUnderCapKeepsEverything() {
-        var result = BoundedTrim.trim(List.of("a", "b"), 5);
-
-        assertEquals(List.of("a", "b"), result.kept());
-        assertNull(result.discarded());
+    private static List<String> mutable(String... elements) {
+        return new ArrayList<>(List.of(elements));
     }
 
     @Test
-    @DisplayName("Returns the same list instance when nothing is discarded")
-    void testUnderCapReturnsSameInstance() {
-        List<String> elements = List.of("a", "b");
+    @DisplayName("Keeps everything and discards nothing when under the cap")
+    void testUnderCapKeepsEverything() {
+        List<String> elements = mutable("a", "b");
 
-        var result = BoundedTrim.trim(elements, 5);
-
-        assertSame(elements, result.kept());
+        assertNull(BoundedTrim.trim(elements, 5));
+        assertEquals(List.of("a", "b"), elements);
     }
 
     @Test
     @DisplayName("Keeps everything and discards nothing when exactly at the cap")
     void testExactlyAtCapKeepsEverything() {
-        var result = BoundedTrim.trim(List.of("a", "b", "c"), 3);
+        List<String> elements = mutable("a", "b", "c");
 
-        assertEquals(List.of("a", "b", "c"), result.kept());
-        assertNull(result.discarded());
+        assertNull(BoundedTrim.trim(elements, 3));
+        assertEquals(List.of("a", "b", "c"), elements);
     }
 
     @Test
     @DisplayName("Discards the single oldest element when one over the cap")
     void testSingleOverflowDiscardsOldest() {
-        var result = BoundedTrim.trim(List.of("a", "b", "c"), 2);
+        List<String> elements = mutable("a", "b", "c");
 
-        assertEquals(List.of("b", "c"), result.kept());
-        assertEquals(List.of("a"), result.discarded());
+        assertEquals(List.of("a"), BoundedTrim.trim(elements, 2));
+        assertEquals(List.of("b", "c"), elements);
     }
 
     @Test
     @DisplayName("Discards every oldest element in excess, keeping the most recently added ones")
     void testBulkOverflowDiscardsOldestElements() {
-        var result = BoundedTrim.trim(List.of("a", "b", "c", "d", "e"), 2);
+        List<String> elements = mutable("a", "b", "c", "d", "e");
 
-        assertEquals(List.of("d", "e"), result.kept());
-        assertEquals(List.of("a", "b", "c"), result.discarded());
+        assertEquals(List.of("a", "b", "c"), BoundedTrim.trim(elements, 2));
+        assertEquals(List.of("d", "e"), elements);
     }
 
     @Test
     @DisplayName("Discards everything when the cap is zero")
     void testZeroCapDiscardsEverything() {
-        var result = BoundedTrim.trim(List.of("a", "b"), 0);
+        List<String> elements = mutable("a", "b");
 
-        assertEquals(List.of(), result.kept());
-        assertEquals(List.of("a", "b"), result.discarded());
+        assertEquals(List.of("a", "b"), BoundedTrim.trim(elements, 0));
+        assertEquals(List.of(), elements);
     }
 
     // Integer.MIN_VALUE is not just a bigger negative: it used to make size - maxSize overflow back into a
@@ -75,28 +70,39 @@ class BoundedTrimTest {
     @ValueSource(ints = {-1, -100, Integer.MIN_VALUE + 1, Integer.MIN_VALUE})
     @DisplayName("Treats a negative cap the same as zero, discarding everything, instead of throwing")
     void testNegativeCapDiscardsEverythingWithoutThrowing(int maxSize) {
-        var result = BoundedTrim.trim(List.of("a", "b"), maxSize);
+        List<String> elements = mutable("a", "b");
 
-        assertEquals(List.of(), result.kept());
-        assertEquals(List.of("a", "b"), result.discarded());
+        assertEquals(List.of("a", "b"), BoundedTrim.trim(elements, maxSize));
+        assertEquals(List.of(), elements);
     }
 
     @Test
     @DisplayName("Does not discard anything, or throw, for an empty list")
     void testEmptyListDoesNotThrow() {
-        var result = BoundedTrim.trim(List.of(), 3);
+        List<String> elements = mutable();
 
-        assertEquals(List.of(), result.kept());
-        assertNull(result.discarded());
+        assertNull(BoundedTrim.trim(elements, 3));
+        assertEquals(List.of(), elements);
     }
 
     @Test
     @DisplayName("Does not throw when the cap is larger than the list itself")
     void testCapLargerThanListDoesNotThrow() {
-        var result = BoundedTrim.trim(List.of("a"), 1_000_000);
+        List<String> elements = mutable("a");
 
-        assertEquals(List.of("a"), result.kept());
-        assertNull(result.discarded());
+        assertNull(BoundedTrim.trim(elements, 1_000_000));
+        assertEquals(List.of("a"), elements);
+    }
+
+    @Test
+    @DisplayName("Hands back the discarded elements as an unmodifiable list")
+    void testDiscardedElementsAreUnmodifiable() {
+        // The listener this list ends up at is documented as free to keep a reference to it, so it must not
+        // be a view of, or share anything with, the batch that keeps being trimmed behind its back
+        List<String> discarded = BoundedTrim.trim(mutable("a", "b", "c"), 1);
+
+        assertEquals(List.of("a", "b"), discarded);
+        assertThrows(UnsupportedOperationException.class, () -> discarded.add("d"));
     }
 
 }

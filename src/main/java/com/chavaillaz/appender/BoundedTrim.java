@@ -1,6 +1,5 @@
 package com.chavaillaz.appender;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import lombok.experimental.UtilityClass;
@@ -20,29 +19,25 @@ import org.jspecify.annotations.Nullable;
 public class BoundedTrim {
 
     /**
-     * The result of {@link #trim(List, int)}.
-     *
-     * @param kept      The given elements, with the oldest ones in excess of the cap removed (the same list
-     *                  instance as given if nothing was discarded)
-     * @param discarded The elements discarded to honor the cap, or {@code null} if none were
-     * @param <T>       The type of element
-     */
-    public record Trimmed<T>(List<T> kept, @Nullable List<T> discarded) {
-
-    }
-
-    /**
      * Trims the given list (oldest first) down to at most {@code maxSize} elements, discarding the oldest
      * ones in excess so the most recently added elements are kept.
+     * <p>
+     * Trims in place rather than handing back a new list, which is what makes it affordable on the path it
+     * sits on: once the cap is actually reached, this runs for every batch of incoming elements against a
+     * list already holding {@code maxSize} of them (ten thousand by default). Rebuilding it each time
+     * allocates and copies the whole thing per call, precisely under the sustained overload the cap exists
+     * for -- so the mechanism bounding memory would be the one filling it with garbage. Removing the excess
+     * from the front is one array copy within the list already there, and allocates nothing beyond what is
+     * actually discarded.
      *
-     * @param elements The elements to trim, oldest first
+     * @param elements The elements to trim, oldest first, modified in place and so necessarily mutable
      * @param maxSize  The maximum to keep, clamped to {@code [0, elements.size()]} so an unexpected value
      *                 (zero, negative, or larger than the list) degrades gracefully instead of making
      *                 {@code subList()} throw
      * @param <T>      The type of element
-     * @return The trimmed list and whatever was discarded, if anything
+     * @return The elements discarded, as an unmodifiable list, or {@code null} if none were
      */
-    public static <T> Trimmed<T> trim(List<T> elements, int maxSize) {
+    public static <T> @Nullable List<T> trim(List<T> elements, int maxSize) {
         // Clamped before the subtraction rather than after it: with maxSize far enough below zero (which a
         // caller is explicitly allowed to pass, meaning "keep nothing"), size - maxSize overflows int and
         // comes back negative, which the Math.max() below then reads as "nothing to discard" -- keeping
@@ -50,11 +45,14 @@ public class BoundedTrim {
         int cap = Math.max(0, maxSize);
         int overflow = Math.min(elements.size(), Math.max(0, elements.size() - cap));
         if (overflow == 0) {
-            return new Trimmed<>(elements, null);
+            return null;
         }
-        List<T> discarded = List.copyOf(elements.subList(0, overflow));
-        List<T> kept = new ArrayList<>(elements.subList(overflow, elements.size()));
-        return new Trimmed<>(kept, discarded);
+        List<T> excess = elements.subList(0, overflow);
+        // Copied before clearing, not after: a sublist is a view of the range it covers, emptied along with
+        // it. The copy is what travels to the listener anyway, whose contract is an unmodifiable list.
+        List<T> discarded = List.copyOf(excess);
+        excess.clear();
+        return discarded;
     }
 
 }

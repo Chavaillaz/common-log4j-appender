@@ -534,9 +534,7 @@ public class Batcher<T> {
                 // Enforces the same cap as requeue() here too, so maxPendingElements bounds memory even when
                 // flushThreshold is set higher (or effectively unbounded) and nothing is actually failing.
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
-                BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(batch, maxPending);
-                batch = trimmed.kept();
-                discarded = trimmed.discarded();
+                discarded = BoundedTrim.trim(batch, maxPending);
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
                 // This only appends at the end, so both trims above cut off the front, where the elements a
@@ -788,14 +786,15 @@ public class Batcher<T> {
             return null;
         }
 
-        List<T> discarded = new ArrayList<>();
         int index = 0;
         while (index < batch.size() && pendingBytes > maxBytes) {
-            T element = batch.get(index++);
-            pendingBytes -= sizeOf(element);
-            discarded.add(element);
+            pendingBytes -= sizeOf(batch.get(index++));
         }
-        batch = new ArrayList<>(batch.subList(index, batch.size()));
+        List<T> excess = batch.subList(0, index);
+        // Copied before clearing, not after: a sublist is a view of the range it covers, emptied along with
+        // it. This travels to BatcherListener#onDropped anyway, whose contract is an unmodifiable list.
+        List<T> discarded = List.copyOf(excess);
+        excess.clear();
         if (batch.isEmpty()) {
             // Re-anchors the running total on an empty batch rather than letting rounding from a measurement
             // that is not perfectly stable accumulate across the engine's whole lifetime.
@@ -809,8 +808,7 @@ public class Batcher<T> {
 
         log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending size of {} bytes",
                 discarded.size(), elementNoun, maxBytes);
-        // Copied: this travels to BatcherListener#onDropped, whose contract is an unmodifiable list.
-        return List.copyOf(discarded);
+        return discarded;
     }
 
     /**
@@ -845,9 +843,8 @@ public class Batcher<T> {
                 pendingBytes += sizeOf(elements);
 
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
-                BoundedTrim.Trimmed<T> trimmed = BoundedTrim.trim(merged, maxPending);
-                batch = trimmed.kept();
-                discarded = trimmed.discarded();
+                discarded = BoundedTrim.trim(merged, maxPending);
+                batch = merged;
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
 
