@@ -7,6 +7,7 @@ import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLa
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -717,6 +718,29 @@ class AbstractLogDeliveryAppenderTest {
             assertEquals(1, errors.size(), "No additional error should have been reported for the skipped events");
         }
 
+        @Test
+        @DisplayName("Reports an Error from the handler's creation instead of failing the whole configuration")
+        void testStartReportsAnErrorFromHandlerCreation() {
+            // given: building a delivery handler is where its transport client is constructed, and a client
+            // library missing at runtime surfaces as a NoClassDefFoundError rather than an exception
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new ErrorOnStartLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when / then: reported and degraded to the same no-handler state an exception leaves behind,
+            // rather than handed to whatever is applying the Log4j2 configuration, taking down more than
+            // the one appender that cannot ship its logs
+            assertDoesNotThrow(appender::start);
+            assertEquals(1, errors.size(), "The startup failure should have been reported exactly once");
+            assertNull(appender.getLogDeliveryHandler());
+
+            // cleanup
+            appender.stop(0, MILLISECONDS);
+        }
+
     }
 
     @Nested
@@ -1054,6 +1078,29 @@ class AbstractLogDeliveryAppenderTest {
                     Thread.currentThread().interrupt();
                 }
                 events.add("send");
+            };
+        }
+
+    }
+
+    /**
+     * An appender whose delivery handler cannot be built because a class it needs is missing at runtime,
+     * which is how an absent transport client library actually shows up: an {@link Error}, not an exception.
+     */
+    static class ErrorOnStartLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        protected ErrorOnStartLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
+            super(name, filter, layout, configuration);
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            throw new NoClassDefFoundError("com/example/transport/RestClient");
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            return () -> {
             };
         }
 

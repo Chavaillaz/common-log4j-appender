@@ -324,12 +324,19 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Starts the client for logs transmission.
+     * Starts the client for logs transmission, reporting a failure through this appender's
+     * {@code ErrorHandler} and leaving the appender in its degraded (see {@link #append(LogEvent)})
+     * no-handler state rather than letting it propagate out of {@link #start()}.
      */
     private void startLogDeliveryHandler() {
         try {
             logDeliveryHandler = createLogDeliveryHandler();
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: building a delivery handler is where its transport client is
+            // constructed, and a client library missing (or unloadable) at runtime surfaces as a
+            // NoClassDefFoundError or an ExceptionInInitializerError, not as an exception. Letting one of
+            // those out of start() hands it to whatever is applying the Log4j2 configuration, taking down
+            // more than the one appender that cannot ship its logs.
             error("Log delivery starting error", e);
         }
     }
