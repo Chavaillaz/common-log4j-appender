@@ -203,6 +203,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     @Override
     public void start() {
+        if (logDeliveryHandler != null) {
+            // Nothing in Log4j2's lifecycle promises start() is called exactly once on a given appender, and
+            // going through it again would build a second delivery handler and a second flush scheduler
+            // while dropping the only references to the first pair: a scheduler thread nobody can stop any
+            // more, and a delivery whose pending documents nobody will ever flush, report or close.
+            super.start();
+            return;
+        }
+
         startLogDeliveryHandler();
 
         if (logDeliveryHandler != null && logConfiguration.getDeliveryOptions().flushThreshold() > 1) {

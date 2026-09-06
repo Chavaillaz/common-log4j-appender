@@ -7,6 +7,7 @@ import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLa
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -115,6 +116,36 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop();
 
             // then
+            verify(appender.getLogDeliveryHandler()).close();
+            verifyNoMoreInteractions(appender.getLogDeliveryHandler());
+        }
+
+        @Test
+        @DisplayName("Builds a single delivery handler and scheduler however many times it is started")
+        void testStartingTwiceDoesNotLeakTheFirstHandlerAndScheduler() throws Exception {
+            // given: batching enabled, so start() also creates the periodic flush scheduler
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(200)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+
+            // when: started again, as nothing in Log4j2's lifecycle rules out
+            appender.start();
+            var handler = appender.getLogDeliveryHandler();
+            appender.start();
+
+            // then: still the same handler, rather than a second one leaving the first with no reference
+            // left to close it
+            assertSame(handler, appender.getLogDeliveryHandler());
+            assertTrue(appender.isStarted());
+
+            // and: still a single scheduler, so one flush per interval rather than two
+            appender.append(mockLogEvent());
+            sleep(300);
+            verify(appender.getLogDeliveryHandler()).flush();
+
+            // cleanup
+            appender.stop();
             verify(appender.getLogDeliveryHandler()).close();
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
