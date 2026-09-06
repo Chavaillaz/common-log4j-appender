@@ -1036,6 +1036,28 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
+        @DisplayName("Notifies the listener installed after construction rather than the one it replaced")
+        void testListenerReplacedAfterConstructionIsUsed() throws Exception {
+            // given: a delivery already wired to one listener, as the constructor takes
+            var configuration = TestLogConfiguration.builder().flushThreshold(1).build();
+            var initial = new RecordingListener();
+            var logDelivery = new TestLogDelivery(configuration, initial);
+
+            // when: swapped for another one, the second way of wiring a listener this class documents. The
+            // transmission below reads it from a virtual thread with nothing linking it to this one, which
+            // is why the field it lives in has to be volatile
+            var replacement = new RecordingListener();
+            logDelivery.setListener(replacement);
+            logDelivery.send(Map.of());
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertSame(replacement, logDelivery.getListener());
+            assertEquals(1, replacement.succeeded.size());
+            assertTrue(initial.succeeded.isEmpty());
+        }
+
+        @Test
         @DisplayName("Notifies the listener with no cause when sendBulk() simply returns false")
         void testListenerNotifiedOnFailureWithoutCause() throws Exception {
             // given

@@ -65,9 +65,16 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * The listener notified of the outcome of every transmission attempt.
+     * <p>
+     * Volatile because {@link #setListener(LogDeliveryListener)} exists precisely to change it after
+     * construction, from whatever thread the application happens to wire it up on, while every read of it
+     * happens on one of the virtual threads the {@link Batcher} transmits on. Nothing links the two: the
+     * writer touches neither the batching engine's monitor nor its semaphore, so without this a
+     * transmission thread is free to keep using the previous listener indefinitely, or to see a new one
+     * before its own constructor finished.
      */
     @Getter
-    private LogDeliveryListener listener;
+    private volatile LogDeliveryListener listener;
 
     private final Batcher<Map<String, Object>> batcher;
 
