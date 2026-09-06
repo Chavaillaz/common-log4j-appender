@@ -4,6 +4,7 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -898,6 +899,23 @@ class BatcherTest {
                 .transport(transport)
                 .listener(listener)
                 .build();
+    }
+
+    @Test
+    @DisplayName("Clamps a close timeout too large to express in milliseconds instead of waiting forever")
+    void testOversizedCloseTimeoutIsClampedRatherThanUnbounded() {
+        // given: a year, the cap past which every timeout is indistinguishable from waiting indefinitely
+        long oneYearMillis = Duration.ofDays(365).toMillis();
+
+        // then: only an absent timeout means "wait indefinitely"
+        assertNull(Batcher.toMillis(null));
+        assertEquals(0L, Batcher.toMillis(Duration.ofSeconds(-1)));
+        assertEquals(1_000L, Batcher.toMillis(Duration.ofSeconds(1)));
+        assertEquals(oneYearMillis, Batcher.toMillis(Duration.ofDays(1_000)));
+
+        // and: a duration too large for Duration#toMillis() to express at all is past that cap too, rather
+        // than the one value that leaves close() with no deadline in effect and therefore never times out
+        assertEquals(oneYearMillis, Batcher.toMillis(Duration.ofSeconds(Long.MAX_VALUE)));
     }
 
     private static boolean isModifiable(List<String> elements) {

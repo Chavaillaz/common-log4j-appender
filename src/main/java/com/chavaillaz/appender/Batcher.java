@@ -1357,21 +1357,30 @@ public class Batcher<T> {
     }
 
     /**
-     * Converts the given timeout to milliseconds, clamped to {@link #MAX_TIMEOUT_MILLIS} and treating one
-     * too large to be expressed that way at all as no timeout rather than letting {@link Duration#toMillis()}
-     * throw out of a shutdown path.
+     * Converts the given timeout to milliseconds, clamped to {@link #MAX_TIMEOUT_MILLIS} rather than letting
+     * {@link Duration#toMillis()} throw out of a shutdown path.
+     *
+     * <p>
+     * Package-private rather than private so a test can pin the clamping directly: the difference between
+     * the two outcomes it decides between is a year of waiting versus an unbounded one, which no test can
+     * tell apart by observing a call.
      *
      * @param timeout The timeout to convert, or {@code null}
      * @return The timeout in milliseconds (never negative), or {@code null} to wait indefinitely
      */
-    private static @Nullable Long toMillis(@Nullable Duration timeout) {
+    static @Nullable Long toMillis(@Nullable Duration timeout) {
         if (timeout == null) {
             return null;
         }
         try {
             return Math.clamp(timeout.toMillis(), 0, MAX_TIMEOUT_MILLIS);
         } catch (ArithmeticException e) {
-            return null;
+            // Too large to even be expressed in milliseconds, so necessarily past the clamp above. Returning
+            // null here instead would read as "wait indefinitely", turning the largest timeout a caller can
+            // ask for into the one value that never times out: close() would leave no deadline in effect,
+            // so a transport whose future never completes would block it, and any JVM shutdown behind it,
+            // for good -- the very outcome asking for a timeout at all is meant to rule out.
+            return MAX_TIMEOUT_MILLIS;
         }
     }
 
