@@ -242,6 +242,32 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Cuts before a surrogate pair rather than splitting one at the limit")
+        void testConversionDoesNotSplitASurrogatePair() {
+            // given: a message whose limit falls between the two halves of an emoji, which is a matter of
+            // where the message happens to reach the limit rather than of anything exotic
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter() {
+                @Override
+                protected int getMaxMessageLength() {
+                    return 3;
+                }
+            };
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("ab😀cd"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: the emoji is dropped whole instead of leaving its high half behind, which is not a
+            // character at all and encodes to a replacement one in whatever request carries the document
+            assertEquals("ab... (truncated, 4 more characters)", document.get("logmessage"));
+        }
+
+        @Test
         @DisplayName("Does not truncate a message within the configured maximum length")
         void testConversionDoesNotTruncateShortMessage() {
             // given

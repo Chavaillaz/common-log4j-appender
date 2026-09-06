@@ -160,6 +160,13 @@ public class DefaultLogConverter implements LogConverter {
     /**
      * Truncates the given value to at most {@code maxLength} characters, appending how much was cut off so a
      * truncated value is never mistaken for a complete one.
+     * <p>
+     * Cuts one character earlier when the limit falls between the two halves of a surrogate pair, rather
+     * than splitting it: the trailing half left behind is not a character at all, and encoding it (to the
+     * UTF-8 of whatever request carries this document) turns it into a replacement character, so the very
+     * last thing a truncated message says would be mojibake — and any consumer validating its input, rather
+     * than substituting, rejects the document outright. Emoji and most non-BMP scripts are pairs, so this
+     * is a matter of where a message happens to reach the limit, not of anything exotic.
      *
      * @param value     The value to truncate, or {@code null}
      * @param maxLength The maximum length allowed, a non-positive value disabling truncation
@@ -169,8 +176,11 @@ public class DefaultLogConverter implements LogConverter {
         if (value == null || maxLength <= 0 || value.length() <= maxLength) {
             return value;
         }
-        int truncatedChars = value.length() - maxLength;
-        return value.substring(0, maxLength) + "... (truncated, " + truncatedChars + " more characters)";
+        int keep = Character.isHighSurrogate(value.charAt(maxLength - 1)) && Character.isLowSurrogate(value.charAt(maxLength))
+                ? maxLength - 1
+                : maxLength;
+        int truncatedChars = value.length() - keep;
+        return value.substring(0, keep) + "... (truncated, " + truncatedChars + " more characters)";
     }
 
     /**
