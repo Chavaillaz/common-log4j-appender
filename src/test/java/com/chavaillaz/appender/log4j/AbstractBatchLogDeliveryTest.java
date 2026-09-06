@@ -24,12 +24,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import lombok.extern.slf4j.Slf4j;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.Appender;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.status.StatusData;
+import org.apache.logging.log4j.status.StatusListener;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -268,31 +266,41 @@ class AbstractBatchLogDeliveryTest {
         }
 
         /**
-         * Runs the given action while a temporary appender is attached to the root logger, capturing every
-         * formatted message logged (at any level) during that time, then detaches it. Used to assert that a
+         * Runs the given action while a listener is attached to Log4j2's status channel, capturing every
+         * message this delivery reports there during that time, then detaches it. Used to assert that a
          * degraded-but-tolerated configuration value actually gets warned about, not just that construction
          * does not throw.
+         * <p>
+         * The status channel, not an appender on the application's own loggers: this delivery deliberately
+         * does not report through those, since it runs inside an appender normally attached to the root
+         * logger and would otherwise feed its own diagnostics back into the pipeline they are about.
          *
          * @param action The action to run while capturing
-         * @return The formatted message of every log event captured while running {@code action}
+         * @return Every message captured while running {@code action}
          */
         private List<String> captureWarnings(Runnable action) {
-            var context = (LoggerContext) LogManager.getContext(false);
-            var loggerConfig = context.getConfiguration().getLoggerConfig(AbstractBatchLogDelivery.class.getName());
             List<String> messages = new CopyOnWriteArrayList<>();
-            Appender capturing = new AbstractAppender("capturing-configuration-validation", null, null, true, Property.EMPTY_ARRAY) {
+            StatusListener capturing = new StatusListener() {
                 @Override
-                public void append(LogEvent event) {
-                    messages.add(event.getMessage().getFormattedMessage());
+                public void log(StatusData data) {
+                    messages.add(data.getMessage().getFormattedMessage());
+                }
+
+                @Override
+                public Level getStatusLevel() {
+                    return Level.WARN;
+                }
+
+                @Override
+                public void close() {
+                    // Nothing to release
                 }
             };
-            capturing.start();
-            loggerConfig.addAppender(capturing, null, null);
+            StatusLogger.getLogger().registerListener(capturing);
             try {
                 action.run();
             } finally {
-                loggerConfig.removeAppender(capturing.getName());
-                capturing.stop();
+                StatusLogger.getLogger().removeListener(capturing);
             }
             return messages;
         }

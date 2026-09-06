@@ -16,7 +16,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
-import lombok.extern.log4j.Log4j2;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.status.StatusLogger;
 
 /**
  * A ready-made {@link LogDeliveryListener} appending every irrecoverably dropped document to a local file,
@@ -49,8 +50,16 @@ import lombok.extern.log4j.Log4j2;
  * {@link Iterable} that throws while iterated — costs only its own line, replaced by one naming the
  * failure, rather than the whole batch it was handed over with.
  */
-@Log4j2
 public class FileDeadLetterListener implements LogDeliveryListener {
+
+    /**
+     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger: this
+     * class runs inside an appender normally attached to the root logger, so an ordinary logger here would
+     * write its diagnostics straight back into the pipeline they are about, which loops (see {@link
+     * com.chavaillaz.appender.Batcher}, whose own logger carries the measurement). Make it visible with
+     * {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration, or a {@code <StatusListener>}.
+     */
+    private static final Logger log = StatusLogger.getLogger();
 
     /**
      * The grammar JSON allows for a number (RFC 8259), used by {@link #writeJsonNumber(StringBuilder, Number)}

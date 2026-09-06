@@ -9,7 +9,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import lombok.Getter;
-import lombok.extern.log4j.Log4j2;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
 import com.chavaillaz.appender.BackoffPolicy;
@@ -58,8 +59,16 @@ import com.chavaillaz.appender.TransmissionResult;
  *
  * @param <C> The configuration type
  */
-@Log4j2
 public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> implements LogDelivery {
+
+    /**
+     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger: this
+     * class runs inside an appender normally attached to the root logger, so an ordinary logger here would
+     * write its diagnostics straight back into the pipeline they are about, which loops (see {@link
+     * com.chavaillaz.appender.Batcher}, whose own logger carries the measurement). Make it visible with
+     * {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration, or a {@code <StatusListener>}.
+     */
+    private static final Logger log = StatusLogger.getLogger();
 
     @Getter
     private final C configuration;

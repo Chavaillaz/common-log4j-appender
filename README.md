@@ -340,8 +340,15 @@ own configuration class, whether or not the appender surfaces them.
   the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected
   documents. Any exception thrown while converting or sending a log is reported through Log4j2's
-  `StatusLogger` (visible with `-Dlog4j2.debug` or a `<StatusListener>`) instead of being silently
-  swallowed, in addition to your `LogDeliveryListener` if configured.
+  `StatusLogger` (visible with `-Dlog4j2.debug`, a `status` attribute on the root `<Configuration>`
+  element, or a `<StatusListener>`) instead of being silently swallowed, in addition to your
+  `LogDeliveryListener` if configured.
+- **Its own diagnostics:** everything this library reports about itself goes to that status channel and
+  never through an ordinary logger. That is deliberate rather than incidental: an appender is normally
+  attached to the root logger, so a warning logged the ordinary way comes straight back as one more
+  document to ship, whose own failure warns again — a loop that starts precisely when the downstream
+  system goes down, and does not settle. So don't route the library's own loggers anywhere: there is
+  nothing to route.
 
 ## Example implementations
 

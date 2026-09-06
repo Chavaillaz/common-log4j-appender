@@ -21,7 +21,8 @@ import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.ToLongFunction;
 
-import lombok.extern.log4j.Log4j2;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -76,8 +77,24 @@ import org.jspecify.annotations.Nullable;
  *
  * @param <T> The type of element accumulated and transmitted
  */
-@Log4j2
 public class Batcher<T> {
+
+    /**
+     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger, and
+     * deliberately so: an appender built on this engine is normally attached to the root logger, so an
+     * ordinary logger here writes its diagnostics straight back into the very pipeline they are about. One
+     * warning becomes one more element to transmit, whose own failure warns again -- a loop that does not
+     * settle, and that starts exactly when a downstream system goes down. Measured before this was fixed:
+     * one application log line against a failing transport produced sixty thousand self-inflicted documents
+     * in three seconds.
+     * <p>
+     * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender} already reports through this same
+     * channel (via its {@code ErrorHandler}), which is where Log4j2 expects an appender's internals to
+     * speak; make it visible with {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration,
+     * or a {@code <StatusListener>}.
+     */
+    private static final Logger log = StatusLogger.getLogger();
+
 
     /**
      * Maximum initial capacity reserved for a new batch, to avoid over-allocating for a large threshold.

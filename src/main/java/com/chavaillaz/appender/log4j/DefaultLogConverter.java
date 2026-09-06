@@ -8,10 +8,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-import lombok.extern.log4j.Log4j2;
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.message.Message;
+import org.apache.logging.log4j.status.StatusLogger;
 
 import com.chavaillaz.appender.LogConfiguration;
 
@@ -34,8 +35,16 @@ import com.chavaillaz.appender.LogConfiguration;
  *     <li><strong>stacktrace:</strong> Stack trace, truncated to {@link #getMaxStackTraceLength()} characters</li>
  * </ul>
  */
-@Log4j2
 public class DefaultLogConverter implements LogConverter {
+
+    /**
+     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger: this
+     * class runs inside an appender normally attached to the root logger, so an ordinary logger here would
+     * write its diagnostics straight back into the pipeline they are about, which loops (see {@link
+     * com.chavaillaz.appender.Batcher}, whose own logger carries the measurement). Make it visible with
+     * {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration, or a {@code <StatusListener>}.
+     */
+    private static final Logger log = StatusLogger.getLogger();
 
     /**
      * Number of fields written by {@link #writeBasic(Map, LogEvent)}.

@@ -16,6 +16,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.status.StatusData;
+import org.apache.logging.log4j.status.StatusListener;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -1053,6 +1057,53 @@ class BatcherTest {
         // and: a duration too large for Duration#toMillis() to express at all is past that cap too, rather
         // than the one value that leaves close() with no deadline in effect and therefore never times out
         assertEquals(oneYearMillis, Batcher.toMillis(Duration.ofSeconds(Long.MAX_VALUE)));
+    }
+
+    @Test
+    @DisplayName("Reports its own diagnostics on Log4j2's status channel, not through an application logger")
+    void testDiagnosticsGoToTheStatusLoggerNotTheApplicationPipeline() throws Exception {
+        // given: an appender built on this engine is normally attached to the root logger, so anything this
+        // class logs through an ordinary LogManager logger comes straight back to it as one more element to
+        // transmit -- whose own failure logs again. That loop does not settle, and it starts exactly when a
+        // downstream system goes down: one application log line against a failing transport produced sixty
+        // thousand self-inflicted documents in three seconds before this was fixed. Log4j2's status channel
+        // is where an appender's internals are expected to speak, and it feeds nothing back.
+        var statusMessages = new CopyOnWriteArrayList<String>();
+        var statusListener = new StatusListener() {
+            @Override
+            public void log(StatusData data) {
+                statusMessages.add(data.getFormattedStatus());
+            }
+
+            @Override
+            public Level getStatusLevel() {
+                return Level.WARN;
+            }
+
+            @Override
+            public void close() {
+                // Nothing to release
+            }
+        };
+        StatusLogger.getLogger().registerListener(statusListener);
+
+        // when: a pending cap of 1 makes the second element discard the first, which is logged
+        try {
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 10L)
+                    .maxPendingElements(() -> 1)
+                    .transport(elements -> completedFuture(TransmissionResult.success()))
+                    .build();
+            batcher.add(List.of("a"));
+            batcher.add(List.of("b"));
+            batcher.close();
+        } finally {
+            StatusLogger.getLogger().removeListener(statusListener);
+        }
+
+        // then
+        assertTrue(statusMessages.stream().anyMatch(message -> message.contains("maximum pending element")),
+                "Expected the discard on the status channel, got: " + statusMessages);
     }
 
     private static boolean isModifiable(List<String> elements) {
