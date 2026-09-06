@@ -62,9 +62,11 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     /**
      * Maximum nesting depth written before a value is replaced by {@link #TRUNCATED_MARKER}, guarding
      * against a structure that contains itself (which would otherwise recurse until the stack runs out).
-     * Far deeper than any log document has reason to be, and the same bound
-     * {@link DocumentSizeEstimator#estimate(Map)} stops measuring at, so what is estimated and what is
-     * written stay in step.
+     * Far deeper than any log document has reason to be, and the same number
+     * {@link DocumentSizeEstimator#estimate(Map)} stops measuring at — though not quite the same bound in
+     * practice, since the document is wrapped here before being written and so starts one level deeper than
+     * the estimator counts it. Only a document nested to within one level of the limit could notice, and
+     * both numbers are approximations of a structure no log document has any business having.
      */
     private static final int MAX_DEPTH = 16;
 

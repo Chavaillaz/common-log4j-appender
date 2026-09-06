@@ -534,13 +534,19 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Number of logging events currently queued awaiting conversion and batching by the background thread,
-     * out of the {@link DeliveryOptions#maxQueuedEvents()} it can hold. The graduated counterpart of
+     * How full the queue feeding the background thread currently is, out of the
+     * {@link DeliveryOptions#maxQueuedEvents()} it can hold. The graduated counterpart of
      * {@link #isBackpressured()}: exported as a gauge, it shows a queue trending towards full long before it
      * gets there, which is when raising {@code MaxQueuedEvents}, lowering {@code FlushInterval} or looking at
      * the downstream system is still cheap.
+     * <p>
+     * Almost every entry is a logging event awaiting conversion and batching, but not quite all of them: a
+     * flush trigger takes a slot of its own for as long as it is queued, one per {@code FlushInterval} and
+     * one more per event severe enough to reach {@link DeliveryOptions#flushLevel()}. What this measures is
+     * therefore the pressure on the queue — which is what the number is for — rather than an exact count of
+     * events waiting in it.
      *
-     * @return The number of events currently queued
+     * @return The number of entries currently queued
      */
     public int getQueuedEventCount() {
         return workerExecutor.getQueue().size();

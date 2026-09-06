@@ -183,7 +183,7 @@ public record DeliveryOptions(
     }
 
     /**
-     * Builder for {@link DeliveryOptions}, preferred over the canonical constructor: it takes eleven
+     * Builder for {@link DeliveryOptions}, preferred over the canonical constructor: it takes thirteen
      * components, most of them same-typed counts and durations, which such a constructor makes trivially
      * easy to swap by mistake with no compiler error to show for it.
      */
