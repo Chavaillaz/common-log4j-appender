@@ -444,6 +444,31 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Keeps the rest of the document when a field's own code fails with an Error rather than an exception")
+        void testConversionToleratesAnErrorFromAFieldsOwnCode() {
+            // given: a message whose formatting overflows the stack, which is what building one out of a
+            // structure that refers back to itself does -- and an Error, so none of the guards meant to
+            // confine such a failure to its one field used to see it
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter();
+            converter.configure(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new ErrorThrowingMessage())
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
+
+            // when
+            var document = assertDoesNotThrow(() -> converter.convert(event));
+
+            // then: only the message it could not build was replaced, instead of the whole document being
+            // lost along with every other field already written into it
+            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+            assertEquals("INFO", document.get("level"));
+            assertTrue(document.get("logmessage").toString().contains("unable to format message"));
+        }
+
+        @Test
         @DisplayName("Names an anonymous exception class by its binary name, which it has, rather than not at all")
         void testConversionNamesAnAnonymousThrowable() {
             // given: an exception declared on the spot, the shape `throw new RuntimeException(...) {}` and
@@ -500,6 +525,29 @@ class DefaultLogConverterTest {
         @Override
         public String getFormattedMessage() {
             throw new RuntimeException("Simulated formatting failure");
+        }
+
+        @Override
+        public Object[] getParameters() {
+            return new Object[0];
+        }
+
+        @Override
+        public Throwable getThrowable() {
+            return null;
+        }
+
+    }
+
+    /**
+     * The {@link ThrowingMessage} counterpart failing with an {@link Error} instead of an exception, as
+     * formatting a message out of a structure that refers back to itself does.
+     */
+    private static class ErrorThrowingMessage implements Message {
+
+        @Override
+        public String getFormattedMessage() {
+            throw new StackOverflowError("Simulated recursive formatting");
         }
 
         @Override

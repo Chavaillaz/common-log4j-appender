@@ -151,7 +151,11 @@ public class DefaultLogConverter implements LogConverter {
         }
         try {
             return truncate(message.getFormattedMessage(), getMaxMessageLength());
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: formatting is the custom Message implementation's own code, and a
+            // message built by walking a structure that refers back to itself throws a StackOverflowError.
+            // Letting one escape would lose the whole document over a single field, which is precisely what
+            // this placeholder exists to avoid.
             log.warn("Unable to format the message of a logging event, using a placeholder instead", e);
             return "<unable to format message: " + e + ">";
         }
@@ -196,7 +200,9 @@ public class DefaultLogConverter implements LogConverter {
         }
         try {
             event.getContextData().forEach(document::putIfAbsent);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception, for the same reason as the guards around it: iterating a custom
+            // context data implementation runs code this class does not own.
             log.warn("Unable to read the MDC context data of a logging event, it will be omitted", e);
         }
     }
@@ -215,7 +221,11 @@ public class DefaultLogConverter implements LogConverter {
             document.put("class", className(throwable.getClass()));
             try {
                 document.put("stacktrace", getStackTrace(throwable));
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                // Throwable, not Exception: printStackTrace() walks the cause chain by recursion, so a deep
+                // enough one (a retry wrapper nesting a cause per attempt, say) overflows the stack rather
+                // than throwing -- and this guard exists so that costs the stacktrace field, not the
+                // document that would have carried it.
                 log.warn("Unable to compute the stack trace of a logging event, the field will be omitted", e);
             }
         }
