@@ -19,12 +19,16 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
@@ -84,6 +88,17 @@ class AbstractLogDeliveryAppenderTest {
                 .filter(Thread::isAlive)
                 .filter(thread -> "log-delivery-flush-scheduler".equals(thread.getName()))
                 .count();
+    }
+
+    /**
+     * The live threads with the given name right now, across every appender in this JVM, as a mutable set so
+     * a caller can subtract the ones that were already there before it acted.
+     */
+    private static Set<Thread> liveThreadsNamed(String name) {
+        return Thread.getAllStackTraces().keySet().stream()
+                .filter(Thread::isAlive)
+                .filter(thread -> name.equals(thread.getName()))
+                .collect(Collectors.toCollection(HashSet::new));
     }
 
     private ErrorHandler recordingErrorHandler(List<Throwable> errors) {
@@ -712,6 +727,42 @@ class AbstractLogDeliveryAppenderTest {
             // otherwise logs accepted right before shutdown could be silently dropped
             assertEquals(5, events.stream().filter("send"::equals).count());
             assertEquals("close", events.get(events.size() - 1));
+        }
+
+        @Test
+        @DisplayName("Never keeps the JVM alive on its own once the application is done")
+        void testBackgroundThreadsDoNotKeepTheJvmAlive() throws Exception {
+            // given: batching enabled, so start() also creates the periodic flush scheduler, and a worker
+            // task reporting which kind of thread it runs on
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var workerIsDaemon = new CompletableFuture<Boolean>();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration) {
+                @Override
+                public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                    return () -> workerIsDaemon.complete(Thread.currentThread().isDaemon());
+                }
+            };
+            var schedulersBefore = liveThreadsNamed("log-delivery-flush-scheduler");
+
+            // when: started and logged to from a non-daemon thread, as an application's main thread does
+            Thread.ofPlatform().daemon(false).start(() -> {
+                appender.start();
+                appender.append(mockLogEvent());
+            }).join();
+
+            // then: neither thread holds the JVM open. Neither ends before stop(), which only the Log4j2
+            // shutdown hook calls, and that hook waits for the JVM to start shutting down -- which a live
+            // non-daemon thread prevents, so an application returning from main() never exited at all
+            assertTrue(workerIsDaemon.get(5, SECONDS), "The worker thread should be a daemon");
+            var schedulersCreated = liveThreadsNamed("log-delivery-flush-scheduler");
+            schedulersCreated.removeAll(schedulersBefore);
+            assertFalse(schedulersCreated.isEmpty(), "Starting should have created a flush scheduler");
+            assertTrue(schedulersCreated.stream().allMatch(Thread::isDaemon), "The flush scheduler thread should be a daemon");
+
+            // cleanup
+            appender.stop(1, SECONDS);
         }
 
         @Test
