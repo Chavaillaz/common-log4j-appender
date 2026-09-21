@@ -105,6 +105,44 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Saves a batch holding half of a surrogate pair instead of failing the whole write")
+    void testLoneSurrogateDoesNotFailTheBatch(@TempDir Path tempDir) throws Exception {
+        // given: a message cut in the middle of an emoji, as any substring() of user content can produce,
+        // dropped in the middle of a batch
+        var file = tempDir.resolve("dead-letters.ndjson");
+        var failures = new CopyOnWriteArrayList<IOException>();
+        var listener = new FileDeadLetterListener(file) {
+            @Override
+            protected void onWriteFailure(List<Map<String, Object>> documents, String reason, IOException cause) {
+                failures.add(cause);
+            }
+        };
+        String emoji = "\uD83D\uDE00";
+        Map<String, Object> cut = new LinkedHashMap<>();
+        cut.put("logmessage", ("cut " + emoji).substring(0, 5));
+        cut.put("tail", emoji.substring(1) + " orphan");
+        cut.put("intact", emoji);
+
+        // when: followed by another batch, as the next drop appends to the same file
+        listener.onDocumentsDropped(List.of(Map.of("logmessage", "first"), cut, Map.of("logmessage", "last")), "reason");
+        listener.onDocumentsDropped(List.of(Map.of("logmessage", "next")), "next");
+
+        // then: every document was saved, rather than the whole batch failing over one character UTF-8
+        // cannot encode
+        assertTrue(failures.isEmpty(), "No write should have failed: " + failures);
+        List<String> lines = Files.readAllLines(file, UTF_8);
+        assertEquals(4, lines.size(), "Unexpected lines: " + lines);
+
+        // and: each half is kept as the JSON escape for it, while a pair that is whole is written as is
+        assertTrue(lines.get(1).contains("\"logmessage\":\"cut \\ud83d\""), "Unexpected line: " + lines.get(1));
+        assertTrue(lines.get(1).contains("\"tail\":\"\\ude00 orphan\""), "Unexpected line: " + lines.get(1));
+        assertTrue(lines.get(1).contains("\"intact\":\"" + emoji + "\""), "Unexpected line: " + lines.get(1));
+
+        // and: the next batch starts a line of its own, instead of running into an unterminated one
+        assertTrue(lines.get(3).startsWith("{\"reason\":\"next\""), "Unexpected line: " + lines.get(3));
+    }
+
+    @Test
     @DisplayName("Serializes nested maps, lists, numbers, booleans and null correctly")
     void testSerializesNestedStructures(@TempDir Path tempDir) throws Exception {
         // given

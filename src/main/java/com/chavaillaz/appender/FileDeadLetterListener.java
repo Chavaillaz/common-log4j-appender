@@ -283,6 +283,14 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      * Writes the given string as a JSON string literal, escaping the characters JSON requires (quote,
      * backslash, and control characters) so an arbitrary log message can never produce invalid JSON or break
      * out of the string it is written into.
+     * <p>
+     * Half of a surrogate pair found without its other half is escaped too, with the same Unicode escape as
+     * a control character, which JSON's grammar allows for any code unit. It is not a character, so UTF-8
+     * has no encoding for it, and {@link Files#write} reports one rather than replacing it: a message cut in
+     * the middle of an emoji failed the write of the whole batch it was dropped with, after part of that
+     * batch had already reached the file -- leaving an unterminated line for the next append to run into,
+     * corrupting a second document as well. Escaped, it is kept exactly as it was, and only ASCII reaches
+     * the encoder in its place.
      *
      * @param builder The builder to append to
      * @param value   The string to write
@@ -298,7 +306,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
                 case '\r' -> builder.append("\\r");
                 case '\t' -> builder.append("\\t");
                 default -> {
-                    if (c < 0x20) {
+                    if (c < 0x20 || isLoneSurrogate(value, i)) {
                         builder.append(String.format("\\u%04x", (int) c));
                     } else {
                         builder.append(c);
@@ -307,6 +315,24 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             }
         }
         builder.append('"');
+    }
+
+    /**
+     * Whether the character at the given index is half of a surrogate pair whose other half is missing.
+     *
+     * @param value The string to inspect
+     * @param index The index of the character to check
+     * @return {@code true} if it is a surrogate not paired with a neighbor
+     */
+    private static boolean isLoneSurrogate(String value, int index) {
+        char c = value.charAt(index);
+        if (Character.isHighSurrogate(c)) {
+            return index + 1 == value.length() || !Character.isLowSurrogate(value.charAt(index + 1));
+        }
+        if (Character.isLowSurrogate(c)) {
+            return index == 0 || !Character.isHighSurrogate(value.charAt(index - 1));
+        }
+        return false;
     }
 
 }
