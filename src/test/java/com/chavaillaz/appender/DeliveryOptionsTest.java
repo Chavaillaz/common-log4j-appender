@@ -3,6 +3,7 @@ package com.chavaillaz.appender;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.time.Duration;
 
@@ -62,6 +63,10 @@ class DeliveryOptionsTest {
 
         // then
         assertEquals(DeliveryOptions.defaults(), configuration.getDeliveryOptions());
+
+        // and: the same instance on every read, since it is read several times per document and the
+        // interface asks implementations not to build a new one each time -- its own default included
+        assertSame(configuration.getDeliveryOptions(), configuration.getDeliveryOptions());
     }
 
     @Test

@@ -144,13 +144,22 @@ public record DeliveryOptions(
         @Nullable Duration closeTimeout) {
 
     /**
+     * The one instance {@link #defaults()} hands out, built once rather than per call: a record of immutable
+     * values can be shared freely, and {@link LogConfiguration#getDeliveryOptions()} answers with it by
+     * default on the path every document takes -- nine times per document, measured through an appender
+     * relying on that default, which is exactly the "building a new one on every call" that method's own
+     * documentation warns implementations against.
+     */
+    private static final DeliveryOptions DEFAULTS = builder().build();
+
+    /**
      * The options every setting left at its default produces, suitable as-is for an appender that has no
-     * reason to tune anything.
+     * reason to tune anything. Always the same instance.
      *
      * @return The default options
      */
     public static DeliveryOptions defaults() {
-        return builder().build();
+        return DEFAULTS;
     }
 
     /**
