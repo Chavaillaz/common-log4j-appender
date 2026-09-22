@@ -419,8 +419,9 @@ class BatcherTest {
         batcher.add(List.of("d"));
         awaitDropped(dropped, 2);
 
-        // then: the two oldest were discarded, leaving the batch back under the cap
-        assertEquals(List.of("a", "b"), dropped);
+        // then: the two oldest were discarded, leaving the batch back under the cap. Sorted, since each add()
+        // above discarded one of them and notified it on a thread of its own, so they land in either order
+        assertEquals(List.of("a", "b"), dropped.stream().sorted().toList());
         assertEquals(List.of("maximum pending bytes exceeded"), reasons.stream().distinct().toList());
 
         // and: handed over as the unmodifiable list this callback promises, like every other discard path,
