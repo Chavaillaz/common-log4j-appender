@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.Logger;
@@ -88,6 +89,20 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     private final Path file;
 
     /**
+     * Serializes appends to {@link #file}, so concurrent callers never interleave mid-line.
+     * <p>
+     * A lock rather than {@code synchronized} because of which threads call in: a delivery reports its drops
+     * from its own virtual threads, and a full queue reports an evicted event from whichever application
+     * thread is logging, a virtual one in an application running on them. On Java 21, a virtual thread
+     * blocked entering a monitor keeps its carrier, and the scheduler adds none to make up for it: with as
+     * many writers waiting as there are carriers, no other virtual thread in the application could run until
+     * the write ahead of them finished. A virtual thread waiting for this lock unmounts instead.
+     * <p>
+     * Package-private rather than private so a test can hold it the way a slow write does.
+     */
+    final ReentrantLock writeLock = new ReentrantLock();
+
+    /**
      * Creates a new dead-letter listener, creating the parent directory of the given file immediately (not
      * lazily on the first drop) so a misconfiguration is visible right away instead of only surfacing once
      * something actually needs to be saved.
@@ -128,8 +143,11 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             lines.add(toLine(document, reason, droppedAt));
         }
         try {
-            synchronized (this) {
+            writeLock.lock();
+            try {
                 Files.write(file, lines, UTF_8, CREATE, APPEND);
+            } finally {
+                writeLock.unlock();
             }
         } catch (IOException e) {
             onWriteFailure(documents, reason, e);

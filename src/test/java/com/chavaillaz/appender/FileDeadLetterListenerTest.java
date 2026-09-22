@@ -1,19 +1,23 @@
 package com.chavaillaz.appender;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.lang.Thread.State;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -425,6 +429,55 @@ class FileDeadLetterListenerTest {
 
         // then: no file, since one sitting next to an application reads as "logs were lost here"
         assertFalse(Files.exists(file));
+    }
+
+    @Test
+    @DisplayName("Leaves other virtual threads a carrier while writers wait for their turn at the file")
+    void testWritersWaitingForTheFileDoNotHoldCarriers(@TempDir Path tempDir) throws Exception {
+        // given: a write in progress, held here the way a slow disk would hold it, and as many virtual
+        // threads waiting behind it as the scheduler has carriers. A full queue reports each evicted event
+        // from the application thread logging it, so an application on virtual threads gets there quickly
+        var file = tempDir.resolve("dead-letters.ndjson");
+        var listener = new FileDeadLetterListener(file);
+        int carriers = Integer.getInteger("jdk.virtualThreadScheduler.parallelism", Runtime.getRuntime().availableProcessors());
+        var writers = new ArrayList<Thread>();
+        boolean othersRan;
+        listener.writeLock.lock();
+        try {
+            for (int i = 0; i < carriers; i++) {
+                var document = Map.<String, Object>of("id", i);
+                writers.add(Thread.ofVirtual().start(() -> listener.onDocumentsDropped(List.of(document), "reason")));
+            }
+            awaitAllWaiting(writers);
+
+            // when
+            var unrelated = new CountDownLatch(1);
+            Thread.ofVirtual().start(unrelated::countDown);
+            othersRan = unrelated.await(5, SECONDS);
+        } finally {
+            listener.writeLock.unlock();
+        }
+        for (Thread writer : writers) {
+            writer.join();
+        }
+
+        // then: the rest of the application kept running meanwhile, and every writer still got its line in
+        assertTrue(othersRan, "An unrelated virtual thread should have run while the writers were waiting");
+        assertEquals(carriers, Files.readAllLines(file, UTF_8).size());
+    }
+
+    /**
+     * Waits until every one of the given threads is blocked, which for a writer means waiting its turn at
+     * the file.
+     */
+    private static void awaitAllWaiting(List<Thread> threads) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        while (threads.stream().anyMatch(thread -> thread.getState() != State.WAITING && thread.getState() != State.BLOCKED)) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new AssertionError("Timed out waiting for every writer to wait for the file");
+            }
+            Thread.sleep(5);
+        }
     }
 
 }
