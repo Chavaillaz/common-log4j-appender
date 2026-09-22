@@ -24,6 +24,9 @@ import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.util.Constants;
+import org.apache.logging.log4j.message.AsynchronouslyFormattable;
+import org.apache.logging.log4j.message.Message;
 import org.jspecify.annotations.Nullable;
 
 import com.chavaillaz.appender.BoundedTrim;
@@ -437,6 +440,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         // Snapshots the event on the calling thread: log4j2 may reuse (mutate) it once this method returns.
         LogEvent immutableEvent = loggingEvent.toImmutable();
+        freezeMessage(immutableEvent);
         // Whether the event reached the queue, and so is going to be delivered whatever happens next here.
         // onDocumentsDropped means "irrecoverably lost, your last chance to save it", so reporting one past
         // that point has a dead-letter sink file a second copy of an event on its way out.
@@ -465,6 +469,33 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             if (!handedOff) {
                 reportDropped(immutableEvent, "log delivery task creation error");
             }
+        }
+    }
+
+    /**
+     * Formats the event's message on the calling thread, where its arguments still hold the values they were
+     * logged with, so the worker only ever reads back the text cached by then.
+     * <p>
+     * {@link LogEvent#toImmutable()} only does this for a reusable message. Any other keeps references to
+     * its arguments and formats them whenever first asked -- on the worker thread, racing whatever the
+     * application does with them next: a list logged and then added to shows up with its later content, or
+     * as a {@code ConcurrentModificationException} in place of the message. That is every message once
+     * Log4j2 turns its thread locals off, which it does by default whenever the Servlet API is on the
+     * classpath. Log4j2's own {@code AsyncAppender} freezes messages the same way, and honors the same two
+     * ways of opting out.
+     *
+     * @param event The snapshot of the logging event
+     */
+    private static void freezeMessage(LogEvent event) {
+        try {
+            Message message = event.getMessage();
+            if (message != null && !Constants.FORMAT_MESSAGES_IN_BACKGROUND
+                    && !message.getClass().isAnnotationPresent(AsynchronouslyFormattable.class)) {
+                message.getFormattedMessage();
+            }
+        } catch (Throwable e) {
+            // Left for the conversion to run into again, where it costs the message field alone (see
+            // DefaultLogConverter): reaching append()'s own guard instead would discard the whole event.
         }
     }
 

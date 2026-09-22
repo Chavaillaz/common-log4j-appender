@@ -19,6 +19,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,8 @@ import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
+import org.apache.logging.log4j.message.Message;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.status.StatusData;
 import org.apache.logging.log4j.status.StatusListener;
@@ -466,6 +469,72 @@ class AbstractLogDeliveryAppenderTest {
             // cleanup
             releaseTask.countDown();
             appender.stop(2, SECONDS);
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Event snapshot")
+    class EventSnapshot {
+
+        @Test
+        @DisplayName("Formats a message with its arguments as they were when logged, not when processed")
+        void testMessageIsFormattedWithTheArgumentsItWasLoggedWith() throws Exception {
+            // given: a ParameterizedMessage, which is what every logger creates once Log4j2 turns its thread
+            // locals off (by default, whenever the Servlet API is on the classpath), and which toImmutable()
+            // leaves unformatted. A first event holds the worker, so the second one is still queued when the
+            // application goes on to change the list it logged
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new DeferredFormattingLogDeliveryAppender(
+                    "appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+            var items = new ArrayList<>(List.of("first"));
+            var loggingEvent = Log4jLogEvent.newBuilder()
+                    .setMessage(new ParameterizedMessage("Processing {}", items))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            appender.append(loggingEvent);
+            items.add("second");
+            releaseFirstTask.countDown();
+            appender.stop(2, SECONDS);
+
+            // then
+            assertEquals(List.of("A", "Processing [first]"), appender.getFormattedMessages());
+        }
+
+        @Test
+        @DisplayName("Still hands off an event whose message fails to format on the calling thread")
+        void testMessageFailingToFormatIsStillHandedOff() throws Exception {
+            // given
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            var message = mock(Message.class);
+            when(message.getFormattedMessage()).thenThrow(new IllegalStateException("cannot format"));
+            var loggingEvent = Log4jLogEvent.newBuilder()
+                    .setMessage(message)
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
+
+            // when
+            appender.start();
+            assertDoesNotThrow(() -> appender.append(loggingEvent));
+            appender.stop(2, SECONDS);
+
+            // then: left for the conversion to run into, where it only costs the message field
+            assertEquals(1, appender.getCountTaskExecuted().get());
+            assertEquals(List.of(), errors);
         }
 
     }
@@ -1267,6 +1336,44 @@ class AbstractLogDeliveryAppenderTest {
                     Thread.currentThread().interrupt();
                 }
                 processedMessages.add(message);
+            };
+        }
+
+    }
+
+    /**
+     * Reads each event's message only once its task runs on the worker thread, the way an implementation
+     * converting there does (the README's example appender, for one), unlike
+     * {@link RecordingBlockingLogDeliveryAppender}, which captures it on the calling thread. The very first
+     * task blocks until released, so every event appended meanwhile is still queued behind it.
+     */
+    @Getter
+    static class DeferredFormattingLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        LogDelivery logDeliveryHandler = mock(LogDelivery.class);
+        CountDownLatch releaseFirstTask;
+        List<String> formattedMessages = new CopyOnWriteArrayList<>();
+
+        protected DeferredFormattingLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+                                                        CountDownLatch releaseFirstTask) {
+            super(name, filter, layout, configuration);
+            this.releaseFirstTask = releaseFirstTask;
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        @Override
+        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+            return () -> {
+                try {
+                    releaseFirstTask.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                formattedMessages.add(loggingEvent.getMessage().getFormattedMessage());
             };
         }
 
