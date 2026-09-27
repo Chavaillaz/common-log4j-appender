@@ -41,26 +41,10 @@ class PluginIntegrationTest {
     void testAppenderIsDiscoveredConfiguredAndReceivesLoggedMessages() throws Exception {
         // given: a configuration built purely from appender/attribute names (as Log4j2 would parse them
         // out of an XML/properties/YAML file), never referencing PluginIntegrationTestAppender's class
-        // directly, so plugin discovery (via the "packages" below) is genuinely exercised. A dedicated
-        // LoggerContext is created and started explicitly (rather than going through Configurator.initialize(),
-        // which resolves/reuses whatever context the JVM-wide ContextSelector already has active — shared
-        // with every other test in this suite that logs through the default log4j2.xml on the test
-        // classpath) so this test is fully isolated from that shared state.
-        PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.clear();
-        ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
-        builder.setStatusLevel(Level.ERROR);
-        builder.setConfigurationName("PluginIntegrationTest");
-        builder.setPackages("com.chavaillaz.appender.log4j");
-        builder.add(builder.newAppender("Test", "TestDeliveryAppender")
-                .addAttribute("application", "integration-test-app")
-                .addAttribute("flushThreshold", "1"));
-        builder.add(builder.newRootLogger(Level.INFO)
-                .add(builder.newAppenderRef("Test")));
+        // directly, so plugin discovery (through the packages startContext() sets) is genuinely exercised
+        Logger logger = startContext(1, 0);
 
         // when
-        context = new LoggerContext("PluginIntegrationTest");
-        context.start(builder.build());
-        Logger logger = context.getLogger(PluginIntegrationTest.class.getName());
         logger.info("hello from the real Log4j2 pipeline");
 
         // then: the message reached the delivery through actual plugin discovery, builder attribute
@@ -71,6 +55,50 @@ class PluginIntegrationTest {
         assertEquals("hello from the real Log4j2 pipeline",
                 PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.get(0).get("logmessage"));
         assertEquals("integration-test-app", PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.get(0).get("application"));
+    }
+
+    @Test
+    @DisplayName("Delivers every message logged right before the context stops with no shutdownTimeout set")
+    void testStopWithoutShutdownTimeoutDeliversEveryLoggedMessage() {
+        // given: batching and a slow transport, so a burst logged right before stopping is still queued for
+        // the worker, which waits for a transmission slot
+        Logger logger = startContext(100, 20);
+        for (int i = 0; i < 2_000; i++) {
+            logger.info("message {}", i);
+        }
+
+        // when: stopped as the shutdown hook and every reconfiguration stop it without a shutdownTimeout,
+        // passing the appender 0, which Log4j2 documents as leaving the timeout to each appender
+        context.stop();
+
+        // then: the queue was processed and the batch flushed, rather than abandoned on the way out
+        assertEquals(2_000, PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.size());
+    }
+
+    /**
+     * Starts a dedicated {@link LoggerContext} (rather than going through {@code Configurator.initialize()},
+     * which reuses the context the JVM-wide {@code ContextSelector} already has active, shared with every
+     * other test logging through the default log4j2.xml) routing the root logger to the test appender.
+     *
+     * @param flushThreshold          The flush threshold attribute of the appender
+     * @param transmissionDelayMillis How long each transmission of the appender takes
+     * @return A logger of the started context
+     */
+    private Logger startContext(long flushThreshold, long transmissionDelayMillis) {
+        PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.clear();
+        ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
+        builder.setStatusLevel(Level.ERROR);
+        builder.setConfigurationName("PluginIntegrationTest");
+        builder.setPackages("com.chavaillaz.appender.log4j");
+        builder.add(builder.newAppender("Test", "TestDeliveryAppender")
+                .addAttribute("application", "integration-test-app")
+                .addAttribute("flushThreshold", String.valueOf(flushThreshold))
+                .addAttribute("transmissionDelayMillis", String.valueOf(transmissionDelayMillis)));
+        builder.add(builder.newRootLogger(Level.INFO)
+                .add(builder.newAppenderRef("Test")));
+        context = new LoggerContext("PluginIntegrationTest");
+        context.start(builder.build());
+        return context.getLogger(PluginIntegrationTest.class.getName());
     }
 
     private void awaitAtLeastOneDocument() throws InterruptedException {

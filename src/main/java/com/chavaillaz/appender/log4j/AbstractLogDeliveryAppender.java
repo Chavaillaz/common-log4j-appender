@@ -3,6 +3,7 @@ package com.chavaillaz.appender.log4j;
 import static java.lang.Thread.currentThread;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -196,6 +197,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final DefaultLogConverter fallbackConverter = new DefaultLogConverter();
 
     /**
+     * The close timeout this appender was built with, used by {@link #stop(long, TimeUnit)} when the current
+     * one cannot be read.
+     */
+    private final @Nullable Duration initialCloseTimeout;
+
+    /**
      * Creates a new logs delivery handler.
      *
      * @param name          The appender name
@@ -206,7 +213,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     protected AbstractLogDeliveryAppender(String name, Filter filter, Layout<?> layout, C configuration) {
         super(name, filter, layout, true, Property.EMPTY_ARRAY);
         this.logConfiguration = configuration;
-        this.workerExecutor = newWorkerExecutor(configuration.getDeliveryOptions().maxQueuedEvents());
+        DeliveryOptions options = configuration.getDeliveryOptions();
+        this.initialCloseTimeout = options.closeTimeout();
+        this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents());
         this.fallbackConverter.configure(configuration);
     }
 
@@ -610,8 +619,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * processed, then flushes and closes the delivery handler, so logs accepted just before shutdown are
      * not lost.
      *
-     * @param timeout  The maximum time to wait for pending events to be processed before giving up (a
-     *                 non-positive value returns immediately without waiting or reporting a timeout error)
+     * @param timeout  The maximum time to wait for pending events to be processed before giving up, or
+     *                 {@code 0} or less to wait up to {@link DeliveryOptions#closeTimeout()} instead: Log4j2
+     *                 passes {@code 0} when its {@code shutdownTimeout} is left unset, and on every
+     *                 reconfiguration, meaning each appender uses its own default
      * @param timeUnit The unit of {@code timeout}
      * @return Always {@code true}
      */
@@ -625,11 +636,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 flushScheduler.shutdownNow();
             }
             workerExecutor.shutdown();
-            boolean terminated = workerExecutor.awaitTermination(timeout, timeUnit);
+            long waitNanos = timeout > 0 ? timeUnit.toNanos(timeout) : defaultStopTimeoutNanos();
+            boolean terminated = workerExecutor.awaitTermination(waitNanos, NANOSECONDS);
             if (!terminated) {
-                if (timeout > 0) {
-                    error("Log delivery thread pool did not terminate within the given timeout, some logs may be lost");
-                }
+                error("Log delivery thread pool did not terminate within " + Duration.ofNanos(waitNanos)
+                        + ", some logs may be lost");
                 // Best-effort attempt to interrupt whatever task is stuck (typically blocked on I/O in
                 // sendBulk()) instead of closing the delivery handler out from under it unconditionally:
                 // this narrows the window during which it could still call into a handler being closed
@@ -655,6 +666,24 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             super.stop(timeout, timeUnit);
         }
         return true;
+    }
+
+    /**
+     * How long {@link #stop(long, TimeUnit)} waits for queued events when Log4j2 leaves it to the appender:
+     * {@link DeliveryOptions#closeTimeout()}, or the one this appender was built with if it cannot be read.
+     *
+     * @return The time to wait in nanoseconds, {@link Long#MAX_VALUE} to wait indefinitely
+     */
+    private long defaultStopTimeoutNanos() {
+        Duration closeTimeout;
+        try {
+            closeTimeout = logConfiguration.getDeliveryOptions().closeTimeout();
+        } catch (Throwable e) {
+            error("Unable to read the close timeout, falling back to the one configured at startup", e);
+            closeTimeout = initialCloseTimeout;
+        }
+        // Saturates rather than overflows, and a negative timeout waits no more than a zero one does
+        return closeTimeout == null ? Long.MAX_VALUE : Math.max(0, NANOSECONDS.convert(closeTimeout));
     }
 
     /**

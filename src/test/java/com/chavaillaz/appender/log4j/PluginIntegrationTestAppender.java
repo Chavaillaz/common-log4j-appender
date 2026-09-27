@@ -1,5 +1,6 @@
 package com.chavaillaz.appender.log4j;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLayout;
 
 import java.util.List;
@@ -39,8 +40,12 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
 
     private final LogConverter converter = new DefaultLogConverter();
 
-    private PluginIntegrationTestAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
+    private final long transmissionDelayMillis;
+
+    private PluginIntegrationTestAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+                                          long transmissionDelayMillis) {
         super(name, filter, layout, configuration);
+        this.transmissionDelayMillis = transmissionDelayMillis;
         converter.configure(configuration);
     }
 
@@ -57,6 +62,9 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
         @PluginBuilderAttribute
         private long flushThreshold = 1;
 
+        @PluginBuilderAttribute
+        private long transmissionDelayMillis = 0;
+
         @Override
         public PluginIntegrationTestAppender build() {
             TestLogConfiguration configuration = TestLogConfiguration.builder()
@@ -64,7 +72,7 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
                     .flushThreshold(flushThreshold)
                     .build();
             Layout<?> layout = getLayout() != null ? getLayout() : createDefaultLayout();
-            return new PluginIntegrationTestAppender(getName(), getFilter(), layout, configuration);
+            return new PluginIntegrationTestAppender(getName(), getFilter(), layout, configuration, transmissionDelayMillis);
         }
 
     }
@@ -85,8 +93,11 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
         return new AbstractBatchLogDelivery<>(getLogConfiguration()) {
             @Override
             protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
-                RECEIVED_DOCUMENTS.addAll(documents);
-                return CompletableFuture.completedFuture(TransmissionResult.success());
+                // Completed later rather than slept on, the way an asynchronous client answers
+                return CompletableFuture.supplyAsync(() -> {
+                    RECEIVED_DOCUMENTS.addAll(documents);
+                    return TransmissionResult.success();
+                }, CompletableFuture.delayedExecutor(transmissionDelayMillis, MILLISECONDS));
             }
         };
     }

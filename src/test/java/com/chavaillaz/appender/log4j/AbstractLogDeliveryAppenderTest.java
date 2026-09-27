@@ -799,6 +799,52 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Waits for pending tasks when Log4j2 leaves the timeout to the appender")
+        void testStopWithDefaultTimeoutWaitsForPendingTasks() throws Exception {
+            // given: the same slow tasks, stopped with 0, which Log4j2 passes when its shutdownTimeout is
+            // left unset and on every reconfiguration, documenting it as "each appender uses its default"
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var events = new CopyOnWriteArrayList<String>();
+            var appender = new RecordingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, events, 50);
+
+            // when
+            appender.start();
+            for (int i = 0; i < 5; i++) {
+                appender.append(mockLogEvent());
+            }
+            appender.stop(0, MILLISECONDS);
+
+            // then: waited up to CloseTimeout, rather than abandoning all but the running task in the queue
+            assertEquals(5, events.stream().filter("send"::equals).count());
+            assertEquals("close", events.get(events.size() - 1));
+        }
+
+        @Test
+        @DisplayName("Bounds the wait by CloseTimeout when Log4j2 leaves the timeout to the appender")
+        void testStopWithDefaultTimeoutIsBoundedByCloseTimeout() throws Exception {
+            // given: a task that blocks until interrupted, and a short close timeout
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .closeTimeout(Duration.ofMillis(200)).build();
+            var interrupted = new CountDownLatch(1);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, interrupted);
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent());
+            long start = System.nanoTime();
+            appender.stop(0, MILLISECONDS);
+            long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then: gave up once the close timeout elapsed, instead of waiting on the stuck task forever
+            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted after the timeout");
+            assertTrue(elapsedMillis < 5_000, "stop() should have given up after the close timeout, took " + elapsedMillis + "ms");
+        }
+
+        @Test
         @DisplayName("Never keeps the JVM alive on its own once the application is done")
         void testBackgroundThreadsDoNotKeepTheJvmAlive() throws Exception {
             // given: batching enabled, so start() also creates the periodic flush scheduler, and a worker

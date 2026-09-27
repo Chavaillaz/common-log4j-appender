@@ -317,7 +317,7 @@ appender implementation typically exposes them as its own plugin attributes, see
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; oldest discarded past that to make room for a new one, mirroring `MaxPendingDocuments`. Defaults to `10'000`. |
 | `RetryBackoff` | Base delay before retrying a failed transmission, doubling per consecutive failure with full jitter, and holding off newly accumulated documents too while in effect. Defaults to `1s`; `ZERO` retries at the next opportunity, as before this setting existed. |
 | `MaxRetryBackoff` | Cap the delay above never grows past. Defaults to `30s`. |
-| `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. Defaults to `30s`; `null` waits indefinitely. |
+| `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. Also bounds the wait for already-accepted events while Log4j2's `shutdownTimeout` is left at `0`. Defaults to `30s`; `null` waits indefinitely. |
 
 `Application`, `Host` and `Environment` come from `LogConfiguration` itself; everything else is a component
 of the `DeliveryOptions` it returns, all with usable defaults. An appender implementation typically exposes
@@ -328,10 +328,10 @@ own configuration class, whether or not the appender surfaces them.
 
 - **Shutdown:** stopping the appender stops accepting new logs, waits (up to the given timeout) for
   already-accepted ones to be processed, then flushes and closes the delivery handler, waiting for that
-  final transmission too, so logs emitted just before shutdown aren't lost. This needs a non-zero shutdown
-  timeout to actually wait: set the `shutdownTimeout` attribute (in milliseconds) on the root
-  `<Configuration>` element of your Log4j2 configuration, as it otherwise defaults to not waiting at all.
-  That final wait is itself bounded by `CloseTimeout`, so a downstream system that accepts a connection and
+  final transmission too, so logs emitted just before shutdown aren't lost. The first wait is bounded by
+  the `shutdownTimeout` attribute (in milliseconds) of the root `<Configuration>` element of your Log4j2
+  configuration or, while it is left at its default of `0` (also what a reconfiguration passes), by
+  `CloseTimeout`. That final wait is itself bounded by `CloseTimeout`, so a downstream system that accepts a connection and
   then never answers can't hold up the JVM indefinitely. Anything still pending once that wait is over — a
   failing final transmission's documents, or documents a stuck transmission never gave back — is reported
   through `onDocumentsDropped` rather than discarded along with the appender, so a dead-letter sink still

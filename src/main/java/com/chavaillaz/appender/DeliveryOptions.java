@@ -125,8 +125,8 @@ import org.jspecify.annotations.Nullable;
  *                                   application's shutdown. Distinct from, and applied after, the
  *                                   {@code shutdownTimeout} of the Log4j2 configuration, which governs how
  *                                   long the appender waits for already-accepted events to reach the delivery
- *                                   in the first place. Defaults to thirty seconds; {@code null} waits
- *                                   indefinitely.
+ *                                   in the first place, and which falls back to this value when left at
+ *                                   {@code 0}. Defaults to thirty seconds; {@code null} waits indefinitely.
  */
 public record DeliveryOptions(
         long flushThreshold,
