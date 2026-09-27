@@ -314,6 +314,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             });
         } catch (RejectedExecutionException e) {
             // A full queue, or a worker shutting down: this flush is skipped, the next one sending what is pending
+        } catch (Throwable e) {
+            // Throwable: an Error escaping the periodic flush, the heap running out say, cancels all its later runs
+            error("Unable to queue a flush, the next one will send what is pending", e);
         }
     }
 

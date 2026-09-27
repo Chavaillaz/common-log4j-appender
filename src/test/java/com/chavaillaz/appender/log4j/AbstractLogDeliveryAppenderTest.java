@@ -21,6 +21,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.io.PrintWriter;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -31,6 +32,8 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -271,6 +274,50 @@ class AbstractLogDeliveryAppenderTest {
             // then
             verify(appender.getLogDeliveryHandler()).close(any());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
+        }
+
+        @Test
+        @DisplayName("Keeps flushing periodically after one flush failed to be queued with an Error")
+        void testPeriodicFlushSurvivesAnError() throws Exception {
+            // given: a flush that cannot be queued once, as when the heap runs out on the scheduler thread.
+            // Nothing but a rejection can fail it otherwise, so the executor queuing it is replaced
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(50)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            var failuresLeft = new AtomicInteger(1);
+            replaceWorkerExecutor(appender, new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new LinkedBlockingQueue<>()) {
+                @Override
+                public void execute(Runnable command) {
+                    if (failuresLeft.getAndDecrement() > 0) {
+                        throw new OutOfMemoryError("Java heap space");
+                    }
+                    super.execute(command);
+                }
+            });
+
+            // when
+            appender.start();
+
+            // then: the next flush still ran, rather than that Error cancelling every later one for good
+            verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeastOnce()).flush();
+            assertTrue(errors.stream().anyMatch(OutOfMemoryError.class::isInstance),
+                    "The failure should have been reported through the error handler, got: " + errors);
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        /**
+         * Replaces the executor of the worker of an appender not started yet, which is then started instead.
+         */
+        private static void replaceWorkerExecutor(AbstractLogDeliveryAppender<?> appender, ThreadPoolExecutor executor)
+                throws ReflectiveOperationException {
+            Field field = AbstractLogDeliveryAppender.class.getDeclaredField("workerExecutor");
+            field.setAccessible(true);
+            field.set(appender, executor);
         }
 
         @Test
