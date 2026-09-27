@@ -296,16 +296,16 @@ its documentation):
 | `Host`          | Name of the host the application is running on, included in every document.                                 |
 | `Environment`   | Name of the environment the application is running in, included in every document.                         |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. `1` sends every log individually (no batching). Defaults to `1`, an appender shipping logs over the network normally raising it. |
-| `FlushInterval` | Time between two periodic flushes, so a partial batch isn't delayed indefinitely under low traffic. Relevant whenever documents can pile up with nothing else to send them: when `FlushThreshold` is above `1`, and when `RetryBackoff` is enabled, since documents arriving while a backoff holds off transmissions are stacked rather than sent. Defaults to `5s`. |
+| `FlushInterval` | Time between two periodic flushes, so a partial batch isn't delayed indefinitely under low traffic. Relevant whenever documents can pile up with nothing else to send them: when `FlushThreshold` is above `1`, and when `RetryBackoff` is enabled, since documents arriving while a backoff holds off transmissions are stacked rather than sent. Defaults to `5s`; at least `1ms`. |
 | `FlushLevel` | Minimum severity (e.g. `WARN`) that triggers an immediate flush of the whole current batch right after that event, instead of waiting for `FlushThreshold`/`FlushInterval`. Defaults to unset, disabling this behavior. |
-| `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`; must be at least `1`, or every transmission would wait forever. |
-| `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory; oldest discarded past that (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`; `0` or less discards every document immediately, disabling this delivery. |
+| `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`. |
+| `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory; oldest discarded past that (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`. |
 | `MaxRequestDocuments` | Maximum documents sent together in a single request; a bigger batch is split into chunks of that size (see step 4 above), each retried independently. Defaults to unbounded (no chunking); set to match a downstream system's per-request limit. |
 | `MaxPendingBytes` | Maximum estimated size a pending batch can hold in memory; oldest discarded past that, exactly as `MaxPendingDocuments` does by count. Defaults to unbounded. |
 | `MaxRequestBytes` | Maximum estimated size of a single request; a heavier batch is split into chunks that each stay under it. Usually the limit that actually matters — Elasticsearch and OpenSearch reject a bulk over `http.max_content_length` by payload size, not document count. Defaults to unbounded. |
-| `MaxConsecutiveFailures` | Maximum consecutive failed attempts for the same documents before they are discarded instead of retried again (see step 5 above). Defaults to `5`; `0` or less retries indefinitely. |
+| `MaxConsecutiveFailures` | Maximum consecutive failed attempts for the same documents before they are discarded instead of retried again (see step 5 above). Defaults to `5`; `2147483647` retries for good in practice. |
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; oldest discarded past that to make room for a new one, mirroring `MaxPendingDocuments`. Defaults to `10'000`. |
-| `RetryBackoff` | Base delay before retrying a failed transmission, doubling per consecutive failure with full jitter, and holding off newly accumulated documents too while in effect. Defaults to `1s`; `0` retries at the next opportunity. |
+| `RetryBackoff` | Base delay before retrying a failed transmission, doubling per consecutive failure with full jitter, and holding off newly accumulated documents too while in effect. Defaults to `1s`; `0` disables it, retrying at the next opportunity. |
 | `MaxRetryBackoff` | Cap the delay above never grows past. Defaults to `30s`. |
 | `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. While Log4j2's `shutdownTimeout` is left at `0`, also the budget of the whole appender stop, already-accepted events included (see [Shutdown](#shutdown-and-failure-handling)). Defaults to `30s`; `null` waits indefinitely. |
 
@@ -313,6 +313,11 @@ its documentation):
 of the `DeliveryOptions` it returns, all with usable defaults. An appender implementation typically exposes
 only some of them as plugin attributes — the rest stay available through `DeliveryOptions.builder()` in your
 own configuration class, whether or not the appender surfaces them.
+
+Every setting is validated when `DeliveryOptions` is built: a count or size below `1`, a negative duration or
+a `FlushInterval` under a millisecond throws an `IllegalArgumentException` naming it, so a misconfiguration
+fails the Log4j2 configuration rather than the delivery once it runs. A limit meant to be unbounded takes the
+largest value of its type, as its default does.
 
 ### Bounding by size rather than by count
 

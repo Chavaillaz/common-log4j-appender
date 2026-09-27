@@ -88,7 +88,6 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         this.configuration = configuration;
         DeliveryOptions options = configuration.getDeliveryOptions();
         this.initialCloseTimeout = options.closeTimeout();
-        warnAboutDegradedConfiguration(options);
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
         Batcher.Builder<Map<String, Object>> batcherBuilder = Batcher.<Map<String, Object>>builder()
                 // Read again on every call, so that a limit varied at runtime is honored
@@ -150,31 +149,6 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         return isBounded(getMaxPendingBytes()) || isBounded(getMaxRequestBytes())
                 ? estimateDocumentSize(document)
                 : 0;
-    }
-
-    /**
-     * Warns about the values degrading this delivery, allowed as they are since none leaves the pipeline
-     * stuck, so that a misconfiguration shows at startup rather than as unexplained data loss or retries.
-     *
-     * @param options The options to inspect
-     */
-    private void warnAboutDegradedConfiguration(DeliveryOptions options) {
-        int maxPendingDocuments = options.maxPendingDocuments();
-        if (maxPendingDocuments <= 0) {
-            log.warn("MaxPendingDocuments is {} (0 or less), every document will be discarded immediately, "
-                    + "effectively disabling this delivery", maxPendingDocuments);
-        }
-
-        int maxRequestDocuments = options.maxRequestDocuments();
-        if (maxRequestDocuments <= 0) {
-            log.warn("MaxRequestDocuments is {} (0 or less), request chunking is disabled", maxRequestDocuments);
-        }
-
-        int maxConsecutiveFailures = options.maxConsecutiveFailures();
-        if (maxConsecutiveFailures <= 0) {
-            log.warn("MaxConsecutiveFailures is {} (0 or less), failed batches will be retried indefinitely "
-                    + "instead of eventually discarded", maxConsecutiveFailures);
-        }
     }
 
     /**

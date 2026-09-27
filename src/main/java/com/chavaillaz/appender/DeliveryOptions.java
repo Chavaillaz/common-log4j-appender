@@ -3,6 +3,7 @@ package com.chavaillaz.appender;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.apache.logging.log4j.Level;
 import org.jspecify.annotations.Nullable;
@@ -14,58 +15,64 @@ import org.jspecify.annotations.Nullable;
  * Instances are created through {@link #builder()}, or derived from another one through {@link #with()}, every
  * setting having a usable default (see {@link #defaults()}). {@link LogConfiguration#getDeliveryOptions()} is
  * read for every document, so that a limit can vary at runtime: return a stored instance, not a new one.
+ * <p>
+ * Every setting is validated when built, a value out of its range throwing an {@link IllegalArgumentException}
+ * and a missing one a {@link NullPointerException}, so that a misconfiguration fails the configuration rather
+ * than the delivery once running. A limit meant to be unbounded takes the largest value of its type, as its
+ * default does.
  *
- * @param flushThreshold             Number of accumulated documents that triggers a transmission, {@code 1} or
- *                                   less sending every document on its own as it arrives. Defaults to
- *                                   {@code 1}; an appender shipping logs over the network normally raises it.
+ * @param flushThreshold             Number of accumulated documents that triggers a transmission, {@code 1}
+ *                                   sending every document on its own as it arrives. Defaults to {@code 1}; an
+ *                                   appender shipping logs over the network normally raises it. At least
+ *                                   {@code 1}.
  * @param flushInterval              Time between two periodic flushes, which send a partial batch nothing else
  *                                   would send: one under {@code flushThreshold}, or held back by
- *                                   {@code retryBackoff}. Defaults to five seconds.
+ *                                   {@code retryBackoff}. Defaults to five seconds; at least a millisecond.
  * @param flushLevel                 Minimum severity, compared with {@link Level#isMoreSpecificThan(Level)}, of
  *                                   an event flushing the batch right after it, so that an occasional severe
  *                                   event is not held back by settings favoring throughput. Defaults to
  *                                   {@code null}, disabling it.
  * @param maxConcurrentTransmissions Maximum number of requests in flight at once, the next batch waiting for a
- *                                   slot past it. Defaults to {@code 4}; must be at least {@code 1}.
+ *                                   slot past it. Defaults to {@code 4}; at least {@code 1}.
  * @param maxPendingDocuments        Maximum number of documents the pending batch holds while waiting to be
  *                                   (re)transmitted, the oldest ones being discarded past it. Defaults to
- *                                   {@code 10'000}; {@code 0} or less discards every document, disabling the
- *                                   delivery.
+ *                                   {@code 10'000}; at least {@code 1}.
  * @param maxRequestDocuments        Maximum number of documents per request, a bigger batch being split into
  *                                   chunks transmitted and retried independently. Defaults to
- *                                   {@link Integer#MAX_VALUE}; {@code 0} or less disables chunking too.
+ *                                   {@link Integer#MAX_VALUE}, not splitting by count; at least {@code 1}.
  * @param maxPendingBytes            Maximum estimated size of the pending batch, the oldest documents being
  *                                   discarded past it, as {@code maxPendingDocuments} does by count. Sizes are
  *                                   estimated by
  *                                   {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)}.
- *                                   Defaults to {@link Long#MAX_VALUE}; {@code 0} or less disables it too.
+ *                                   Defaults to {@link Long#MAX_VALUE}, unbounded; at least {@code 1}.
  * @param maxRequestBytes            Maximum estimated size of a request, a heavier batch being split into
  *                                   chunks that each stay under it, and a heavier document still being sent
  *                                   alone. Usually the limit that matters: Elasticsearch and OpenSearch reject a
  *                                   request over {@code http.max_content_length} by its size, not by its
- *                                   document count. Defaults to {@link Long#MAX_VALUE}; {@code 0} or less
- *                                   disables it too.
+ *                                   document count. Defaults to {@link Long#MAX_VALUE}, unbounded; at least
+ *                                   {@code 1}.
  * @param maxConsecutiveFailures     Maximum number of consecutive failed attempts for the same documents before
  *                                   they are discarded, so that a document the downstream system never accepts
- *                                   does not block everything behind it. Defaults to {@code 5}; {@code 0} or
- *                                   less retries indefinitely.
+ *                                   does not block everything behind it. Defaults to {@code 5}; at least
+ *                                   {@code 1}, {@link Integer#MAX_VALUE} retrying for good in practice.
  * @param maxQueuedEvents            Maximum number of logging events queued for the background thread of an
  *                                   appender, the oldest one being discarded past it. Defaults to
- *                                   {@code 10'000}; a value below {@code 1} is raised to {@code 1}.
+ *                                   {@code 10'000}; at least {@code 1}.
  * @param retryBackoff               Base delay before retrying after a failed transmission, doubling with each
  *                                   consecutive failure up to {@code maxRetryBackoff}, with jitter (see
  *                                   {@link BackoffPolicy#exponential(Duration, Duration)}). Newly accumulated
  *                                   documents are held back too while it is in effect. Defaults to one second;
- *                                   {@link Duration#ZERO} or less disables it.
+ *                                   {@link Duration#ZERO} disables it, and it cannot be negative.
  * @param maxRetryBackoff            Cap of the delay described by {@code retryBackoff}, ignored if smaller than
- *                                   it. Defaults to thirty seconds.
+ *                                   it. Defaults to thirty seconds; it cannot be negative.
  * @param closeTimeout               Maximum time closing a delivery waits for the transmissions in flight, its
  *                                   final flush included, before reporting what is still pending through
  *                                   {@link LogDeliveryListener#onDocumentsDropped(List, String)}. While the
  *                                   {@code shutdownTimeout} of the Log4j2 configuration is left at {@code 0},
  *                                   also the budget of a whole appender stop: the events it accepted are
  *                                   processed first, and its delivery closed within what they left. Defaults
- *                                   to thirty seconds; {@code null} waits indefinitely.
+ *                                   to thirty seconds; {@code null} waits indefinitely, and it cannot be
+ *                                   negative.
  */
 public record DeliveryOptions(
         long flushThreshold,
@@ -87,6 +94,60 @@ public record DeliveryOptions(
      * {@link LogConfiguration#getDeliveryOptions()} returns it by default for every document.
      */
     private static final DeliveryOptions DEFAULTS = builder().build();
+
+    /**
+     * Validates every setting (see the documentation of the record).
+     *
+     * @throws IllegalArgumentException If a setting is out of its range
+     * @throws NullPointerException     If a setting other than {@code flushLevel} and {@code closeTimeout} is
+     *                                  {@code null}
+     */
+    public DeliveryOptions {
+        requirePositive(flushThreshold, "flushThreshold");
+        requireSchedulable(flushInterval);
+        requirePositive(maxConcurrentTransmissions, "maxConcurrentTransmissions");
+        requirePositive(maxPendingDocuments, "maxPendingDocuments");
+        requirePositive(maxRequestDocuments, "maxRequestDocuments");
+        requirePositive(maxPendingBytes, "maxPendingBytes");
+        requirePositive(maxRequestBytes, "maxRequestBytes");
+        requirePositive(maxConsecutiveFailures, "maxConsecutiveFailures");
+        requirePositive(maxQueuedEvents, "maxQueuedEvents");
+        requireNotNegative(Objects.requireNonNull(retryBackoff, "retryBackoff must not be null"), "retryBackoff");
+        requireNotNegative(Objects.requireNonNull(maxRetryBackoff, "maxRetryBackoff must not be null"), "maxRetryBackoff");
+        if (closeTimeout != null) {
+            requireNotNegative(closeTimeout, "closeTimeout");
+        }
+    }
+
+    private static void requirePositive(long value, String name) {
+        if (value < 1) {
+            throw new IllegalArgumentException(name + " must be at least 1, but was " + value);
+        }
+    }
+
+    private static void requireNotNegative(Duration value, String name) {
+        if (value.isNegative()) {
+            throw new IllegalArgumentException(name + " cannot be negative, but was " + value);
+        }
+    }
+
+    /**
+     * Requires a flush interval the scheduler of an appender takes, which counts in whole milliseconds.
+     *
+     * @param flushInterval The flush interval to check
+     */
+    private static void requireSchedulable(Duration flushInterval) {
+        Objects.requireNonNull(flushInterval, "flushInterval must not be null");
+        long millis;
+        try {
+            millis = flushInterval.toMillis();
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("flushInterval is too large to count in milliseconds: " + flushInterval, e);
+        }
+        if (millis < 1) {
+            throw new IllegalArgumentException("flushInterval must be at least a millisecond, but was " + flushInterval);
+        }
+    }
 
     /**
      * The options every setting left at its default produces, suitable as-is for an appender that has no
@@ -302,6 +363,9 @@ public record DeliveryOptions(
          * Builds the options.
          *
          * @return The new options
+         * @throws IllegalArgumentException If a setting is out of its range (see {@link DeliveryOptions})
+         * @throws NullPointerException     If a setting other than the flush level and the close timeout is
+         *                                  {@code null}
          */
         public DeliveryOptions build() {
             return new DeliveryOptions(flushThreshold, flushInterval, flushLevel, maxConcurrentTransmissions,

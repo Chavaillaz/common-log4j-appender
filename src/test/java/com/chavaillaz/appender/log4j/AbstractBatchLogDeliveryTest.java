@@ -2,12 +2,10 @@ package com.chavaillaz.appender.log4j;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
@@ -24,16 +22,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import lombok.extern.slf4j.Slf4j;
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.status.StatusData;
-import org.apache.logging.log4j.status.StatusListener;
-import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
@@ -154,155 +147,6 @@ class AbstractBatchLogDeliveryTest {
 
             // then
             assertEquals(0, logDelivery.countBulkSent.get());
-        }
-
-    }
-
-    @Nested
-    @DisplayName("Configuration validation")
-    class ConfigurationValidation {
-
-        @Test
-        @DisplayName("Rejects a zero maximum number of concurrent transmissions at construction")
-        void testRejectsZeroMaxConcurrentTransmissions() {
-            // given: a value of 0 would leave the internal semaphore with no permits to ever hand out,
-            // so every dispatch() would block forever instead of merely lowering throughput
-            var configuration = TestLogConfiguration.builder().maxConcurrentTransmissions(0).build();
-
-            // when / then
-            assertThrows(IllegalArgumentException.class, () -> new TestLogDelivery(configuration));
-        }
-
-        @Test
-        @DisplayName("Rejects a negative maximum number of concurrent transmissions at construction")
-        void testRejectsNegativeMaxConcurrentTransmissions() {
-            // given
-            var configuration = TestLogConfiguration.builder().maxConcurrentTransmissions(-1).build();
-
-            // when / then
-            assertThrows(IllegalArgumentException.class, () -> new TestLogDelivery(configuration));
-        }
-
-        @Test
-        @DisplayName("Tolerates a negative maximum pending documents by discarding instead of failing")
-        void testNegativeMaxPendingDocumentsDoesNotThrow() throws Exception {
-            // given: a negative maxPendingDocuments, the value that would otherwise make
-            // trimToMaxPendingDocuments() compute an out-of-bounds sublist range; caught as soon as the
-            // document is accumulated (a capacity of "less than zero" discards on arrival, before ever
-            // attempting a transmission doomed to be undone anyway), so bulkResult/countBulkSent are not
-            // exercised by this test
-            var configuration = TestLogConfiguration.builder()
-                    .flushThreshold(1)
-                    .maxPendingDocuments(-1).build();
-            var listener = new RecordingListener();
-            var logDelivery = new TestLogDelivery(configuration, listener);
-
-            // when / then
-            assertDoesNotThrow(() -> logDelivery.send(Map.of("id", 1)));
-            // the notification itself is asynchronous and best-effort (see notifyDropped()'s documentation),
-            // so it is awaited by polling rather than by logDelivery.awaitPendingTransmissions(), which does
-            // not track it
-            awaitDropped(listener, 1);
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(Map.of("id", 1)), listener.dropped.get(0).documents());
-        }
-
-        @ParameterizedTest(name = "maxPendingDocuments = {0}")
-        @ValueSource(ints = {0, -1})
-        @DisplayName("Warns when MaxPendingDocuments is 0 or less, since it disables this delivery")
-        void testWarnsOnNonPositiveMaxPendingDocuments(int maxPendingDocuments) {
-            // given
-            var configuration = TestLogConfiguration.builder().maxPendingDocuments(maxPendingDocuments).build();
-
-            // when
-            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
-
-            // then
-            assertTrue(warnings.stream().anyMatch(message -> message.contains("MaxPendingDocuments")),
-                    "Expected a warning mentioning MaxPendingDocuments, got: " + warnings);
-        }
-
-        @ParameterizedTest(name = "maxRequestDocuments = {0}")
-        @ValueSource(ints = {0, -1})
-        @DisplayName("Warns when MaxRequestDocuments is 0 or less, since it disables chunking")
-        void testWarnsOnNonPositiveMaxRequestDocuments(int maxRequestDocuments) {
-            // given
-            var configuration = TestLogConfiguration.builder().maxRequestDocuments(maxRequestDocuments).build();
-
-            // when
-            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
-
-            // then
-            assertTrue(warnings.stream().anyMatch(message -> message.contains("MaxRequestDocuments")),
-                    "Expected a warning mentioning MaxRequestDocuments, got: " + warnings);
-        }
-
-        @ParameterizedTest(name = "maxConsecutiveFailures = {0}")
-        @ValueSource(ints = {0, -1})
-        @DisplayName("Warns when MaxConsecutiveFailures is 0 or less, since it retries indefinitely")
-        void testWarnsOnNonPositiveMaxConsecutiveFailures(int maxConsecutiveFailures) {
-            // given
-            var configuration = TestLogConfiguration.builder().maxConsecutiveFailures(maxConsecutiveFailures).build();
-
-            // when
-            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
-
-            // then
-            assertTrue(warnings.stream().anyMatch(message -> message.contains("MaxConsecutiveFailures")),
-                    "Expected a warning mentioning MaxConsecutiveFailures, got: " + warnings);
-        }
-
-        @Test
-        @DisplayName("Does not warn when every configuration value is within its normal range")
-        void testNoWarningsForDefaultConfiguration() {
-            // given
-            var configuration = TestLogConfiguration.builder().build();
-
-            // when
-            List<String> warnings = captureWarnings(() -> new TestLogDelivery(configuration));
-
-            // then
-            assertEquals(List.of(), warnings);
-        }
-
-        /**
-         * Runs the given action while a listener is attached to Log4j2's status channel, capturing every
-         * message this delivery reports there during that time, then detaches it. Used to assert that a
-         * degraded-but-tolerated configuration value actually gets warned about, not just that construction
-         * does not throw.
-         * <p>
-         * The status channel, not an appender on the application's own loggers: this delivery deliberately
-         * does not report through those, since it runs inside an appender normally attached to the root
-         * logger and would otherwise feed its own diagnostics back into the pipeline they are about.
-         *
-         * @param action The action to run while capturing
-         * @return Every message captured while running {@code action}
-         */
-        private List<String> captureWarnings(Runnable action) {
-            List<String> messages = new CopyOnWriteArrayList<>();
-            StatusListener capturing = new StatusListener() {
-                @Override
-                public void log(StatusData data) {
-                    messages.add(data.getMessage().getFormattedMessage());
-                }
-
-                @Override
-                public Level getStatusLevel() {
-                    return Level.WARN;
-                }
-
-                @Override
-                public void close() {
-                    // Nothing to release
-                }
-            };
-            StatusLogger.getLogger().registerListener(capturing);
-            try {
-                action.run();
-            } finally {
-                StatusLogger.getLogger().removeListener(capturing);
-            }
-            return messages;
         }
 
     }
@@ -479,11 +323,11 @@ class AbstractBatchLogDeliveryTest {
         @Test
         @DisplayName("Reports the documents still pending once closed instead of discarding them silently")
         void testCloseReportsStillPendingDocumentsAsDropped() throws Exception {
-            // given: a downstream system that is down, and no consecutive-failure limit, so the final flush's
-            // documents are put back for a retry that will never come
+            // given: a downstream system that is down, and a consecutive-failure limit never reached, so the
+            // final flush's documents are put back for a retry that will never come
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
-                    .maxConsecutiveFailures(0)
+                    .maxConsecutiveFailures(Integer.MAX_VALUE)
                     .build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
@@ -838,14 +682,13 @@ class AbstractBatchLogDeliveryTest {
             assertEquals(1, logDelivery.lastBulkSize.get());
         }
 
-        @ParameterizedTest(name = "maxConsecutiveFailures = {0}")
-        @ValueSource(ints = {0, -1})
-        @DisplayName("Never gives up when MaxConsecutiveFailures is zero or negative, retrying indefinitely instead")
-        void testNonPositiveMaxConsecutiveFailuresDisablesTheLimit(int maxConsecutiveFailures) throws Exception {
+        @Test
+        @DisplayName("Keeps retrying when MaxConsecutiveFailures is the largest value it takes")
+        void testLargestMaxConsecutiveFailuresRetriesForGood() throws Exception {
             // given
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10) // Only flush() (below) triggers a (re)transmission
-                    .maxConsecutiveFailures(maxConsecutiveFailures).build();
+                    .maxConsecutiveFailures(Integer.MAX_VALUE).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
             logDelivery.bulkResult = false;
@@ -971,27 +814,6 @@ class AbstractBatchLogDeliveryTest {
             // then
             assertEquals(1, logDelivery.countBulkSent.get());
             assertEquals(20, logDelivery.lastBulkSize.get());
-        }
-
-        @ParameterizedTest(name = "maxRequestDocuments = {0}")
-        @ValueSource(ints = {0, -1})
-        @DisplayName("Does not chunk when MaxRequestDocuments is zero or negative, treating it as disabled")
-        void testNonPositiveMaxRequestDocumentsDisablesChunking(int maxRequestDocuments) throws Exception {
-            // given
-            var configuration = TestLogConfiguration.builder()
-                    .flushThreshold(5)
-                    .maxRequestDocuments(maxRequestDocuments).build();
-            var logDelivery = new TestLogDelivery(configuration);
-
-            // when
-            for (int i = 0; i < 5; i++) {
-                logDelivery.send(Map.of("id", i));
-            }
-            logDelivery.awaitPendingTransmissions();
-
-            // then
-            assertEquals(1, logDelivery.countBulkSent.get());
-            assertEquals(5, logDelivery.lastBulkSize.get());
         }
 
         @Test
@@ -1468,7 +1290,7 @@ class AbstractBatchLogDeliveryTest {
 
         private final DeliveryOptions options = DeliveryOptions.builder()
                 .flushThreshold(10)
-                .maxConsecutiveFailures(0)
+                .maxConsecutiveFailures(Integer.MAX_VALUE)
                 .retryBackoff(Duration.ZERO)
                 .maxRetryBackoff(Duration.ZERO)
                 .closeTimeout(Duration.ofSeconds(10))

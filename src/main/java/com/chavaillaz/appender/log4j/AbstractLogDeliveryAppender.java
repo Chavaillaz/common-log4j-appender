@@ -206,7 +206,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         DeliveryOptions options = configuration.getDeliveryOptions();
         this.initialCloseTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents());
-        this.pendingDiscards = new LinkedBlockingQueue<>(Math.max(1, options.maxQueuedEvents()));
+        this.pendingDiscards = new LinkedBlockingQueue<>(options.maxQueuedEvents());
         this.fallbackConverter.configure(configuration);
     }
 
@@ -214,17 +214,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Creates the single-thread executor backing {@link #workerExecutor}, its queue bounded to the given
      * capacity, with {@link DiscardOldestEventPolicy} in place of the default {@code AbortPolicy}.
      *
-     * @param queueCapacity The maximum number of tasks the queue can hold, raised to {@code 1} at least
+     * @param queueCapacity The maximum number of tasks the queue can hold
      * @return The executor to use for {@link #workerExecutor}
      */
     private ThreadPoolExecutor newWorkerExecutor(int queueCapacity) {
-        int capacity = Math.max(1, queueCapacity);
-        if (queueCapacity < 1) {
-            error("MaxQueuedEvents is " + queueCapacity + " (below 1), clamped up to 1: a queue of zero has "
-                    + "nowhere to hand off even a single event");
-        }
         return new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS,
-                new LinkedBlockingQueue<>(capacity), namedThreadFactory("log-delivery-worker"), new DiscardOldestEventPolicy());
+                new LinkedBlockingQueue<>(queueCapacity), namedThreadFactory("log-delivery-worker"), new DiscardOldestEventPolicy());
     }
 
     /**
@@ -271,11 +266,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         if (!needsPeriodicFlush(options)) {
             return;
         }
-        Long intervalMillis = validateFlushInterval(options.flushInterval());
-        if (intervalMillis != null) {
-            flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
-            flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
-        }
+        // At least a millisecond, as the delivery options require
+        long intervalMillis = options.flushInterval().toMillis();
+        flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
+        flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
     }
 
     /**
@@ -287,46 +281,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return {@code true} if a periodic flush should be scheduled
      */
     private static boolean needsPeriodicFlush(DeliveryOptions options) {
-        if (options.flushThreshold() > 1) {
-            return true;
-        }
-        // Any positive duration, a flush with nothing to do costing one wake-up per interval
-        Duration retryBackoff = options.retryBackoff();
-        return retryBackoff != null && !retryBackoff.isZero() && !retryBackoff.isNegative();
-    }
-
-    /**
-     * Validates the given flush interval, reporting an unusable one through the {@code ErrorHandler} of this
-     * appender rather than failing {@link #start()}: one overflowing {@link Duration#toMillis()}, or rounding
-     * down to {@code 0}, which {@link ScheduledExecutorService#scheduleWithFixedDelay} rejects.
-     *
-     * @param flushInterval The interval to validate, as returned by {@link DeliveryOptions#flushInterval()}
-     * @return The interval in milliseconds, or {@code null} if invalid and no periodic flush should be
-     *         scheduled
-     */
-    private @Nullable Long validateFlushInterval(@Nullable Duration flushInterval) {
-        if (flushInterval == null) {
-            error("FlushInterval is not set although FlushThreshold is greater than 1 or a retry backoff is "
-                    + "configured, no periodic flush will be scheduled and partial batches may be delayed indefinitely");
-            return null;
-        }
-
-        long millis;
-        try {
-            millis = flushInterval.toMillis();
-        } catch (ArithmeticException e) {
-            error("FlushInterval is too large to be expressed in milliseconds (" + flushInterval + "), "
-                    + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
-            return null;
-        }
-
-        if (millis <= 0) {
-            error("FlushInterval must be at least 1ms once rounded down but was " + flushInterval + ", "
-                    + "no periodic flush will be scheduled and partial batches may be delayed indefinitely");
-            return null;
-        }
-
-        return millis;
+        // A flush with nothing to do costing one wake-up per interval
+        return options.flushThreshold() > 1 || !options.retryBackoff().isZero();
     }
 
     /**

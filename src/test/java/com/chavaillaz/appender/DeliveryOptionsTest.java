@@ -4,12 +4,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import java.time.Duration;
+import java.util.function.UnaryOperator;
+import java.util.stream.Stream;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Covers {@link DeliveryOptions}, the value the pipeline tuning settings moved into when they stopped being
@@ -90,6 +98,97 @@ class DeliveryOptionsTest {
         assertNull(derived.closeTimeout());
         assertEquals(original, derived.with().maxPendingDocuments(1_000).build());
         assertNotSame(original, derived);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("outOfRangeSettings")
+    @DisplayName("Rejects a setting out of its range when built, naming it")
+    void testRejectsOutOfRangeSettings(String setting, UnaryOperator<DeliveryOptions.Builder> misconfiguration) {
+        // given
+        var builder = misconfiguration.apply(DeliveryOptions.builder());
+
+        // when
+        var exception = assertThrows(IllegalArgumentException.class, builder::build);
+
+        // then: a configuration naming it fails to load, rather than a delivery misbehaving once it runs
+        assertTrue(exception.getMessage().startsWith(setting), "Unexpected message: " + exception.getMessage());
+    }
+
+    static Stream<Arguments> outOfRangeSettings() {
+        return Stream.of(
+                arguments("flushThreshold", setting(builder -> builder.flushThreshold(0))),
+                arguments("flushInterval", setting(builder -> builder.flushInterval(Duration.ZERO))),
+                arguments("flushInterval", setting(builder -> builder.flushInterval(Duration.ofNanos(999_999)))),
+                arguments("flushInterval", setting(builder -> builder.flushInterval(Duration.ofSeconds(Long.MAX_VALUE)))),
+                arguments("maxConcurrentTransmissions", setting(builder -> builder.maxConcurrentTransmissions(0))),
+                arguments("maxPendingDocuments", setting(builder -> builder.maxPendingDocuments(0))),
+                arguments("maxRequestDocuments", setting(builder -> builder.maxRequestDocuments(-1))),
+                arguments("maxPendingBytes", setting(builder -> builder.maxPendingBytes(0))),
+                arguments("maxRequestBytes", setting(builder -> builder.maxRequestBytes(Long.MIN_VALUE))),
+                arguments("maxConsecutiveFailures", setting(builder -> builder.maxConsecutiveFailures(0))),
+                arguments("maxQueuedEvents", setting(builder -> builder.maxQueuedEvents(0))),
+                arguments("retryBackoff", setting(builder -> builder.retryBackoff(Duration.ofMillis(-1)))),
+                arguments("maxRetryBackoff", setting(builder -> builder.maxRetryBackoff(Duration.ofMillis(-1)))),
+                arguments("closeTimeout", setting(builder -> builder.closeTimeout(Duration.ofMillis(-1)))));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("missingSettings")
+    @DisplayName("Rejects a missing setting when built, naming it")
+    void testRejectsMissingSettings(String setting, UnaryOperator<DeliveryOptions.Builder> misconfiguration) {
+        // given
+        var builder = misconfiguration.apply(DeliveryOptions.builder());
+
+        // when
+        var exception = assertThrows(NullPointerException.class, builder::build);
+
+        // then
+        assertTrue(exception.getMessage().startsWith(setting), "Unexpected message: " + exception.getMessage());
+    }
+
+    static Stream<Arguments> missingSettings() {
+        return Stream.of(
+                arguments("flushInterval", setting(builder -> builder.flushInterval(null))),
+                arguments("retryBackoff", setting(builder -> builder.retryBackoff(null))),
+                arguments("maxRetryBackoff", setting(builder -> builder.maxRetryBackoff(null))));
+    }
+
+    @Test
+    @DisplayName("Accepts every setting at the edge of its range")
+    void testAcceptsTheEdgesOfEveryRange() {
+        // when
+        var smallest = DeliveryOptions.builder()
+                .flushThreshold(1)
+                .flushInterval(Duration.ofMillis(1))
+                .maxConcurrentTransmissions(1)
+                .maxPendingDocuments(1)
+                .maxRequestDocuments(1)
+                .maxPendingBytes(1)
+                .maxRequestBytes(1)
+                .maxConsecutiveFailures(1)
+                .maxQueuedEvents(1)
+                .retryBackoff(Duration.ZERO)
+                .maxRetryBackoff(Duration.ZERO)
+                .closeTimeout(Duration.ZERO)
+                .build();
+        var largest = DeliveryOptions.builder()
+                .flushThreshold(Long.MAX_VALUE)
+                .maxConcurrentTransmissions(Integer.MAX_VALUE)
+                .maxConsecutiveFailures(Integer.MAX_VALUE)
+                .maxQueuedEvents(Integer.MAX_VALUE)
+                .closeTimeout(null)
+                .build();
+
+        // then
+        assertEquals(Duration.ZERO, smallest.closeTimeout());
+        assertNull(largest.closeTimeout());
+    }
+
+    /**
+     * Types a change to a builder, the lambdas of the arguments above having no target type of their own.
+     */
+    private static UnaryOperator<DeliveryOptions.Builder> setting(UnaryOperator<DeliveryOptions.Builder> change) {
+        return change;
     }
 
 }

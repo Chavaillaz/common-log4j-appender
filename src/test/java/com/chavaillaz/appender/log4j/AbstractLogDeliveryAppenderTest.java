@@ -45,9 +45,6 @@ import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.message.SimpleMessage;
-import org.apache.logging.log4j.status.StatusData;
-import org.apache.logging.log4j.status.StatusListener;
-import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -274,76 +271,6 @@ class AbstractLogDeliveryAppenderTest {
             // then
             verify(appender.getLogDeliveryHandler()).close(any());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
-        }
-
-        @Test
-        @DisplayName("Reports an error and does not schedule a periodic flush when FlushInterval is zero")
-        void testWithThreadPool_ZeroFlushInterval() throws Exception {
-            // given: ScheduledExecutorService#scheduleWithFixedDelay requires a strictly positive delay
-            // and would otherwise throw IllegalArgumentException straight out of start()
-            var logEvent = mockLogEvent();
-            var configuration = TestLogConfiguration.builder()
-                    .flushThreshold(10)
-                    .flushInterval(Duration.ZERO).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
-            var errors = new CopyOnWriteArrayList<Throwable>();
-            appender.setHandler(recordingErrorHandler(errors));
-
-            // when / then: starting must not throw despite the invalid configuration
-            assertDoesNotThrow(appender::start);
-            assertFalse(errors.isEmpty(), "The invalid FlushInterval should have been reported");
-
-            // when
-            appender.append(logEvent);
-            sleep(100);
-
-            // then: without a scheduler, only the immediate append is processed, never a periodic flush
-            assertEquals(1, appender.getCountTaskExecuted().get());
-            verify(appender.getLogDeliveryHandler(), never()).flush();
-
-            // cleanup
-            appender.stop();
-        }
-
-        @Test
-        @DisplayName("Reports an error and does not schedule a periodic flush when FlushInterval is negative")
-        void testWithThreadPool_NegativeFlushInterval() throws Exception {
-            // given
-            var configuration = TestLogConfiguration.builder()
-                    .flushThreshold(10)
-                    .flushInterval(Duration.ofMillis(-100)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
-            var errors = new CopyOnWriteArrayList<Throwable>();
-            appender.setHandler(recordingErrorHandler(errors));
-
-            // when / then
-            assertDoesNotThrow(appender::start);
-            assertFalse(errors.isEmpty(), "The invalid FlushInterval should have been reported");
-
-            // cleanup
-            appender.stop();
-        }
-
-        @Test
-        @DisplayName("Reports an error and does not schedule a periodic flush when FlushInterval overflows Duration#toMillis()")
-        void testWithThreadPool_OverflowingFlushInterval() throws Exception {
-            // given: a Duration so large that Duration#toMillis() itself throws ArithmeticException,
-            // which would otherwise propagate straight out of start() instead of being reported cleanly
-            // like every other invalid FlushInterval
-            var configuration = TestLogConfiguration.builder()
-                    .flushThreshold(10)
-                    .flushInterval(Duration.ofSeconds(Long.MAX_VALUE / 500)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
-            var errors = new CopyOnWriteArrayList<Throwable>();
-            appender.setHandler(recordingErrorHandler(errors));
-
-            // when / then
-            assertDoesNotThrow(appender::start);
-            assertFalse(errors.isEmpty(), "The overflowing FlushInterval should have been reported");
-            verify(appender.getLogDeliveryHandler(), never()).flush();
-
-            // cleanup
-            appender.stop();
         }
 
         @Test
@@ -881,65 +808,6 @@ class AbstractLogDeliveryAppenderTest {
             releaseTask.countDown();
             appender.stop(2, SECONDS);
             assertEquals(List.of("B", "C"), reported);
-        }
-
-        @Test
-        @DisplayName("Does not crash construction when MaxQueuedEvents is zero or negative")
-        void testNonPositiveMaxQueuedEventsDoesNotThrow() throws Exception {
-            // given: the worker executor (and its bounded queue) is created at construction time
-            var configuration = TestLogConfiguration.builder().maxQueuedEvents(-1).build();
-
-            // when / then
-            var appender = assertDoesNotThrow(
-                    () -> new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration));
-            assertDoesNotThrow(appender::start);
-
-            // cleanup
-            appender.stop(2, SECONDS);
-        }
-
-        @Test
-        @DisplayName("Warns when MaxQueuedEvents is zero or negative before clamping it up to 1")
-        void testNonPositiveMaxQueuedEventsWarns() throws Exception {
-            // given: the worker executor (and its bounded queue) is created at construction time, before
-            // this appender instance exists to call setHandler() on (see recordingErrorHandler() elsewhere
-            // in this class), so the warning is only observable through Log4j2's own StatusLogger, the same
-            // sink the default ErrorHandler reports to
-            var configuration = TestLogConfiguration.builder().maxQueuedEvents(0).build();
-            var statusMessages = new CopyOnWriteArrayList<String>();
-            var statusListener = new StatusListener() {
-                @Override
-                public void log(StatusData data) {
-                    statusMessages.add(data.getFormattedStatus());
-                }
-
-                @Override
-                public Level getStatusLevel() {
-                    return Level.WARN;
-                }
-
-                @Override
-                public void close() {
-                    // Nothing to release
-                }
-            };
-            StatusLogger.getLogger().registerListener(statusListener);
-
-            // when
-            LogDeliveryAppender appender;
-            try {
-                appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
-            } finally {
-                StatusLogger.getLogger().removeListener(statusListener);
-            }
-
-            // then
-            assertTrue(statusMessages.stream().anyMatch(message -> message.contains("MaxQueuedEvents")),
-                    "Expected a status message mentioning MaxQueuedEvents, got: " + statusMessages);
-
-            // cleanup
-            assertDoesNotThrow(appender::start);
-            appender.stop(2, SECONDS);
         }
 
     }
