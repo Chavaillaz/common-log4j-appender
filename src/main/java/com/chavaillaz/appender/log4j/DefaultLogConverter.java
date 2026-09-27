@@ -13,6 +13,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.status.StatusLogger;
+import org.jspecify.annotations.Nullable;
 
 import com.chavaillaz.appender.LogConfiguration;
 
@@ -63,7 +64,7 @@ public class DefaultLogConverter implements LogConverter {
      * happens-before edge, but nothing in this class's contract requires it, and a converter reconfigured
      * later would otherwise be free to never be seen as such by the worker.
      */
-    private volatile LogConfiguration configuration;
+    private volatile @Nullable LogConfiguration configuration;
 
     /**
      * Creates a new default log converter. {@link #configure(LogConfiguration)} must be called before
@@ -171,7 +172,7 @@ public class DefaultLogConverter implements LogConverter {
      * @return The formatted message, {@code null} if the given message was {@code null}, or a placeholder
      *         describing the failure if formatting it threw
      */
-    private String formatMessage(Message message) {
+    private @Nullable String formatMessage(@Nullable Message message) {
         if (message == null) {
             return null;
         }
@@ -199,7 +200,7 @@ public class DefaultLogConverter implements LogConverter {
      * @param maxLength The maximum length allowed, a non-positive value disabling truncation
      * @return The value, truncated if it was longer than allowed
      */
-    private static String truncate(String value, int maxLength) {
+    private static @Nullable String truncate(@Nullable String value, int maxLength) {
         if (value == null || maxLength <= 0 || value.length() <= maxLength) {
             return value;
         }

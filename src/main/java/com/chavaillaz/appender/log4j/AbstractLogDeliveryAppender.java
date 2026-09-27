@@ -209,11 +209,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Creates a new logs delivery handler.
      *
      * @param name          The appender name
-     * @param filter        The filter to associate with the appender
-     * @param layout        The layout to use to format the event
+     * @param filter        The filter to associate with the appender, or {@code null} for none
+     * @param layout        The layout to use to format the event, or {@code null} for none
      * @param configuration The log transmission configuration
      */
-    protected AbstractLogDeliveryAppender(String name, Filter filter, Layout<?> layout, C configuration) {
+    protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, @Nullable Layout<?> layout, C configuration) {
         super(name, filter, layout, true, Property.EMPTY_ARRAY);
         this.logConfiguration = configuration;
         DeliveryOptions options = configuration.getDeliveryOptions();

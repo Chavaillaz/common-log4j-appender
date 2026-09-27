@@ -52,7 +52,7 @@ public interface BackoffPolicy {
      *                {@code null}
      * @return An exponential backoff policy with full jitter
      */
-    static BackoffPolicy exponential(Duration initial, Duration max) {
+    static BackoffPolicy exponential(@Nullable Duration initial, @Nullable Duration max) {
         long initialMillis = toMillis(initial);
         long maxMillis = toMillis(max);
         if (initialMillis <= 0) {
