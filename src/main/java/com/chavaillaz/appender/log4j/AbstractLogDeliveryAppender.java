@@ -540,11 +540,17 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             return;
         }
         try {
+            LogDeliveryListener listener = handler.getListener();
+            if (listener == LogDeliveryListener.NOOP) {
+                // Nothing would read the documents, and converting them costs the application thread a full
+                // queue eviction's worth of work, a stack trace included
+                return;
+            }
             List<Map<String, Object>> documents = new ArrayList<>(events.size());
             for (LogEvent event : events) {
                 documents.add(fallbackConverter.convert(event));
             }
-            handler.getListener().onDocumentsDropped(List.copyOf(documents), reason);
+            listener.onDocumentsDropped(List.copyOf(documents), reason);
         } catch (Throwable e) {
             // Throwable, not Exception: this runs on the application thread whenever a full queue evicts an
             // event, and append() promises never to fail its caller. An Error from a listener would

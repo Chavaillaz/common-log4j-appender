@@ -19,6 +19,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import java.io.PrintWriter;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -724,6 +725,49 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: C was already back in the queue while B's discard was being reported
             assertEquals(1, queuedWhileReporting.get());
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Skips converting an event discarded while nothing listens for discards")
+        void testDiscardNobodyListensForIsNotConverted() throws Exception {
+            // given: the same full-queue setup, with a delivery keeping the default listener, which ignores
+            // every discard, as a delivery built without a listener does, and an event whose stack trace
+            // records being printed
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(LogDeliveryListener.NOOP);
+            var printed = new AtomicInteger();
+            var thrown = new IllegalStateException("boom") {
+                @Override
+                public void printStackTrace(PrintWriter writer) {
+                    printed.incrementAndGet();
+                    super.printStackTrace(writer);
+                }
+            };
+            var failing = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("B"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.ERROR)
+                    .setThrown(thrown)
+                    .build();
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(failing); // fills the one-slot queue
+            appender.append(realLogEvent("C")); // evicts B, on this application thread
+
+            // then: B was not turned into a document, stack trace included, for a listener ignoring it
+            assertEquals(0, printed.get());
 
             // cleanup
             releaseTask.countDown();
