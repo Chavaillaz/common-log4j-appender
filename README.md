@@ -41,7 +41,7 @@ top of it, such as the two implementations linked above.
 
 ## How it works
 
-Four types are involved, each to extend or implement:
+Four types are involved, each to extend or implement, the conversion only to customize the documents:
 
 | Concept       | Type to extend/implement       | Responsibility                                                                 |
 |---------------|---------------------------------|---------------------------------------------------------------------------------|
@@ -55,8 +55,8 @@ The flow for a single log event is:
 1. Log4j2 calls `append(LogEvent)` on your appender (application thread).
 2. The event is snapshotted immediately and submitted to a single background thread; `append()` returns
    right away, never waiting on that task.
-3. The background thread converts the event (using your `LogConverter`) and hands it to your `LogDelivery`,
-   which stacks it into the current batch.
+3. The background thread converts the event (with a `DefaultLogConverter`, or the `LogConverter` your
+   appender returns) and hands it to your `LogDelivery`, which stacks it into the current batch.
 4. Once `FlushThreshold` documents accumulate, or when the periodic flush runs every `FlushInterval`, the
    batch is due: if bigger than `MaxRequestDocuments` (or heavier than `MaxRequestBytes`), it is first split
    into chunks. Each chunk is handed to its own virtual thread, and the background thread resumes
@@ -104,7 +104,6 @@ public class MyConfiguration implements LogConfiguration {
     String host;
     String environment;
     DeliveryOptions deliveryOptions;
-    LogConverter converter; // Not part of LogConfiguration itself, but used below
     String url; // Anything else specific to your delivery mechanism
 }
 ```
@@ -183,18 +182,14 @@ public class MyAppender extends AbstractLogDeliveryAppender<MyConfiguration> {
         return new MyLogDelivery(getLogConfiguration());
     }
 
-    @Override
-    public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
-        // loggingEvent is already an immutable snapshot, safe to use from the background thread
-        LogConverter converter = getLogConfiguration().getConverter();
-        return () -> Optional.ofNullable(getLogDeliveryHandler())
-                .ifPresent(handler -> handler.send(converter.convert(loggingEvent)));
-    }
-
     // A @PluginBuilderFactory Builder is also needed to expose the configuration as XML/properties/...
     // attributes; see the linked implementations for a complete example.
 }
 ```
+
+Each event is then converted by a `DefaultLogConverter` on the background thread, and the document sent to
+your delivery. Override `getLogConverter()` to convert with another one (see below), or
+`createLogDeliveryTask(LogEvent)` to take over the whole task.
 
 ### 4. Conversion (optional)
 
@@ -216,7 +211,8 @@ fields:
 
 All MDC (context) entries are also added as-is, without overriding any of the fields above should a key
 collide with one of them. To customize this behaviour, extend `DefaultLogConverter` and override the
-relevant `write*` method, or implement `LogConverter` from scratch for full control.
+relevant `write*` method, or implement `LogConverter` from scratch for full control, then return it,
+configured, from `getLogConverter()` of your appender.
 
 ## Observability
 

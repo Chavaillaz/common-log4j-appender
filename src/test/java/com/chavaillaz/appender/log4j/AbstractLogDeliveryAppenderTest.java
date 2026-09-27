@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -446,6 +447,82 @@ class AbstractLogDeliveryAppenderTest {
 
             // cleanup
             appender.stop();
+        }
+
+    }
+
+    @Nested
+    @DisplayName("Default delivery task")
+    class DefaultDeliveryTask {
+
+        @Test
+        @DisplayName("Converts each event with a DefaultLogConverter and sends the document to the delivery")
+        void testDefaultTaskSendsTheConvertedEvent() throws Exception {
+            // given: an appender creating its delivery, and nothing else
+            var configuration = TestLogConfiguration.builder()
+                    .application("my-application")
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var handler = mock(LogDelivery.class);
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, createDefaultLayout(), configuration) {
+                @Override
+                public LogDelivery createLogDeliveryHandler() {
+                    return handler;
+                }
+            };
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("hello"));
+
+            // then
+            verify(handler, timeout(5_000)).send(argThat((Map<String, Object> document) ->
+                    "hello".equals(document.get("logmessage")) && "my-application".equals(document.get("application"))));
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Converts each event with the converter the appender returns instead, when it overrides it")
+        void testDefaultTaskUsesTheConverterOfTheAppender() throws Exception {
+            // given
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var handler = mock(LogDelivery.class);
+            LogConverter converter = new LogConverter() {
+                @Override
+                public Map<String, Object> convert(LogEvent event) {
+                    return Map.of("custom", event.getMessage().getFormattedMessage());
+                }
+
+                @Override
+                public void configure(LogConfiguration configuration) {
+                    // Nothing to configure
+                }
+            };
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, createDefaultLayout(), configuration) {
+                @Override
+                public LogDelivery createLogDeliveryHandler() {
+                    return handler;
+                }
+
+                @Override
+                protected LogConverter getLogConverter() {
+                    return converter;
+                }
+            };
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("hello"));
+
+            // then
+            verify(handler, timeout(5_000)).send(Map.<String, Object>of("custom", "hello"));
+
+            // cleanup
+            appender.stop(1, SECONDS);
         }
 
     }

@@ -42,9 +42,10 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * Base of an appender transmitting logs from Log4j2.
  * <p>
  * {@link #append(LogEvent)} never blocks the application thread: it snapshots the event and queues it for a
- * single background thread, which converts the events (see {@link LogConverter}) and batches them (see
+ * single background thread, which converts the events (see {@link #getLogConverter()}) and batches them (see
  * {@link AbstractBatchLogDelivery}), transmissions running on virtual threads of their own. A scheduler thread
- * periodically queues a flush, so that batching only ever happens on the background thread.
+ * periodically queues a flush, so that batching only ever happens on the background thread. A subclass only
+ * creates its delivery (see {@link #createLogDeliveryHandler()}).
  * <p>
  * The queue holds at most {@link DeliveryOptions#maxQueuedEvents()} events, so that events arriving faster than
  * they are processed, while every transmission slot is stuck on an unresponsive downstream system for
@@ -162,10 +163,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private volatile @Nullable LogDelivery logDeliveryHandler;
 
     /**
-     * Converts an event discarded before reaching the worker, so that it can still be reported, independently
-     * of the converter of a subclass, which runs on the worker.
+     * The converter {@link #getLogConverter()} returns by default, which also converts an event discarded
+     * before reaching the worker, so that it can still be reported whatever converter a subclass returns: this
+     * one is known to be safe to call from the thread reporting it as well.
      */
-    private final DefaultLogConverter fallbackConverter = new DefaultLogConverter();
+    private final DefaultLogConverter defaultConverter = new DefaultLogConverter();
 
     /**
      * The events discarded on the application thread, waiting for {@link #discardReporter} to report them, so
@@ -207,7 +209,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.initialCloseTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents());
         this.pendingDiscards = new LinkedBlockingQueue<>(options.maxQueuedEvents());
-        this.fallbackConverter.configure(configuration);
+        this.defaultConverter.configure(configuration);
     }
 
     /**
@@ -459,7 +461,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Reports several discarded events in one notification rather than one per event, a listener saving them
      * usually paying per call, and a stop timing out abandoning up to a full queue at once. Converted by
-     * {@link #fallbackConverter}, and only for a listener reading them.
+     * {@link #defaultConverter}, and only for a listener reading them.
      *
      * @param events The logging events being discarded
      * @param reason A short, human-readable explanation of why they were discarded
@@ -477,7 +479,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             }
             List<Map<String, Object>> documents = new ArrayList<>(events.size());
             for (LogEvent event : events) {
-                documents.add(fallbackConverter.convert(event));
+                documents.add(defaultConverter.convert(event));
             }
             listener.onDocumentsDropped(List.copyOf(documents), reason);
         } catch (Throwable e) {
@@ -503,11 +505,31 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Creates the task transmitting the given event, called on the application thread: it should only capture
      * what it needs, leaving the conversion and the transmission to the task, run on the background thread.
+     * Defaults to a task converting the event with {@link #getLogConverter()} and sending the document to the
+     * delivery handler.
      *
      * @param loggingEvent The logging event to send, an immutable snapshot
      * @return The task to run
      */
-    public abstract Runnable createLogDeliveryTask(LogEvent loggingEvent);
+    public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        return () -> {
+            LogDelivery handler = logDeliveryHandler;
+            if (handler != null) {
+                handler.send(getLogConverter().convert(loggingEvent));
+            }
+        };
+    }
+
+    /**
+     * The converter turning an event into the document sent, called on the background thread by the task
+     * {@link #createLogDeliveryTask(LogEvent)} creates by default. Defaults to a {@link DefaultLogConverter}
+     * configured with the configuration of this appender; override it to return another, configured already.
+     *
+     * @return The converter to use
+     */
+    protected LogConverter getLogConverter() {
+        return defaultConverter;
+    }
 
     /**
      * Whether the most recent transmission attempt of the delivery succeeded (see

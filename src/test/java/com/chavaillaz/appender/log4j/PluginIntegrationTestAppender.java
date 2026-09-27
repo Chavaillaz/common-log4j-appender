@@ -5,7 +5,6 @@ import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLa
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -13,7 +12,6 @@ import org.apache.logging.log4j.core.Appender;
 import org.apache.logging.log4j.core.Core;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.Layout;
-import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.plugins.Plugin;
 import org.apache.logging.log4j.core.config.plugins.PluginBuilderAttribute;
@@ -26,7 +24,9 @@ import com.chavaillaz.appender.TransmissionResult;
  * A minimal, real Log4j2 plugin appender, used only by {@link PluginIntegrationTest} to exercise this
  * library's classes through Log4j2's actual plugin discovery and configuration-building machinery instead
  * of by directly instantiating them, the way every other test in this suite does. Every document it
- * receives is captured in {@link #RECEIVED_DOCUMENTS} for the test to assert on.
+ * receives is captured in {@link #RECEIVED_DOCUMENTS} for the test to assert on. It only creates its
+ * delivery, leaving the conversion of the events to its base class, as an appender with nothing to
+ * customize does.
  */
 @Plugin(name = "TestDeliveryAppender", category = Core.CATEGORY_NAME, elementType = Appender.ELEMENT_TYPE)
 public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
@@ -38,15 +38,12 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
      */
     static final List<Map<String, Object>> RECEIVED_DOCUMENTS = new CopyOnWriteArrayList<>();
 
-    private final LogConverter converter = new DefaultLogConverter();
-
     private final long transmissionDelayMillis;
 
     private PluginIntegrationTestAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
                                           long transmissionDelayMillis) {
         super(name, filter, layout, configuration);
         this.transmissionDelayMillis = transmissionDelayMillis;
-        converter.configure(configuration);
     }
 
     /**
@@ -100,12 +97,6 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
                 }, CompletableFuture.delayedExecutor(transmissionDelayMillis, MILLISECONDS));
             }
         };
-    }
-
-    @Override
-    public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
-        return () -> Optional.ofNullable(getLogDeliveryHandler())
-                .ifPresent(handler -> handler.send(converter.convert(loggingEvent)));
     }
 
 }
