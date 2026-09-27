@@ -976,7 +976,7 @@ public class Batcher<T> {
                 log.warn("Unhandled exception while processing the result of a transmitted batch of {} {}(s), treating it as a failure",
                         elements.size(), elementNoun, e);
                 notifyListener(() -> listener.onFailed(elements.size(), e));
-                onTransmissionFailure(elements, failureStreak);
+                onTransmissionFailure(elements, failureStreak, e);
             } finally {
                 transmissionPermits.release();
             }
@@ -1008,7 +1008,8 @@ public class Batcher<T> {
 
     /**
      * Turns what the future of the transport completed with into a {@link TransmissionResult}, an exceptional
-     * completion or a {@code null} result becoming a {@link TransmissionResult.Failure}.
+     * completion or a {@code null} result becoming a {@link TransmissionResult.Failure}, logged along with the
+     * returned ones.
      *
      * @param elements  The chunk that was transmitted, only used to phrase the warning logged
      * @param result    The result the future completed with, or {@code null} if it completed exceptionally
@@ -1021,7 +1022,6 @@ public class Batcher<T> {
             // A future derived by the transport, through thenApply() for instance, wraps the failure
             Throwable cause = throwable instanceof CompletionException && throwable.getCause() != null
                     ? throwable.getCause() : throwable;
-            log.warn("Unhandled exception while transmitting a batch of {} {}(s)", elements.size(), elementNoun, cause);
             return TransmissionResult.failure(cause);
         }
         if (result == null) {
@@ -1034,7 +1034,7 @@ public class Batcher<T> {
 
     /**
      * Handles a transmission result: notifies {@link #listener} of what succeeded and failed, and retries or
-     * gives up on what failed through {@link #onTransmissionFailure(List, int)}, which for a
+     * gives up on what failed through {@link #onTransmissionFailure(List, int, Throwable)}, which for a
      * {@link TransmissionResult.PartialFailure} is only the elements it rejected, matched by reference.
      *
      * @param elements       The chunk that was transmitted
@@ -1049,7 +1049,7 @@ public class Batcher<T> {
             case TransmissionResult.Failure<T> failure -> {
                 transmissionFailed = true;
                 notifyListener(() -> listener.onFailed(elements.size(), failure.cause()));
-                onTransmissionFailure(elements, failureStreak);
+                onTransmissionFailure(elements, failureStreak, failure.cause());
             }
             case TransmissionResult.PartialFailure<T> partial -> {
                 Partition<T> partition = partition(elements, partial.rejected());
@@ -1071,7 +1071,7 @@ public class Batcher<T> {
                     notifyListener(() -> listener.onSucceeded(accepted.size(), durationMillis));
                 }
                 notifyListener(() -> listener.onFailed(rejected.size(), partial.cause()));
-                onTransmissionFailure(rejected, failureStreak);
+                onTransmissionFailure(rejected, failureStreak, partial.cause());
             }
         }
     }
@@ -1131,7 +1131,7 @@ public class Batcher<T> {
 
     /**
      * Invokes the given listener notification, logging whatever it throws, so that a throwing
-     * {@code onFailed} never skips the {@link #onTransmissionFailure(List, int)} following it.
+     * {@code onFailed} never skips the {@link #onTransmissionFailure(List, int, Throwable)} following it.
      *
      * @param notification The listener call to perform
      */
@@ -1145,26 +1145,30 @@ public class Batcher<T> {
     }
 
     /**
-     * Handles a failed transmission attempt: either discards the given elements once
-     * {@code maxConsecutiveFailures} has been reached, or puts them back for a later retry, holding off the
-     * next attempt for as long as {@link #backoff} decides in the latter case.
+     * Handles a failed transmission attempt: logs it with its cause, then either discards the given elements
+     * once {@code maxConsecutiveFailures} has been reached, or puts them back for a later retry, holding off
+     * the next attempt for as long as {@link #backoff} decides in the latter case.
      *
      * @param elements      The elements that failed to be transmitted
      * @param failureStreak The number of consecutive times this exact content had already failed before
      *                      this attempt
+     * @param cause         The exception responsible for the failure, or {@code null} if none was reported
      */
-    private void onTransmissionFailure(List<T> elements, int failureStreak) {
+    private void onTransmissionFailure(List<T> elements, int failureStreak, @Nullable Throwable cause) {
         int maxFailures = readLimit(maxConsecutiveFailures, 0, "the maximum consecutive failures");
         int newFailureStreak = failureStreak + 1;
         if (maxFailures > 0 && newFailureStreak >= maxFailures) {
             log.error("Giving up on {} {}(s) after {} consecutive failed transmission attempts, they will be discarded",
-                    elements.size(), elementNoun, newFailureStreak);
+                    elements.size(), elementNoun, newFailureStreak, cause);
             // Directly, under the permit the transmission still holds, so that awaitPendingTransmissions()
             // waits for it too
             notifyListener(() -> listener.onDropped(List.copyOf(elements), "maximum consecutive transmission failures exceeded"));
             return;
         }
 
+        // Every attempt, a listener being otherwise the only way to learn of an outage before it costs elements
+        log.warn("Failed to transmit {} {}(s), {} consecutive failure(s) so far, retrying later",
+                elements.size(), elementNoun, newFailureStreak, cause);
         applyBackoff(newFailureStreak);
         requeue(elements, newFailureStreak);
     }

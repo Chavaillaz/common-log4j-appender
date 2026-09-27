@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -1208,6 +1209,90 @@ class BatcherTest {
         // then
         assertTrue(statusMessages.stream().anyMatch(message -> message.contains("maximum pending element")),
                 "Expected the discard on the status channel, got: " + statusMessages);
+    }
+
+    @Test
+    @DisplayName("Logs the cause of every failure the transport returns, before any element is given up on")
+    void testReturnedFailureIsLoggedWithItsCause() throws Exception {
+        // given: a transport reporting its failure rather than throwing it, the way the README tells one to,
+        // and room for several retries before anything is given up on
+        var cause = new IOException("connection refused");
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1L)
+                .maxConsecutiveFailures(() -> 5)
+                .transport(elements -> completedFuture(TransmissionResult.failure(cause)))
+                .build();
+
+        // when
+        List<StatusData> statuses = captureStatuses(() -> {
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+        });
+
+        // then: the outage shows from its first failure, with what caused it
+        assertTrue(statuses.stream().anyMatch(status -> status.getLevel() == Level.WARN && status.getThrowable() == cause),
+                "Expected a warning carrying the cause, got: " + statuses.stream().map(StatusData::getFormattedStatus).toList());
+    }
+
+    @Test
+    @DisplayName("Logs the cause of the last failure along with the elements it gives up on")
+    void testGivingUpIsLoggedWithTheCause() throws Exception {
+        // given
+        var cause = new IOException("connection refused");
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1L)
+                .maxConsecutiveFailures(() -> 1)
+                .transport(elements -> completedFuture(TransmissionResult.failure(cause)))
+                .build();
+
+        // when
+        List<StatusData> statuses = captureStatuses(() -> {
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+        });
+
+        // then
+        assertTrue(statuses.stream().anyMatch(status -> status.getLevel() == Level.ERROR && status.getThrowable() == cause),
+                "Expected an error carrying the cause, got: " + statuses.stream().map(StatusData::getFormattedStatus).toList());
+    }
+
+    /**
+     * Runs the given action while capturing what is logged on the status channel of Log4j2 from warnings up.
+     */
+    private static List<StatusData> captureStatuses(ThrowingRunnable action) throws Exception {
+        var statuses = new CopyOnWriteArrayList<StatusData>();
+        var statusListener = new StatusListener() {
+            @Override
+            public void log(StatusData data) {
+                statuses.add(data);
+            }
+
+            @Override
+            public Level getStatusLevel() {
+                return Level.WARN;
+            }
+
+            @Override
+            public void close() {
+                // Nothing to release
+            }
+        };
+        StatusLogger.getLogger().registerListener(statusListener);
+        try {
+            action.run();
+        } finally {
+            StatusLogger.getLogger().removeListener(statusListener);
+        }
+        return statuses;
+    }
+
+    /**
+     * An action a test captures the statuses of, free to throw what it waits for.
+     */
+    private interface ThrowingRunnable {
+
+        void run() throws Exception;
+
     }
 
     private static boolean isModifiable(List<String> elements) {

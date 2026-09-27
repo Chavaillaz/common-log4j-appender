@@ -135,9 +135,6 @@ client completing the future, whose I/O the listener or a retry therefore never 
 ```java
 public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 
-    // Never an ordinary logger, which would feed its own warnings back into the appender (see below)
-    private static final Logger log = StatusLogger.getLogger();
-
     public MyLogDelivery(MyConfiguration configuration) {
         super(configuration);
     }
@@ -148,12 +145,17 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
             myClient.send(documents);
             return CompletableFuture.completedFuture(TransmissionResult.success());
         } catch (Exception e) {
-            log.warn("Unable to send bulk of {} documents", documents.size(), e);
+            // Logged with its cause and retried by the library
             return CompletableFuture.completedFuture(TransmissionResult.failure(e));
         }
     }
 }
 ```
+
+Every failed attempt is logged with its cause on Log4j2's status logger (see
+[Shutdown and failure handling](#shutdown-and-failure-handling)), so there is no need to log it again. A
+delivery logging anything of its own uses `StatusLogger.getLogger()` too, never an ordinary logger, which
+would feed its own warnings back into the appender.
 
 The documents are handed over as an unmodifiable list. If your client can tell you that only *some* of
 them were rejected (e.g. one malformed document in an otherwise-successful bulk response), return
@@ -350,7 +352,9 @@ to split it further.
   documents. Any exception thrown while converting or sending a log is reported through Log4j2's
   `StatusLogger` (visible with `-Dlog4j2.debug`, a `status` attribute on the root `<Configuration>`
   element, or a `<StatusListener>`) instead of being silently swallowed, in addition to your
-  `LogDeliveryListener` if configured.
+  `LogDeliveryListener` if configured. Every failed attempt is logged there as a warning with its cause,
+  whether returned or thrown, and documents given up on as an error, so an outage shows from its first
+  failure rather than once documents start being discarded.
 - **Its own diagnostics:** everything this library reports about itself goes to that status channel and
   never through an ordinary logger. That is deliberate rather than incidental: an appender is normally
   attached to the root logger, so a warning logged the ordinary way comes straight back as one more
