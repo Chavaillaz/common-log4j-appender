@@ -15,9 +15,8 @@ import org.jspecify.annotations.Nullable;
 public interface BatcherListener<T> {
 
     /**
-     * A listener doing nothing, used as the default when none is configured. Since it never actually
-     * touches an element of type {@code T} (every method here is a no-op), the unchecked cast behind this
-     * factory is safe regardless of what {@code T} the caller asks for.
+     * A listener doing nothing, used as the default when none is configured. The unchecked cast is safe, no
+     * method touching an element.
      *
      * @param <T> The type of element transmitted
      * @return A listener implementing every method as a no-op

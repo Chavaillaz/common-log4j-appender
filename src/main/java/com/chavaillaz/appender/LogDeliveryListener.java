@@ -9,6 +9,10 @@ import org.jspecify.annotations.Nullable;
  * Observes the outcome of log transmissions performed by a {@link LogDelivery}, so the health of the
  * delivery pipeline (throughput, latency, failures, data loss) can be monitored, e.g. by forwarding these
  * events to a metrics library. Every method has a no-op default; override only the ones you need.
+ * <p>
+ * Methods are called concurrently, from the threads transmitting, the background thread of the appender and,
+ * for an event discarded by a full queue, the application thread logging it: an implementation must be
+ * thread-safe, and should return quickly.
  */
 public interface LogDeliveryListener {
 
@@ -35,19 +39,18 @@ public interface LogDeliveryListener {
      * later retry.
      *
      * @param documentCount The number of documents in the batch
-     * @param cause         The exception responsible for the failure, or {@code null} if the implementation
-     *                      of {@code sendBulk} simply returned {@code false} without throwing
+     * @param cause         The exception responsible for the failure, or {@code null} if the transmission
+     *                      reported a failure without one
      */
     default void onTransmissionFailed(int documentCount, @Nullable Throwable cause) {
         // No-op by default
     }
 
     /**
-     * Called when documents are irrecoverably discarded instead of kept for a later retry: a batch that
-     * kept failing, one of the pending or queued limits reached, or a delivery closing on documents it
-     * never managed to send. {@code reason} says which. Unlike the other methods here, the actual documents
-     * are passed (as an unmodifiable list) rather than just a count, since this is a last chance to save
-     * them, e.g. to a local file or a dead-letter queue.
+     * Called when documents are irrecoverably discarded instead of kept for a later retry: documents that kept
+     * failing, a pending or queued limit reached, or a delivery closing on documents it never managed to send,
+     * as {@code reason} says. The documents themselves are passed, as an unmodifiable list, this being the
+     * last chance to save them, to a local file or a dead-letter queue for instance.
      *
      * @param documents The documents being discarded
      * @param reason    A short, human-readable explanation of why the documents were discarded

@@ -26,75 +26,43 @@ import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Generic accumulate-batch-transmit-retry engine: elements are stacked until a threshold is reached (or
- * {@link #flush()} is called), then handed to a transport function, retried on failure and eventually
- * discarded past configurable safety limits. Deliberately has no notion of Log4j2, logging events, or a
- * document shape (unlike {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery}, which wires this
- * engine to a {@code Map<String,Object>} document type and a {@link LogDeliveryListener}), so it can be
- * tested, and reused, entirely on its own.
+ * Generic accumulate, batch, transmit and retry engine, knowing nothing of Log4j2 nor of the shape of an
+ * element: {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery} wires it to log documents and a
+ * {@link LogDeliveryListener}.
  * <p>
- * A batch ready to be sent is handed off to a virtual thread instead of being sent by the calling thread,
- * so a slow or blocked transmission never delays accumulation of the next batch. Concurrent transmissions
- * are bounded by {@code maxConcurrentTransmissions}: beyond that limit, the calling thread waits for one to
- * complete before handing over the next.
+ * Elements are stacked until a threshold is reached, or {@link #flush()} is called, and the batch is then
+ * handed to the transport function on a virtual thread of its own, so that a slow transmission never delays
+ * the next batch. At most {@code maxConcurrentTransmissions} run at once, the calling thread waiting for one
+ * to complete past that.
  * <p>
- * A failed transmission's elements are put back at the front of the batch for a later retry instead of
- * being lost. While batching is enabled (a flush threshold greater than {@code 1}) and the last attempt is
- * still failing, a new one is not attempted for every incoming element; retries wait for the next
- * {@link #flush()} instead. On top of that, a {@link BackoffPolicy} (disabled by default) holds off every
- * transmission for a while after a failure, so a struggling downstream system is not hit again at the rate
- * logs happen to arrive.
+ * The transport returns a future, completed right away or later by an asynchronous client, with a
+ * {@link TransmissionResult}. What failed is put back at the front of the batch, and retried once a
+ * {@link BackoffPolicy} allows it: on the next flush while batching, rather than on every new element. A
+ * {@link TransmissionResult.PartialFailure} retries only the elements it rejected.
  * <p>
- * Two safety nets bound the cost of a struggling transport, or of a single element it can never accept, so
- * neither can grow memory without bound or wedge the pipeline forever: the pending batch is capped at
- * {@code maxPendingElements} via {@link BoundedTrim} (oldest elements discarded past that, both while
- * accumulating and while requeuing after a failure), and a batch that fails {@code maxConsecutiveFailures}
- * times in a row (counted for the elements that failed, not engine-wide, so neither an unrelated batch
- * succeeding concurrently nor a newer element joining them can reset it) is discarded instead of retried
- * indefinitely. Both are reported through
- * {@link BatcherListener#onDropped(List, String)}, so this data loss is never silent.
+ * Safety limits keep a struggling transport, or an element it never accepts, from growing memory or wedging
+ * the pipeline: the pending batch is capped at {@code maxPendingElements}, and at {@code maxPendingBytes}
+ * given an {@code elementSize} measurement, its oldest elements being discarded past them, and elements
+ * failing {@code maxConsecutiveFailures} times in a row are discarded, the streak counting their own
+ * failures alone. Every discard is reported through {@link BatcherListener#onDropped(List, String)}. A batch
+ * bigger than {@code maxRequestElements}, or {@code maxRequestBytes}, is split into chunks transmitted and
+ * retried independently.
  * <p>
- * A batch due for (re)transmission bigger than {@code maxRequestElements} is first split into chunks of at
- * most that size, each dispatched, retried and (subject to {@code maxConcurrentTransmissions}) transmitted
- * independently.
- * <p>
- * Both of those limits count elements, which only stands in for what actually matters — memory held, and
- * bytes put on the wire — while elements are of roughly uniform size. Supplying an {@code elementSize}
- * measurement enables the two that bound those directly: {@code maxPendingBytes}, discarding the oldest
- * elements once the pending batch weighs more than that, and {@code maxRequestBytes}, splitting a batch into
- * chunks that each stay under it. Both are off (and cost nothing) unless a measurement is supplied.
- * <p>
- * The transport function returns a {@code CompletableFuture<TransmissionResult<T>>} rather than blocking:
- * it may complete it synchronously, or kick off asynchronous I/O and complete it later from another thread,
- * without tying up one of the (bounded) virtual threads this engine dispatches on for the whole duration of
- * the transmission. A {@link TransmissionResult.PartialFailure} lets it report that only some elements of a
- * chunk were rejected; only those are requeued for retry and counted toward
- * {@code maxConsecutiveFailures}, instead of the whole chunk being retried (or given up on) over a single
- * bad element.
- * <p>
- * Instances are created through {@link #builder()}, every setting having a usable default except the
- * transport function itself.
+ * Instances are created through {@link #builder()}, every setting but the transport function having a usable
+ * default.
  *
  * @param <T> The type of element accumulated and transmitted
  */
 public class Batcher<T> {
 
     /**
-     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger, and
-     * deliberately so: an appender built on this engine is normally attached to the root logger, so an
-     * ordinary logger here writes its diagnostics straight back into the very pipeline they are about. One
-     * warning becomes one more element to transmit, whose own failure warns again -- a loop that does not
-     * settle, and that starts exactly when a downstream system goes down. Measured before this was fixed:
-     * one application log line against a failing transport produced sixty thousand self-inflicted documents
-     * in three seconds.
-     * <p>
-     * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender} already reports through this same
-     * channel (via its {@code ErrorHandler}), which is where Log4j2 expects an appender's internals to
-     * speak; make it visible with {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration,
-     * or a {@code <StatusListener>}.
+     * The status logger of Log4j2 rather than an application logger: an appender built on this engine is
+     * normally attached to the root logger, where a diagnostic logged the ordinary way comes back as one more
+     * element to transmit, whose own failure logs again, in a loop starting when the downstream system goes
+     * down. Visible with {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration, or a
+     * {@code <StatusListener>}.
      */
     private static final Logger log = StatusLogger.getLogger();
-
 
     /**
      * Maximum initial capacity reserved for a new batch, to avoid over-allocating for a large threshold.
@@ -102,37 +70,32 @@ public class Batcher<T> {
     private static final int MAX_INITIAL_BATCH_CAPACITY = 1_024;
 
     /**
-     * Sentinel value of {@link #retryNotBeforeNanos} meaning no backoff is currently in effect. A plain
-     * {@code 0} would not do: {@link System#nanoTime()} has an arbitrary origin and can legitimately return
-     * it (or any other fixed value), so no reading of the clock can be reserved as a sentinel.
+     * Value of {@link #retryNotBeforeNanos} meaning no backoff is in effect, rather than {@code 0}, which
+     * {@link System#nanoTime()} can return as well as any other value.
      */
     private static final long NO_BACKOFF = Long.MIN_VALUE;
 
     /**
-     * Sentinel value of {@link #closeDeadlineNanos} meaning no deadline is in effect, for the same reason
-     * {@link #NO_BACKOFF} cannot simply be {@code 0}.
+     * Value of {@link #closeDeadlineNanos} meaning no deadline is in effect, for the same reason as
+     * {@link #NO_BACKOFF}.
      */
     private static final long NO_DEADLINE = Long.MIN_VALUE;
 
     /**
-     * Upper bound applied to a close timeout before converting it to nanoseconds, so an absurdly large one
-     * cannot overflow that conversion into a negative (i.e. already elapsed) deadline. A year is well past
-     * any sane shutdown budget, and indistinguishable from waiting indefinitely in practice.
+     * Upper bound of a close timeout, so that converting it to nanoseconds cannot overflow into a deadline
+     * already elapsed. A year is indistinguishable from waiting indefinitely.
      */
     private static final long MAX_TIMEOUT_MILLIS = Duration.ofDays(365).toMillis();
 
     /**
-     * How many {@link #notifyDropped(List, String)} notifications may be in flight at once before the rest
-     * are delivered on the calling thread instead. Small on purpose: this exists to keep a slow listener
-     * from piling up notifications (and the elements each one holds) without bound, not to parallelize it.
+     * How many notifications of {@link #notifyDropped(List, String)} may be in flight at once, the next ones
+     * running on the calling thread, so that a slow listener cannot pile them up without bound.
      */
     private static final int MAX_CONCURRENT_DROP_NOTIFICATIONS = 4;
 
     /**
-     * How long {@link #acquireTransmissionPermit()} waits for a permit at a time while no close is in
-     * progress, before looking again at whether one has begun (see that method for why it does not simply
-     * wait indefinitely). Only ever reached while genuinely blocked on a saturated transport, so waking up
-     * this often costs nothing on any path that is actually making progress.
+     * How long {@link #acquireTransmissionPermit()} waits at a time while no close is in progress, before
+     * looking again whether one began.
      */
     private static final long PERMIT_WAIT_SLICE_NANOS = Duration.ofSeconds(1).toNanos();
 
@@ -144,10 +107,9 @@ public class Batcher<T> {
     private final LongSupplier maxRequestBytes;
 
     /**
-     * Measures one element, or {@code null} to not track sizes at all — in which case both byte limits above
-     * are inert and nothing here ever pays for measuring. Fixed at construction rather than re-read per call
-     * like the count limits: turning measurement on midway would leave {@link #pendingBytes} describing only
-     * part of the batch, so the decision has to be made once, before anything accumulates.
+     * Measures one element, or {@code null} not to track sizes, leaving both byte limits inert. Fixed at
+     * construction, unlike the limits: turning it on midway would leave {@link #pendingBytes} describing part
+     * of the batch.
      */
     private final @Nullable ToLongFunction<T> elementSize;
 
@@ -162,35 +124,23 @@ public class Batcher<T> {
     private List<T> batch;
 
     /**
-     * Number of consecutive times the data currently in {@link #batch} has already failed to be transmitted
-     * (0 if never attempted). Carried forward (keeping the higher of the two when merged) by
-     * {@link #requeue(List, int)}, and reset to {@code 0} when {@link #swapBatch()} swaps in a fresh batch,
-     * since the returned snapshot then owns its own streak through {@link #dispatch(List, int)}, or when the
-     * elements that earned it are all gone from the batch (see {@link #pendingFailureCount}).
-     * <p>
-     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     * Number of consecutive failed attempts of the {@link #pendingFailureCount} leading elements of
+     * {@link #batch}, which {@link #requeue(List, int)} put back there, the higher streak being kept when two
+     * are merged. Guarded by the monitor of this instance, like the batch.
      */
     private int pendingFailureStreak;
 
     /**
-     * How many of the leading elements of {@link #batch} are the ones {@link #pendingFailureStreak} was
-     * earned by, {@code 0} meaning none are left and the streak no longer describes anything.
-     * <p>
-     * A streak belongs to the elements that failed, not to the batch holding them. Both trims cut from the
-     * front, which is where {@link #requeue(List, int)} puts what it hands back, so this one count is
-     * enough to know when the last of those elements is gone.
-     * <p>
-     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     * How many leading elements of {@link #batch} earned {@link #pendingFailureStreak}, {@code 0} meaning none
+     * is left: a streak belongs to the elements that failed, not to the batch holding them, and both trims cut
+     * from the front, where {@link #requeue(List, int)} puts them. Guarded by the monitor of this instance.
      */
     private int pendingFailureCount;
 
     /**
-     * Estimated total size of {@link #batch}, kept up to date as elements are added and discarded rather than
-     * recomputed on demand: summing it per call would make every {@link #add(List)} walk the whole pending
-     * batch, turning an O(1) accumulation into an O(n) one exactly when the batch is at its largest. Always
-     * {@code 0} while {@link #elementSize} is {@code null}.
-     * <p>
-     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     * Estimated total size of {@link #batch}, kept up to date rather than summed on demand, which would make
+     * every {@link #add(List)} walk the whole batch. Always {@code 0} without {@link #elementSize}. Guarded by
+     * the monitor of this instance.
      */
     private long pendingBytes;
 
@@ -212,17 +162,15 @@ public class Batcher<T> {
     private final Semaphore transmissionPermits;
 
     /**
-     * Bounds the number of drop notifications handed to {@link #transmissionExecutor} at once to
-     * {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS}. Deliberately separate from {@link #transmissionPermits}:
-     * a notification is best-effort and must not consume a slot a real transmission could use, nor make
-     * {@link #awaitPendingTransmissions()} wait on a listener.
+     * Bounds the drop notifications handed to {@link #transmissionExecutor} at once. Separate from
+     * {@link #transmissionPermits}, so that a notification never takes the slot of a transmission, nor makes
+     * {@link #awaitPendingTransmissions()} wait for a listener.
      */
     private final Semaphore dropNotificationPermits = new Semaphore(MAX_CONCURRENT_DROP_NOTIFICATIONS);
 
     /**
-     * Whether the last completed transmission attempt failed, used to avoid retrying on every single new
-     * element received while batching is enabled and the transport is unavailable or failing. Also exposed
-     * through {@link #isTransmissionFailing()} as a simple health signal.
+     * Whether the last completed transmission attempt failed, so that a failing transport is not retried on
+     * every new element while batching (see {@link #isTransmissionFailing()}).
      */
     private volatile boolean transmissionFailed;
 
@@ -233,31 +181,24 @@ public class Batcher<T> {
     private volatile long retryNotBeforeNanos = NO_BACKOFF;
 
     /**
-     * Whether {@link #close(Duration)} has been called, after which no element is accepted any more: without
-     * this, a late {@link #add(List)} would stack elements into a batch nothing will ever transmit or report
-     * (its dispatch being rejected by the shut-down {@link #transmissionExecutor}), losing them silently.
-     * <p>
-     * Raised before {@link #close(Duration)} acquires the monitor of this instance for the first time, which
-     * is what lets {@link #add(List)} read it under that monitor and conclude that an unset value means
-     * {@link #reportRemainingAsDropped()} has not run yet, and will therefore still see what it stacks.
+     * Whether {@link #close(Duration)} was called, after which no element is accepted, since nothing would
+     * transmit or report it. Raised before the close first takes the monitor of this instance, so that
+     * {@link #add(List)} reading it unset under the monitor knows {@link #reportRemainingAsDropped()} will
+     * still see what it stacks.
      */
     private volatile boolean closed;
 
     /**
-     * Whether {@link #reportRemainingAsDropped()} has already emptied {@link #batch} for good. Past that
-     * point nothing will ever transmit or report the batch again, so {@link #requeue(List, int)} reports its
-     * elements directly instead of merging them into a batch no one is left to look at.
-     * <p>
-     * Always guarded by the monitor of this instance, like {@link #batch} itself.
+     * Whether {@link #reportRemainingAsDropped()} emptied {@link #batch} for good, past which
+     * {@link #requeue(List, int)} reports its elements rather than merging them into a batch nobody looks at.
+     * Guarded by the monitor of this instance.
      */
     private boolean drained;
 
     /**
      * The {@link System#nanoTime()} reading past which {@link #close(Duration)} stops waiting, or
-     * {@link #NO_DEADLINE} while no bounded close is in progress. Read by {@link #dispatchChunk(List, int)}
-     * too, so the final flush's own wait for a transmission permit is bounded by the very same budget: with
-     * every permit held by transmissions that never complete, acquiring one would otherwise block the whole
-     * close before it even reaches its (bounded) wait, defeating the timeout entirely.
+     * {@link #NO_DEADLINE}. Also bounds the wait of {@link #dispatchChunk(List, int)} for a permit, which would
+     * otherwise block the close forever while every permit is held by a transmission that never completes.
      */
     private volatile long closeDeadlineNanos = NO_DEADLINE;
 
@@ -268,8 +209,7 @@ public class Batcher<T> {
      */
     private Batcher(Builder<T> builder) {
         if (builder.maxConcurrentTransmissions < 1) {
-            // A value of 0 or less would give the semaphore below no permits to ever hand out, so every
-            // dispatch() would block forever instead of merely lowering throughput.
+            // No permit to hand out, every dispatch would block forever
             throw new IllegalArgumentException(
                     "maxConcurrentTransmissions must be at least 1, but was " + builder.maxConcurrentTransmissions);
         }
@@ -303,9 +243,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Builder for {@link Batcher}, preferred over a constructor taking every setting positionally: most of
-     * them are same-typed suppliers and counts, which such a constructor makes trivially easy to swap by
-     * mistake with no compiler error to show for it.
+     * Builder for {@link Batcher}, preferred over a constructor taking every setting positionally, most of them
+     * being same-typed suppliers and counts, easy to swap by mistake.
      *
      * @param <T> The type of element accumulated and transmitted
      */
@@ -406,18 +345,12 @@ public class Batcher<T> {
         }
 
         /**
-         * Sets how to measure one element, enabling the two byte limits above — which do nothing without it,
-         * since there is otherwise no way to know what an element weighs.
+         * Sets how to measure one element, enabling the two byte limits above, which do nothing without it.
+         * Unset by default, measuring costing something for every element: set it along with one of them.
          * <p>
-         * Left unset by default, and deliberately not defaulted to some generic guess: measuring costs
-         * something on the path every element takes, and an engine given no byte limit to enforce should not
-         * pay it. Set it only alongside {@link #maxPendingBytes(LongSupplier)} or
-         * {@link #maxRequestBytes(LongSupplier)}.
-         * <p>
-         * Expected to be cheap, pure and free of side effects: it is called once per element on the way in,
-         * and again per element when chunking a batch for transmission. A negative result is treated as zero,
-         * and an exception is logged and treated the same way, so a misbehaving measurement can only make the
-         * limits less accurate, never break the pipeline.
+         * Expected to be cheap and free of side effects, being called for every element on the way in, and
+         * again when a batch is split for transmission. A negative result counts as zero, and so does one
+         * throwing, which is logged, so that a faulty measurement only makes the limits less accurate.
          *
          * @param elementSize The measurement function
          * @return This builder
@@ -441,8 +374,7 @@ public class Batcher<T> {
         }
 
         /**
-         * Sets how long to hold off transmissions after a failure. Defaults to {@link BackoffPolicy#none()},
-         * the behavior of every version of this library before that interface existed.
+         * Sets how long to hold off transmissions after a failure. Defaults to {@link BackoffPolicy#none()}.
          *
          * @param backoff The backoff policy
          * @return This builder
@@ -534,12 +466,7 @@ public class Batcher<T> {
         boolean rejected;
         int maxPending = 0;
         synchronized (this) {
-            // Read while holding the monitor rather than before taking it. close() raises this flag before
-            // it ever acquires the monitor, so seeing it unset here proves reportRemainingAsDropped() has
-            // not drained the batch yet and will still pick up whatever is stacked below. Checked outside,
-            // a caller could pass it just as a concurrent close() begins, then stack elements into a batch
-            // that has already been drained -- nothing would ever transmit them (dispatch being rejected by
-            // the shut-down executor) nor report them, losing them silently.
+            // Read under the monitor, which close() only takes after raising it (see closed)
             rejected = closed;
             if (!rejected) {
                 batch.addAll(elements);
@@ -548,20 +475,16 @@ public class Batcher<T> {
                 long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
                 log.trace("Stacking batch {}/{}", batch.size(), threshold);
 
-                // Enforces the same cap as requeue() here too, so maxPendingElements bounds memory even when
-                // flushThreshold is set higher (or effectively unbounded) and nothing is actually failing.
+                // Capped here too, and not only when requeuing, since nothing may be failing
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
                 discarded = BoundedTrim.trim(batch, maxPending);
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
-                // This only appends at the end, so both trims above cut off the front, where the elements a
-                // streak was earned by sit.
+                // Both trims cut from the front, where the elements that earned a streak sit
                 dropFailedPrefix(size(discarded) + size(oversized));
 
                 boolean batchingEnabled = threshold > 1;
-                // Never on an empty batch: a non-positive threshold (allowed, meaning "no batching") makes
-                // "reached" trivially true, so an add() left with nothing -- an empty list, or one the caps
-                // above discarded outright -- would otherwise send an empty request and fail on it.
+                // Never an empty batch, which a threshold of 0 or less would otherwise send
                 boolean thresholdReached = !batch.isEmpty() && batch.size() >= threshold;
                 if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
                     snapshot = swapBatch();
@@ -571,14 +494,11 @@ public class Batcher<T> {
         if (rejected) {
             log.warn("Discarding {} {}(s) submitted after this engine was closed", elements.size(), elementNoun);
             List<T> copy = List.copyOf(elements);
-            // Notified on the calling thread: transmissionExecutor is already shut down by the time this
-            // flag is visible, so handing it off would only fall straight back here.
+            // On the calling thread, the executor being shut down by then
             notifyListener(() -> listener.onDropped(copy, "submitted after close"));
             return;
         }
-        // Notified off this thread where possible (see notifyDropped()) since this runs directly on whatever
-        // thread called add(): a slow listener should not stall it, and only stalls it once enough
-        // notifications are already in flight that queueing another would grow without bound.
+        // Off the calling thread where possible (see notifyDropped())
         if (discarded != null) {
             log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while accumulating",
                     discarded.size(), elementNoun, elementNoun, maxPending);
@@ -593,9 +513,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Whether the most recently completed transmission attempt failed (see {@link #transmissionFailed}),
-     * exposed as a simple health signal a caller can poll directly (e.g. for a readiness/liveness endpoint)
-     * instead of only reacting to {@link BatcherListener} callbacks.
+     * Whether the most recently completed transmission attempt failed, a health signal a caller can poll,
+     * from a readiness endpoint for instance.
      *
      * @return {@code true} if the last completed transmission attempt failed and its elements are currently
      *         being retried, {@code false} if it succeeded or none was attempted yet
@@ -612,8 +531,7 @@ public class Batcher<T> {
      */
     public boolean isBackingOff() {
         long notBefore = retryNotBeforeNanos;
-        // Compares the difference rather than the readings themselves, the only correct way to order two
-        // System.nanoTime() values (they may wrap around, being meaningful only relative to each other).
+        // The difference, not the readings, being the only way to order two System.nanoTime() values
         return notBefore != NO_BACKOFF && System.nanoTime() - notBefore < 0;
     }
 
@@ -661,9 +579,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Replaces the current batch with a new, fresh (never failed) empty one and returns its previous
-     * content together with the failure streak it had accumulated so far, so accumulation of the next batch
-     * can start immediately while the returned one is being transmitted.
+     * Replaces the current batch with an empty one and returns its content with the failure streak it
+     * carried, so that accumulating the next batch resumes while this one is transmitted.
      * <p>
      * Must be called while holding the monitor of this instance.
      *
@@ -695,10 +612,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Measures one element through {@link #elementSize}, or returns {@code 0} if sizes are not tracked.
-     * Tolerates a misbehaving measurement — a negative result, or one throwing outright — by counting the
-     * element as weightless: a byte limit going unenforced is a far better outcome than the element being
-     * lost, or the whole pipeline failing, over a faulty estimate.
+     * Measures one element through {@link #elementSize}, or returns {@code 0} if sizes are not tracked. A
+     * negative result, or a measurement throwing, counts as weightless: a byte limit going unenforced is better
+     * than losing the element over a faulty estimate.
      *
      * @param element The element to measure
      * @return The estimated size of the element in bytes, never negative
@@ -710,24 +626,20 @@ public class Batcher<T> {
         try {
             return Math.max(0, elementSize.applyAsLong(element));
         } catch (Throwable e) {
-            // Throwable, not Exception: measuring a self-referencing element throws a StackOverflowError,
-            // which would escape add() through a batch already appended to but not yet accounted for,
-            // leaving pendingBytes permanently out of step with it.
+            // Throwable: measuring a self-referencing element overflows the stack, which would escape add()
+            // between appending the elements and accounting for them
             log.warn("Unhandled exception thrown while measuring a {}, counting it as empty", elementNoun, e);
             return 0;
         }
     }
 
     /**
-     * Reads one of the dynamic limits, treating a supplier that throws as that limit simply not applying
-     * for now. These suppliers are caller-supplied code -- the delivery built on this engine wires each to
-     * an overridable {@code getMaxPendingDocuments()}-style method reading a configuration re-read at
-     * runtime -- and the request limits are read after a batch has been swapped out but before anything has
-     * taken responsibility for it, so a throw used to carry that batch away with it.
+     * Reads one of the dynamic limits, a supplier throwing leaving the limit unenforced for now: these
+     * suppliers are application code reading a configuration, and the request limits are read once a batch
+     * was swapped out, which an exception would otherwise carry away.
      * <p>
-     * The fallback is always the value that limit documents as "unbounded" or "disabled", never one that
-     * discards: going unenforced for a while costs memory or an oversized request, the alternative costs
-     * the elements.
+     * The fallback is always the value meaning unbounded or disabled, never one that discards: going
+     * unenforced for a while costs memory or an oversized request, where the alternative costs elements.
      *
      * @param limit      The supplier to read
      * @param unenforced The value to fall back to, leaving the limit unenforced
@@ -789,9 +701,7 @@ public class Batcher<T> {
 
     /**
      * Discards the oldest elements of {@link #batch} until its estimated size fits within
-     * {@code maxPendingBytes}, the size-based counterpart of the {@code maxPendingElements} cap
-     * {@link BoundedTrim} applies: a batch of documents well within the count limit can still hold far more
-     * memory than expected when the documents themselves are large.
+     * {@code maxPendingBytes}, the counterpart by size of the cap {@link BoundedTrim} applies by count.
      * <p>
      * Must be called while holding the monitor of this instance.
      *
@@ -808,18 +718,15 @@ public class Batcher<T> {
             pendingBytes -= sizeOf(batch.get(index++));
         }
         List<T> excess = batch.subList(0, index);
-        // Copied before clearing, not after: a sublist is a view of the range it covers, emptied along with
-        // it. This travels to BatcherListener#onDropped anyway, whose contract is an unmodifiable list.
+        // Copied before clearing, a sublist being a view of the range it covers
         List<T> discarded = List.copyOf(excess);
         excess.clear();
         if (batch.isEmpty()) {
-            // Re-anchors the running total on an empty batch rather than letting rounding from a measurement
-            // that is not perfectly stable accumulate across the engine's whole lifetime.
+            // Re-anchored, so that a measurement not perfectly stable cannot drift for the whole lifetime
             pendingBytes = 0;
         }
         if (discarded.isEmpty()) {
-            // Only reachable when the total drifted above the limit on an already empty batch, which the
-            // re-anchoring above has just healed: announcing a discard of nothing would only be noise.
+            // A total drifting above the limit on an empty batch, which the re-anchoring just healed
             return null;
         }
 
@@ -845,18 +752,14 @@ public class Batcher<T> {
         int maxPending = 0;
         synchronized (this) {
             if (drained) {
-                // reportRemainingAsDropped() already emptied the batch for good, and add() refuses to stack
-                // anything new past that point, so nothing will ever look at this batch again: merging these
-                // elements back in would leave them sitting there with nothing left to transmit or report
-                // them. Reached when a transmission, or a dispatch that never got a permit within the close
-                // budget, hands its elements back just after close() drained.
+                // Nothing would ever transmit or report them: a transmission, or a dispatch that got no permit
+                // within the close budget, handing its elements back once close() drained the batch
                 abandoned = List.copyOf(elements);
             } else {
                 List<T> merged = new ArrayList<>(elements.size() + batch.size());
                 merged.addAll(elements);
                 merged.addAll(batch);
-                // The requeued elements left this batch (and its running total) when they were swapped out
-                // for transmission, so they are measured again on the way back in rather than remembered.
+                // Measured again, having left the running total when swapped out
                 pendingBytes += sizeOf(elements);
 
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
@@ -872,19 +775,15 @@ public class Batcher<T> {
 
                 int keptRequeued = Math.max(0, elements.size() - discardedFromFront);
                 if (keptRequeued > 0) {
-                    // The live batch might already carry forward a streak of its own (from a different
-                    // failed chunk merged in moments earlier by a concurrent transmission); keeping the
-                    // higher of the two is the conservative choice, since the merged batch is at least as
-                    // "tainted" as its worst ingredient.
+                    // The batch may carry the streak of another chunk requeued moments earlier: the higher
+                    // one is kept, the merged elements being at least as suspect as the worst of them
                     pendingFailureStreak = Math.max(pendingFailureStreak, failureStreak);
                     pendingFailureCount += keptRequeued;
                 }
             }
         }
-        // Notified outside the lock: it's also needed to accumulate the next batch, and a slow listener
-        // must not stall that. Called directly (not via notifyDropped()) since this is reached either from
-        // onTransmissionFailure() (already on transmissionExecutor's own thread) or, more rarely, from a
-        // failed dispatch handoff — never from the caller-facing add()/flush().
+        // Outside the monitor, which accumulating the next batch needs, and directly: this runs where a
+        // transmission completed, or where a dispatch failed while closing
         if (abandoned != null) {
             List<T> lost = abandoned;
             log.error("Discarding {} {}(s) put back after this engine was closed, they were never successfully transmitted",
@@ -904,33 +803,19 @@ public class Batcher<T> {
         }
     }
 
-
     /**
-     * Notifies {@link #listener} of dropped elements on a fresh virtual thread rather than the calling one,
-     * so a slow listener (writing to a file, a network call) can never stall it. Used only by {@link #add(List)},
-     * reached directly from the caller; every other discard in this class is already off that path and
-     * notified directly instead.
-     * <p>
-     * Bounded to {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS} in flight at once: past that, the notification
-     * happens on the calling thread instead, so a slow listener cannot have them (and the elements each one
-     * holds) accumulate without bound exactly when sustained overload is making every {@link #add(List)}
-     * discard.
-     * <p>
-     * Best-effort: not tracked by {@link #transmissionPermits}, so {@link #awaitPendingTransmissions()} (and
-     * transitively {@link #close()}) does not wait for it; falls back to notifying on the calling thread if
-     * the executor is already shutting down, rather than losing the notification entirely.
+     * Notifies {@link #listener} of dropped elements on a virtual thread, so that a slow listener does not
+     * stall {@link #add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS} run at once:
+     * past that, or once the executor is shut down, the notification runs on the calling thread, so that a
+     * slow listener cannot pile notifications, and the elements they hold, up without bound under the very
+     * overload causing them. Not tracked by {@link #transmissionPermits}, so closing does not wait for it.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded
      */
     private void notifyDropped(List<T> elements, String reason) {
         if (!dropNotificationPermits.tryAcquire()) {
-            // Every slot is still held by a listener that has not returned yet. Handing this notification to
-            // yet another thread would let a slow one (a file write, a lock, a network call) accumulate them
-            // without bound, each pinning the elements it was given -- and the moment that happens is
-            // precisely when the pending cap is already discarding under overload, so the mechanism meant to
-            // bound memory would be the one growing it. Notifying inline instead applies backpressure to the
-            // accumulating thread, which is never an application thread (see the class documentation).
+            // Every slot is held by a listener yet to return: backpressure rather than one more thread
             notifyListener(() -> listener.onDropped(elements, reason));
             return;
         }
@@ -952,9 +837,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Dispatches the given elements for transmission, splitting them into consecutive chunks of at most
-     * {@code maxRequestElements} first if needed, each chunk then handed to {@link #dispatchChunk(List, int)}
-     * independently (see the class documentation for what that means for concurrency and retries).
+     * Dispatches the given elements for transmission, split first into chunks within the request limits if
+     * needed, each chunk being handed to {@link #dispatchChunk(List, int)} independently.
      *
      * @param elements      The elements to dispatch, possibly more than one request's worth
      * @param failureStreak The number of consecutive times this exact content has already failed to be
@@ -964,8 +848,7 @@ public class Batcher<T> {
         int maxCount = readLimit(maxRequestElements, Integer.MAX_VALUE, "the maximum request elements");
         long maxBytes = readLimit(maxRequestBytes, Long.MAX_VALUE, "the maximum request bytes");
         boolean countLimited = maxCount > 0 && elements.size() > maxCount;
-        // A single element is never worth measuring: there is nothing to split it against, and it goes out
-        // on its own either way.
+        // A single element goes out on its own whatever it weighs, so it is not measured
         boolean byteLimited = elementSize != null && maxBytes > 0 && maxBytes < Long.MAX_VALUE && elements.size() > 1;
         if (!countLimited && !byteLimited) {
             dispatchChunk(elements, failureStreak);
@@ -993,9 +876,7 @@ public class Batcher<T> {
         for (T element : elements) {
             long size = maxBytes > 0 ? sizeOf(element) : 0;
             boolean countReached = maxCount > 0 && current.size() >= maxCount;
-            // Never cut before a chunk's first element: one element bigger than the byte limit all by itself
-            // cannot be split any further, so it goes out alone (and is left for the transport to reject)
-            // rather than producing an empty chunk, or no chunk at all, forever.
+            // Never cut before the first element of a chunk, so that one heavier than the limit goes out alone
             boolean bytesReached = maxBytes > 0 && !current.isEmpty() && currentBytes + size > maxBytes;
             if (countReached || bytesReached) {
                 chunks.add(List.copyOf(current));
@@ -1012,10 +893,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Dispatches a single chunk (at most {@code maxRequestElements}) for transmission on its own virtual
-     * thread, bounded by {@link #transmissionPermits} like any other request. Acquiring a permit may block
-     * the caller (see the class documentation on {@code maxConcurrentTransmissions} for why that is an
-     * accepted trade-off), but the actual transmission never does.
+     * Dispatches a single chunk for transmission on a virtual thread of its own, once a transmission permit
+     * is acquired, which may block the caller where the transmission itself never does.
      *
      * @param elements      The chunk to dispatch
      * @param failureStreak The number of consecutive times this exact content has already failed to be
@@ -1044,14 +923,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Acquires one transmission permit, waiting indefinitely in the normal case but only until
-     * {@link #closeDeadlineNanos} while a bounded {@link #close(Duration)} is in progress.
-     * <p>
-     * While no close is in progress, the wait is taken in {@link #PERMIT_WAIT_SLICE_NANOS} slices rather
-     * than as one unbounded acquire, so that a close beginning <em>after</em> this call still bounds it. A
-     * single unbounded acquire reads the deadline once and would never learn about one set a moment later,
-     * leaving the caller blocked for good on a transport whose future never completes — the very case
-     * {@link #close(Duration)} takes a timeout for.
+     * Acquires one transmission permit, waiting indefinitely, or until {@link #closeDeadlineNanos} while a
+     * bounded {@link #close(Duration)} is in progress. The wait is taken in slices of
+     * {@link #PERMIT_WAIT_SLICE_NANOS}, so that a close beginning during it still bounds it.
      *
      * @return {@code true} if a permit was acquired, {@code false} if none was free by the close deadline
      */
@@ -1069,10 +943,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Calls the transport function and, once its returned future completes (synchronously or not — see the
-     * class documentation), handles the result. Never blocks the calling (virtual) thread on the actual
-     * transmission: only the handoff to the transport function itself runs here, the rest happens in
-     * whatever thread completes the future.
+     * Calls the transport function and handles the result once its future completes, on whichever thread
+     * completes it.
      *
      * @param elements      The chunk to transmit
      * @param failureStreak The number of consecutive times this exact content has already failed to be
@@ -1086,10 +958,8 @@ public class Batcher<T> {
             CompletableFuture<TransmissionResult<T>> applied = transport.apply(Collections.unmodifiableList(elements));
             future = applied != null ? applied : CompletableFuture.completedFuture(null);
         } catch (Throwable e) {
-            // Throwable, not Exception: an Error here (a NoClassDefFoundError from a missing transport
-            // dependency, say) would escape before the whenComplete() below is registered, so its finally
-            // block would never release this chunk permit and the elements would be neither requeued nor
-            // reported. A handful of those wedge the engine: every later dispatch then waits forever.
+            // Throwable: an Error, from a class of the transport missing say, would otherwise skip the release
+            // of the permit below, and a few of them wedge every later dispatch
             future = CompletableFuture.failedFuture(e);
         }
         future.whenComplete((result, throwable) -> {
@@ -1097,11 +967,8 @@ public class Batcher<T> {
                 long durationMillis = (System.nanoTime() - start) / 1_000_000;
                 handleResult(elements, failureStreak, normalizeResult(elements, result, throwable), durationMillis);
             } catch (Throwable e) {
-                // handleResult() is expected to always either notify a success/failure or requeue/drop the
-                // elements involved; a defensive catch-all in case a future bug there (or a
-                // TransmissionResult.PartialFailure inconsistent with the dispatched chunk) throws instead,
-                // so such a bug can only degrade this chunk to an ordinary failure instead of losing it
-                // silently with no trace at all.
+                // Defensive: a bug in handleResult(), or a result inconsistent with the chunk, degrades it to
+                // a failure rather than losing it without a trace
                 log.warn("Unhandled exception while processing the result of a transmitted batch of {} {}(s), treating it as a failure",
                         elements.size(), elementNoun, e);
                 notifyListener(() -> listener.onFailed(elements.size(), e));
@@ -1113,14 +980,10 @@ public class Batcher<T> {
     }
 
     /**
-     * Turns whatever the transport function's future completed with into a non-{@code null}
-     * {@link TransmissionResult}, treating an exceptional completion or a {@code null} result (either a
-     * misbehaving transport, since neither is a valid {@link TransmissionResult}) as a plain
-     * {@link TransmissionResult.Failure} instead of letting either propagate and skip the
-     * retry/give-up handling in {@link #handleResult(List, int, TransmissionResult, long)}.
+     * Turns what the future of the transport completed with into a {@link TransmissionResult}, an exceptional
+     * completion or a {@code null} result becoming a {@link TransmissionResult.Failure}.
      *
-     * @param elements  The chunk that was transmitted, only used to phrase the warning logged for either
-     *                  case
+     * @param elements  The chunk that was transmitted, only used to phrase the warning logged
      * @param result    The result the future completed with, or {@code null} if it completed exceptionally
      *                  or with {@code null} itself
      * @param throwable The exception the future completed with, or {@code null} if it completed normally
@@ -1128,10 +991,7 @@ public class Batcher<T> {
      */
     private TransmissionResult<T> normalizeResult(List<T> elements, @Nullable TransmissionResult<T> result, @Nullable Throwable throwable) {
         if (throwable != null) {
-            // A future completed via completeExceptionally() (or failedFuture(), as used above for a
-            // synchronously-thrown exception) delivers that exact exception here; one derived from a
-            // transport's own internal composition (e.g. its own thenApply()) may instead wrap it in a
-            // CompletionException, which is unwrapped here so the reported cause is the original failure.
+            // A future derived by the transport, through thenApply() for instance, wraps the failure
             Throwable cause = throwable instanceof CompletionException && throwable.getCause() != null
                     ? throwable.getCause() : throwable;
             log.warn("Unhandled exception while transmitting a batch of {} {}(s)", elements.size(), elementNoun, cause);
@@ -1146,12 +1006,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Handles a (normalized, non-{@code null}) transmission result: notifies {@link #listener} of what
-     * succeeded and/or failed, and requeues or gives up on whatever failed via
-     * {@link #onTransmissionFailure(List, int)} — for a {@link TransmissionResult.PartialFailure}, scoped
-     * to only the rejected elements, matched back against {@code elements} by reference identity (see
-     * {@link TransmissionResult} for why), so the elements accepted alongside them are never retried or
-     * counted toward {@code maxConsecutiveFailures}.
+     * Handles a transmission result: notifies {@link #listener} of what succeeded and failed, and retries or
+     * gives up on what failed through {@link #onTransmissionFailure(List, int)}, which for a
+     * {@link TransmissionResult.PartialFailure} is only the elements it rejected, matched by reference.
      *
      * @param elements       The chunk that was transmitted
      * @param failureStreak  The number of consecutive times this exact content had already failed before
@@ -1165,18 +1022,14 @@ public class Batcher<T> {
             case TransmissionResult.Failure<T> failure -> {
                 transmissionFailed = true;
                 notifyListener(() -> listener.onFailed(elements.size(), failure.cause()));
-                // Runs regardless of whether the notification above threw: a misbehaving listener must
-                // never skip the retry/give-up handling below, or the failed elements would be lost
-                // silently.
                 onTransmissionFailure(elements, failureStreak);
             }
             case TransmissionResult.PartialFailure<T> partial -> {
                 Partition<T> partition = partition(elements, partial.rejected());
                 List<T> rejected = partition.rejected();
                 if (rejected.size() != partial.rejected().size()) {
-                    // Only possible from a transport violating the TransmissionResult contract: duplicate
-                    // references, or elements that were never part of this chunk. Requeuing those verbatim
-                    // would inject foreign data into the pending batch, so only the intersection is kept.
+                    // A transport breaking the contract, with duplicates or foreign elements, which would
+                    // otherwise be injected into the batch: only those belonging to the chunk are kept
                     log.warn("Transport reported {} rejected {}(s) for a batch of {}, but only {} of them belong to it; "
                                     + "ignoring the rest (they must be reported by reference identity)",
                             partial.rejected().size(), elementNoun, elements.size(), rejected.size());
@@ -1222,15 +1075,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Splits {@code elements} according to whether each is present in {@code rejected}, matched by reference
-     * identity rather than {@code equals()} (see {@link TransmissionResult} for why: content-identical but
-     * distinct elements, e.g. repeated heartbeat log messages, are common, and equals-based matching would
-     * silently misattribute which ones are retried).
-     * <p>
-     * Driven by {@code elements} rather than by {@code rejected}, so the result can only ever contain
-     * elements this chunk was actually dispatched with, each exactly as many times as it appears in it: a
-     * misbehaving transport reporting duplicates, or references foreign to the chunk entirely, cannot get
-     * them injected into the pending batch through a requeue.
+     * Splits {@code elements} according to whether each is in {@code rejected}, matched by reference rather
+     * than {@code equals()} (see {@link TransmissionResult}). Driven by {@code elements}, so that the result
+     * only holds elements of the chunk, each as many times as the chunk does.
      *
      * @param elements The dispatched chunk
      * @param rejected The elements the transport reported as rejected
@@ -1256,10 +1103,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Invokes the given listener notification, logging and swallowing any exception a misbehaving
-     * {@link BatcherListener} might throw. Matters most before {@link #onTransmissionFailure(List, int)} in
-     * {@link #transmit(List, int)}: without this guard, a throwing {@code onFailed} would skip that call,
-     * losing the failed elements without requeuing or reporting them dropped.
+     * Invokes the given listener notification, logging whatever it throws, so that a throwing
+     * {@code onFailed} never skips the {@link #onTransmissionFailure(List, int)} following it.
      *
      * @param notification The listener call to perform
      */
@@ -1267,9 +1112,7 @@ public class Batcher<T> {
         try {
             notification.run();
         } catch (Throwable e) {
-            // Throwable, not Exception: a listener writing a self-referencing element to a dead-letter sink
-            // throws a StackOverflowError. Since this guard exists so that onFailed cannot skip the
-            // onTransmissionFailure() after it, letting one through would lose the very elements it saves.
+            // Throwable: a listener serializing a self-referencing element overflows the stack
             log.warn("Unhandled exception thrown by a BatcherListener", e);
         }
     }
@@ -1289,9 +1132,8 @@ public class Batcher<T> {
         if (maxFailures > 0 && newFailureStreak >= maxFailures) {
             log.error("Giving up on {} {}(s) after {} consecutive failed transmission attempts, they will be discarded",
                     elements.size(), elementNoun, newFailureStreak);
-            // Called directly (not via notifyDropped()): already running on transmissionExecutor's own
-            // thread, and keeping this under the same permit transmit() still holds lets
-            // awaitPendingTransmissions() observe it, same as the transmission itself.
+            // Directly, under the permit the transmission still holds, so that awaitPendingTransmissions()
+            // waits for it too
             notifyListener(() -> listener.onDropped(List.copyOf(elements), "maximum consecutive transmission failures exceeded"));
             return;
         }
@@ -1301,10 +1143,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Holds off the next transmission for as long as {@link #backoff} decides for the given failure streak.
-     * Only ever pushes the deadline further out, never pulls it back in: a shorter delay computed for a
-     * lower streak (a different chunk failing for the first time, concurrently) must not cut short the wait
-     * a longer one already established.
+     * Holds off the next transmission for as long as {@link #backoff} decides for the given failure streak,
+     * only ever pushing the deadline further out: a shorter delay, of another chunk failing for the first
+     * time, must not cut short a longer one.
      *
      * @param consecutiveFailures The number of consecutive failures the pending batch has now reached
      */
@@ -1313,8 +1154,7 @@ public class Batcher<T> {
         try {
             delayMillis = backoff.delayMillis(consecutiveFailures);
         } catch (Throwable e) {
-            // Throwable, not Exception: this runs between the decision to retry and the requeue() that
-            // keeps the elements, so anything escaping here discards them with no retry and no report.
+            // Throwable: anything escaping would skip the requeue() keeping the elements
             log.warn("Unhandled exception thrown by a BackoffPolicy, retrying without backing off", e);
             return;
         }
@@ -1344,19 +1184,15 @@ public class Batcher<T> {
     }
 
     /**
-     * Flushes the current batch and waits for every pending transmission (including that final one) to
-     * complete, so a caller can safely release resources used by the transport function right after this
-     * call returns without racing an in-flight transmission.
+     * Flushes the current batch and waits for every pending transmission, that final one included, to
+     * complete, so that the resources of the transport function can be released right after.
      * <p>
-     * Whatever is still pending once that wait is over — elements a failing final transmission put back, or
-     * elements still held by a transmission that did not complete within {@code timeout} — is reported
-     * through {@link BatcherListener#onDropped(List, String)} rather than silently discarded along with this
-     * engine, giving a dead-letter sink a last chance to save them.
+     * What is still pending once that wait is over, put back by a failing final transmission or held by one
+     * not completed in time, is reported through {@link BatcherListener#onDropped(List, String)}, giving a
+     * dead-letter sink a last chance to save it.
      *
      * @param timeout The maximum time to wait for pending transmissions to complete, or {@code null} to wait
-     *                indefinitely (only safe for a transport guaranteed to always complete its future, since
-     *                one that never does would otherwise block this call, and any JVM shutdown behind it,
-     *                forever)
+     *                indefinitely, which is only safe for a transport always completing its future
      */
     public void close(@Nullable Duration timeout) {
         closed = true;
@@ -1365,8 +1201,7 @@ public class Batcher<T> {
             closeDeadlineNanos = System.nanoTime() + MILLISECONDS.toNanos(timeoutMillis);
         }
         try {
-            // Forced: a backoff delay still in effect must not stop this very last transmission attempt,
-            // which is the only remaining chance for those elements to be sent at all.
+            // Forced, this last attempt going out whatever the backoff
             flush(true);
             if (!awaitUntilCloseDeadline()) {
                 log.warn("Gave up waiting for pending transmissions to complete after {}", timeout);
@@ -1381,16 +1216,13 @@ public class Batcher<T> {
     }
 
     /**
-     * Reports whatever is left in the pending batch once this engine is closed (see {@link #close(Duration)})
-     * as dropped, so those elements are not lost without a trace. Notifies on the calling thread rather than
-     * through {@link #notifyDropped(List, String)}, {@link #transmissionExecutor} being shut down by then,
-     * and because a caller of {@code close()} is already waiting on this work anyway.
+     * Reports what is left in the pending batch once closed as dropped, on the calling thread, the executor
+     * being shut down by then.
      */
     private void reportRemainingAsDropped() {
         List<T> remaining;
         synchronized (this) {
-            // Raised before the early return below too: an empty batch is still a drained one, and a
-            // requeue landing after this point must report its elements rather than stack them here.
+            // Raised for an empty batch too, so that a later requeue reports its elements
             drained = true;
             if (batch.isEmpty()) {
                 return;
@@ -1407,11 +1239,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Waits, indefinitely, until every currently dispatched transmission (including the one triggered by the
-     * last call to {@link #flush()}) has completed, so that closing any resource used by the transport
-     * function (typically done right after calling this method) does not race with an in-flight transmission.
-     * <p>
-     * Also used by tests to deterministically wait for asynchronous transmissions to complete.
+     * Waits, indefinitely, until every transmission dispatched so far has completed, so that the resources of
+     * the transport function can be released right after.
      *
      * @throws InterruptedException If the current thread is interrupted while waiting
      */
@@ -1442,9 +1271,7 @@ public class Batcher<T> {
         if (deadline == NO_DEADLINE) {
             return awaitPendingTransmissions(-1);
         }
-        // Clamped at zero: a deadline already elapsed (the final flush having spent the whole budget waiting
-        // for a transmission permit) would otherwise be passed down as a negative value, which means "wait
-        // indefinitely" there and would turn a bounded close into an unbounded one at the worst moment.
+        // Clamped at zero, a negative timeout meaning to wait indefinitely below
         return awaitPendingTransmissions(Math.max(0, deadline - System.nanoTime()));
     }
 
@@ -1469,12 +1296,8 @@ public class Batcher<T> {
 
     /**
      * Converts the given timeout to milliseconds, clamped to {@link #MAX_TIMEOUT_MILLIS} rather than letting
-     * {@link Duration#toMillis()} throw out of a shutdown path.
-     *
-     * <p>
-     * Package-private rather than private so a test can pin the clamping directly: the difference between
-     * the two outcomes it decides between is a year of waiting versus an unbounded one, which no test can
-     * tell apart by observing a call.
+     * {@link Duration#toMillis()} throw out of a shutdown path. Package-private for a test to pin the clamp,
+     * which no call can be observed telling apart from waiting indefinitely.
      *
      * @param timeout The timeout to convert, or {@code null}
      * @return The timeout in milliseconds (never negative), or {@code null} to wait indefinitely
@@ -1486,9 +1309,7 @@ public class Batcher<T> {
         try {
             return Math.clamp(timeout.toMillis(), 0, MAX_TIMEOUT_MILLIS);
         } catch (ArithmeticException e) {
-            // Too large to express in milliseconds, so necessarily past the clamp above. Returning null
-            // would read as "wait indefinitely", turning the largest timeout a caller can ask for into the
-            // one that never fires -- leaving close() with no deadline, which is what it takes one to avoid.
+            // Past the clamp above, where null would mean waiting indefinitely
             return MAX_TIMEOUT_MILLIS;
         }
     }

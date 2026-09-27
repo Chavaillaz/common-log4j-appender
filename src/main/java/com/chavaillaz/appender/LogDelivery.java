@@ -11,17 +11,16 @@ import org.jspecify.annotations.Nullable;
 public interface LogDelivery extends AutoCloseable {
 
     /**
-     * Sends the given record data, or does nothing if {@code null} (lets a
-     * {@link com.chavaillaz.appender.log4j.LogConverter} signal "skip this event" by returning {@code null}
-     * without special-casing it on the caller side).
+     * Sends the given record data, or does nothing for {@code null}, which a
+     * {@link com.chavaillaz.appender.log4j.LogConverter} returns to skip an event.
      *
      * @param document The record data, or {@code null} to skip this event
      */
     void send(@Nullable Map<String, Object> document);
 
     /**
-     * Sends the given list of record data; {@code null} or empty is a no-op, and any {@code null} element is
-     * skipped, for the same reason as {@link #send(Map)}.
+     * Sends the given list of record data, doing nothing for {@code null} and skipping its {@code null}
+     * elements, as {@link #send(Map)} does.
      *
      * @param documents The list of record data
      */
@@ -44,13 +43,10 @@ public interface LogDelivery extends AutoCloseable {
     }
 
     /**
-     * Whether this delivery's most recently completed transmission attempt succeeded, exposed as a simple
-     * health signal a caller can poll directly (e.g. for a readiness/liveness endpoint) instead of only
-     * reacting to {@link LogDeliveryListener} callbacks. Not necessarily fatal when {@code false}: unless
-     * elements have also been reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)},
-     * they are simply being retried.
-     * <p>
-     * Defaults to {@code true} for an implementation that does not track this.
+     * Whether the most recently completed transmission attempt succeeded, a health signal a caller can poll,
+     * from a readiness endpoint for instance. A failed attempt is retried: documents are only lost once
+     * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}. Defaults to {@code true}
+     * for an implementation that does not track it.
      *
      * @return {@code true} if the last completed transmission attempt succeeded, or none was attempted yet
      */

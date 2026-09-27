@@ -5,19 +5,15 @@ import java.util.List;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The outcome of one transmission attempt by a {@link Batcher}'s transport function.
+ * The outcome of one transmission attempt by the transport function of a {@link Batcher}.
  * <p>
- * {@link PartialFailure} lets a transport distinguish "some elements of this chunk were rejected" (e.g. one
- * malformed document in an otherwise-fine Elasticsearch bulk response) from "the whole chunk failed" (e.g.
- * the downstream system is unreachable): only the rejected elements are requeued for retry and counted
- * toward the consecutive-failure limit, instead of the whole chunk being retried (or given up on) for the
- * sake of one bad element.
+ * A {@link PartialFailure} tells that only some elements were rejected, a malformed document in a bulk
+ * response for instance, rather than the whole request failing, so that only those are retried and counted
+ * against the limit of consecutive failures.
  * <p>
- * {@code rejected} is matched back against the dispatched chunk <strong>by reference identity, not
- * {@code equals()}</strong>: elements are often plain data (e.g. {@code Map<String,Object>} log documents),
- * and two content-identical-but-distinct elements are common (repeated heartbeat messages, for instance);
- * equals-based matching would silently misattribute which ones are retried or dropped. Report the exact
- * object references received by the transport function, not equal copies.
+ * Its elements are matched against the request <strong>by reference, not {@code equals()}</strong>, equal
+ * documents being common (a repeated message for instance): report the very instances the transport was
+ * given, not equal copies.
  *
  * @param <T> The type of element transmitted
  */

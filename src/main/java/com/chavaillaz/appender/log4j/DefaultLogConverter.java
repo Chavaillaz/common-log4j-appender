@@ -18,32 +18,29 @@ import org.jspecify.annotations.Nullable;
 import com.chavaillaz.appender.LogConfiguration;
 
 /**
- * Default implementation converting the following fields:
+ * Default converter, writing the following fields:
  * <ul>
- *     <li><strong>datetime:</strong> Date of logging event</li>
- *     <li><strong>host:</strong> Taken from appender configuration</li>
- *     <li><strong>environment:</strong> Taken from appender configuration</li>
- *     <li><strong>application:</strong> Taken from appender configuration</li>
- *     <li><strong>logger:</strong> Logger of logging event</li>
- *     <li><strong>level:</strong> Level of logging event</li>
- *     <li><strong>logmessage:</strong> Message of the logging event</li>
- *     <li><strong>thread:</strong> Thread that created the logging event</li>
+ *     <li><strong>datetime:</strong> ISO-8601 instant of the logging event</li>
+ *     <li><strong>host</strong>, <strong>environment</strong> and <strong>application:</strong> Taken from the
+ *     configuration</li>
+ *     <li><strong>logger:</strong> Name of the logger, or {@link LogEvent#getLoggerFqcn()} without one</li>
+ *     <li><strong>level:</strong> Level of the logging event</li>
+ *     <li><strong>logmessage:</strong> Formatted message, truncated to {@link #getMaxMessageLength()} characters</li>
+ *     <li><strong>thread:</strong> Name of the thread that created the logging event</li>
  * </ul>
- * All MDC fields are also added as-is (only if not already present). If the event carries an exception, it
- * also includes:
+ * The MDC entries are added as well, without overriding any of these fields. If the event carries an exception:
  * <ul>
- *     <li><strong>class:</strong> Class of the exception</li>
+ *     <li><strong>class:</strong> Name of the class of the exception</li>
  *     <li><strong>stacktrace:</strong> Stack trace, truncated to {@link #getMaxStackTraceLength()} characters</li>
  * </ul>
+ * A value that cannot be read, a message failing to format for instance, costs its own field, never the
+ * document.
  */
 public class DefaultLogConverter implements LogConverter {
 
     /**
-     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger: this
-     * class runs inside an appender normally attached to the root logger, so an ordinary logger here would
-     * write its diagnostics straight back into the pipeline they are about, which loops (see {@link
-     * com.chavaillaz.appender.Batcher}, whose own logger carries the measurement). Make it visible with
-     * {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration, or a {@code <StatusListener>}.
+     * The status logger of Log4j2 rather than an application logger, which would feed these diagnostics back
+     * into the appender they are about (see {@link com.chavaillaz.appender.Batcher}).
      */
     private static final Logger log = StatusLogger.getLogger();
 
@@ -58,18 +55,14 @@ public class DefaultLogConverter implements LogConverter {
     private static final int THROWABLE_FIELD_COUNT = 2;
 
     /**
-     * Volatile because {@link #configure(LogConfiguration)} and {@link #convert(LogEvent)} are not
-     * guaranteed to run on the same thread: the former is typically called while building the appender, the
-     * latter on its background worker. In the usual case the handoff between the two already establishes a
-     * happens-before edge, but nothing in this class's contract requires it, and a converter reconfigured
-     * later would otherwise be free to never be seen as such by the worker.
+     * Volatile, {@link #configure(LogConfiguration)} and {@link #convert(LogEvent)} typically running on
+     * different threads.
      */
     private volatile @Nullable LogConfiguration configuration;
 
     /**
-     * Creates a new default log converter. {@link #configure(LogConfiguration)} must be called before
-     * {@link #convert(LogEvent)} is, since {@link #writeBasic(Map, LogEvent)} reads the configuration set
-     * there.
+     * Creates a new default log converter, to be configured through {@link #configure(LogConfiguration)}
+     * before converting events.
      */
     public DefaultLogConverter() {
         // Nothing to initialize here: configuration is only available once configure() is called
@@ -128,8 +121,7 @@ public class DefaultLogConverter implements LogConverter {
     protected void writeBasic(Map<String, Object> document, LogEvent event) {
         LogConfiguration settings = configuration;
         if (settings == null) {
-            // Reported once per event rather than thrown: losing the three configuration-provided fields is
-            // a far better outcome for a misconfigured converter than losing every document outright.
+            // Reported for every event rather than thrown, costing the three fields of the configuration alone
             log.warn("The converter was never configured, the host/environment/application fields will be omitted");
         }
         String host = null;
@@ -141,10 +133,7 @@ public class DefaultLogConverter implements LogConverter {
                 environment = settings.getEnvironment();
                 application = settings.getApplication();
             } catch (Throwable e) {
-                // An implementation is meant to be immutable and answer from a field, but nothing enforces
-                // that, and one resolving a value on demand can fail -- the reason
-                // CommonUtils.getInitialHostname() exists at all. Whichever fields were read before the
-                // failure are kept, the rest omitted, as they are for a converter never configured.
+                // A configuration resolving a value on demand can fail: the fields read before are kept
                 log.warn("Unable to read the host/environment/application from the configuration, "
                         + "the fields it did not provide will be omitted", e);
             }
@@ -163,10 +152,8 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Formats the given message, falling back to a placeholder instead of propagating an exception out of
-     * {@link #convert(LogEvent)} if a custom {@link Message} implementation's
-     * {@link Message#getFormattedMessage()} throws (every implementation bundled with Log4j2 already guards
-     * its own formatting).
+     * Formats the given message, or writes a placeholder naming the failure when a custom {@link Message}
+     * throws while formatting.
      *
      * @param message The message to format, or {@code null}
      * @return The formatted message, {@code null} if the given message was {@code null}, or a placeholder
@@ -179,22 +166,16 @@ public class DefaultLogConverter implements LogConverter {
         try {
             return truncate(message.getFormattedMessage(), getMaxMessageLength());
         } catch (Throwable e) {
-            // Throwable, not Exception: formatting is the custom Message's own code, and one built from a
-            // structure that refers back to itself throws a StackOverflowError. Letting it escape would
-            // lose the whole document over a single field, which is what this placeholder exists to avoid.
+            // Throwable: a message built from a structure referring to itself overflows the stack
             log.warn("Unable to format the message of a logging event, using a placeholder instead", e);
             return "<unable to format message: " + e + ">";
         }
     }
 
     /**
-     * Truncates the given value to at most {@code maxLength} characters, appending how much was cut off so a
-     * truncated value is never mistaken for a complete one.
-     * <p>
-     * Cuts one character earlier when the limit falls between the two halves of a surrogate pair: the half
-     * left behind is not a character, and encoding it turns it into a replacement one, so a consumer
-     * validating its input rejects the document outright. Emoji and most non-BMP scripts are pairs, so this
-     * is a matter of where a message reaches the limit, not of anything exotic.
+     * Truncates the given value to at most {@code maxLength} characters, appending how much was cut off so that
+     * it is not mistaken for a complete value. Cuts one character earlier rather than between the two halves
+     * of a surrogate pair, such as an emoji, a half not being a character any encoding accepts.
      *
      * @param value     The value to truncate, or {@code null}
      * @param maxLength The maximum length allowed, a non-positive value disabling truncation
@@ -212,8 +193,8 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Writes the MDC fields of the logging event in the given document, tolerating (losing only the MDC
-     * fields, not the whole document) a custom context data implementation that throws while iterated.
+     * Writes the MDC fields of the logging event in the given document, which a custom context data failing
+     * while iterated only costs its own fields.
      *
      * @param document The document to write the fields into
      * @param event    The logging event
@@ -225,16 +206,14 @@ public class DefaultLogConverter implements LogConverter {
         try {
             event.getContextData().forEach(document::putIfAbsent);
         } catch (Throwable e) {
-            // Throwable, not Exception, for the same reason as the guards around it: iterating a custom
-            // context data implementation runs code this class does not own.
+            // Throwable, iterating a custom context data running code of the application
             log.warn("Unable to read the MDC context data of a logging event, it will be omitted", e);
         }
     }
 
     /**
-     * Writes the exception passed to the logging event in the given document, tolerating (losing only this
-     * field, not the whole document) a custom {@link Throwable} subclass whose
-     * {@code getMessage()}/{@code getCause()}/{@code toString()} throws while printing the stack trace.
+     * Writes the exception of the logging event in the given document, which a stack trace failing to print
+     * only costs its own field.
      *
      * @param document The document to write the fields into
      * @param event    The logging event
@@ -246,21 +225,15 @@ public class DefaultLogConverter implements LogConverter {
             try {
                 document.put("stacktrace", getStackTrace(throwable));
             } catch (Throwable e) {
-                // Throwable, not Exception: printStackTrace() walks the cause chain by recursion, so a deep
-                // enough one overflows the stack rather than throwing -- and this guard exists so that costs
-                // the stacktrace field, not the document carrying it.
+                // Throwable: printStackTrace() walks the causes by recursion, which a deep chain overflows
                 log.warn("Unable to compute the stack trace of a logging event, the field will be omitted", e);
             }
         }
     }
 
     /**
-     * Names the class of a logged exception, preferring the canonical name (the one written in source, dots
-     * all the way down) but falling back to the binary name when there is none.
-     * <p>
-     * {@link Class#getCanonicalName()} answers {@code null} for a class with no source-level name -- an
-     * anonymous or local one, which is what {@code throw new RuntimeException(...) {}} produces. Written
-     * straight in, that {@code null} loses the one field saying what went wrong.
+     * Names the class of a logged exception: its canonical name, or its binary name for a class without one,
+     * such as an anonymous or local class.
      *
      * @param type The class of the logged exception
      * @return A non-{@code null} name for it
@@ -271,9 +244,9 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Gets the stack trace of the given throwable, truncated to {@link #getMaxStackTraceLength()}
-     * characters so a deep or recursive cause chain cannot inflate a document (and by extension a whole
-     * batch) enough to be rejected by the downstream system.
+     * Gets the stack trace of the given throwable, truncated to {@link #getMaxStackTraceLength()} characters so
+     * that a deep cause chain cannot inflate a document, and the batch holding it, past what the downstream
+     * system accepts.
      *
      * @param throwable The throwable
      * @return The stack trace
@@ -298,15 +271,9 @@ public class DefaultLogConverter implements LogConverter {
 
     /**
      * Maximum length (in characters) of the {@code logmessage} field written by
-     * {@link #writeBasic(Map, LogEvent)}. Bounds the one remaining part of a document whose size the
-     * application controls entirely: a single call logging a large payload (an HTTP response body, a
-     * serialized entity, a dump of a collection) would otherwise inflate its document, and by extension the
-     * whole batch it travels in, enough for the downstream system to reject the request — costing every
-     * other document batched alongside it, not just the oversized one. The same reasoning already applied to
-     * {@link #getMaxStackTraceLength()}.
-     * <p>
-     * Defaults to {@code 32'768}, well above any reasonable log line; override to raise, lower, or disable
-     * ({@code 0} or negative) truncation.
+     * {@link #writeBasic(Map, LogEvent)}, so that a call logging a large payload cannot inflate its document,
+     * and the batch holding it, past what the downstream system accepts. Defaults to {@code 32'768}; override
+     * to raise, lower, or disable ({@code 0} or negative) truncation.
      *
      * @return The maximum length allowed for the message, or a non-positive value to disable truncation
      */

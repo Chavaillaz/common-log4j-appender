@@ -21,91 +21,66 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.status.StatusLogger;
 
 /**
- * A ready-made {@link LogDeliveryListener} appending every irrecoverably dropped document to a local file,
- * one JSON object per line (newline-delimited JSON), as a last-resort fallback so data a {@link LogDelivery}
- * gave up on is not lost outright. Meant to save every consumer of this library from writing the same
- * {@link #onDocumentsDropped(List, String)} implementation from scratch for that common case (see the
- * project README's Observability section); use it as-is, wrap it, or replace it entirely with something
- * more elaborate (a dead-letter queue, a database, ...) once that becomes worth the extra complexity.
+ * A ready-made {@link LogDeliveryListener} appending every irrecoverably dropped document to a local file, one
+ * JSON object per line (newline-delimited JSON), as a last resort so that data a {@link LogDelivery} gave up on
+ * is not lost outright. Every other method is a no-op: compose it with another listener, or extend it, to
+ * observe transmissions as well.
  * <p>
- * Every method except {@link #onDocumentsDropped(List, String)} is a no-op, exactly like
- * {@link LogDeliveryListener#NOOP}; compose the two (or delegate to another listener from a subclass) if
- * transmission successes/failures also need to be observed.
+ * Each line wraps the document, unmodified, with the reason it was dropped and when:
+ * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Appends are serialized, so that concurrent
+ * callers never interleave lines, and a failure to write is passed to
+ * {@link #onWriteFailure(List, String, IOException)}, logged by default, rather than thrown into the pipeline.
  * <p>
- * Each line wraps the original document, unmodified, alongside the reason it was dropped and when: {@code
- * {"reason":"...","droppedAt":"...","document":{...}}}. Appends are serialized on this instance (so
- * concurrent callers, e.g. several failing batches at once, never interleave mid-line) and best-effort: a
- * failure to write (a full disk, a permission issue, ...) is reported through
- * {@link #onWriteFailure(List, String, IOException)} (logged by default) rather than thrown, since a
- * dead-letter sink failing must never itself disrupt the delivery pipeline calling it.
- * <p>
- * Only a minimal, self-contained JSON representation is produced (no external dependency): {@code null},
- * {@link Boolean}, {@link Number}, {@link Map}, {@link Iterable} and array values are written as their natural
- * JSON counterpart (recursively for the latter three), anything else (including {@link String}) is written as a
- * JSON string via {@link String#valueOf(Object)}. A key's own iteration order is preserved as-is, without
- * imposing any sorting. A number JSON has no notion of ({@link Double#NaN}, either infinity, or whatever a
- * custom {@link Number} subclass renders as) falls back to a JSON string, so a single such value cannot
- * leave a line no parser can read. Nesting is followed to a bounded depth, past which a value is replaced
- * by a marker, so a document that (however unusually) contains itself cannot recurse forever. A document
- * that cannot be rendered at all — a value whose {@code toString()} throws, a custom {@link Map} or
- * {@link Iterable} that throws while iterated — costs only its own line, replaced by one naming the
- * failure, rather than the whole batch it was handed over with.
+ * The JSON is written without any dependency: {@code null}, {@link Boolean}, {@link Number}, {@link Map},
+ * {@link Iterable} and array values as their JSON counterpart, the latter three recursively and keys in their
+ * own iteration order, and anything else, {@link String} included, as a JSON string of its
+ * {@link String#valueOf(Object)} rendering. A number JSON cannot express ({@link Double#NaN}, an infinity, a
+ * custom {@link Number} rendering otherwise) is written as a string, and nesting is followed to a bounded
+ * depth, so that no value can leave a line a parser cannot read. A document that cannot be rendered at all,
+ * a value whose {@code toString()} throws for instance, costs only its own line, replaced by one naming the
+ * failure.
  */
 public class FileDeadLetterListener implements LogDeliveryListener {
 
     /**
-     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger: this
-     * class runs inside an appender normally attached to the root logger, so an ordinary logger here would
-     * write its diagnostics straight back into the pipeline they are about, which loops (see {@link
-     * com.chavaillaz.appender.Batcher}, whose own logger carries the measurement). Make it visible with
-     * {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration, or a {@code <StatusListener>}.
+     * The status logger of Log4j2 rather than an application logger, which would feed these diagnostics back
+     * into the appender they are about (see {@link Batcher}).
      */
     private static final Logger log = StatusLogger.getLogger();
 
     /**
-     * The grammar JSON allows for a number (RFC 8259), used by {@link #writeJsonNumber(StringBuilder, Number)}
-     * to tell a {@link Number} that renders as one from a {@link Double#NaN}, an infinity, or a custom
-     * subclass rendering as something else entirely.
+     * The grammar of a JSON number (RFC 8259), telling a {@link Number} rendering as one apart from
+     * {@link Double#NaN}, an infinity, or a custom subclass rendering as something else.
      */
     private static final Pattern JSON_NUMBER = Pattern.compile("-?(0|[1-9]\\d*)(\\.\\d+)?([eE][-+]?\\d+)?");
 
     /**
-     * Maximum nesting depth written before a value is replaced by {@link #TRUNCATED_MARKER}, guarding
-     * against a structure that contains itself (which would otherwise recurse until the stack runs out).
-     * Far deeper than any log document has reason to be, and the same number
-     * {@link DocumentSizeEstimator#estimate(Map)} stops measuring at — though not quite the same bound in
-     * practice, since the document is wrapped here before being written and so starts one level deeper than
-     * the estimator counts it. Only a document nested to within one level of the limit could notice, and
-     * both numbers are approximations of a structure no log document has any business having.
+     * Maximum nesting depth written before a value is replaced by {@link #TRUNCATED_MARKER}, so that a
+     * structure containing itself does not recurse until the stack runs out. The depth
+     * {@link DocumentSizeEstimator} stops measuring at, though the wrapped document starts one level deeper.
      */
     private static final int MAX_DEPTH = 16;
 
     /**
-     * Written in place of a value nested deeper than {@link #MAX_DEPTH}, so a truncated document says so on
-     * the line itself rather than looking like it simply held that value.
+     * Written in place of a value nested deeper than {@link #MAX_DEPTH}, so that a truncated document says so.
      */
     private static final String TRUNCATED_MARKER = "<truncated: maximum nesting depth of " + MAX_DEPTH + " reached>";
 
     private final Path file;
 
     /**
-     * Serializes appends to {@link #file}, so concurrent callers never interleave mid-line.
+     * Serializes appends to {@link #file}, so that concurrent callers never interleave lines.
      * <p>
-     * A lock rather than {@code synchronized} because of which threads call in: a delivery reports its drops
-     * from its own virtual threads, and a full queue reports an evicted event from whichever application
-     * thread is logging, a virtual one in an application running on them. On Java 21, a virtual thread
-     * blocked entering a monitor keeps its carrier, and the scheduler adds none to make up for it: with as
-     * many writers waiting as there are carriers, no other virtual thread in the application could run until
-     * the write ahead of them finished. A virtual thread waiting for this lock unmounts instead.
-     * <p>
-     * Package-private rather than private so a test can hold it the way a slow write does.
+     * A lock rather than {@code synchronized}, the callers often being virtual threads: on Java 21, one blocked
+     * entering a monitor keeps its carrier, so that writers waiting their turn could hold every carrier and
+     * stall every virtual thread of the application, where one waiting for a lock unmounts. Package-private so
+     * that a test can hold it the way a slow write does.
      */
     final ReentrantLock writeLock = new ReentrantLock();
 
     /**
-     * Creates a new dead-letter listener, creating the parent directory of the given file immediately (not
-     * lazily on the first drop) so a misconfiguration is visible right away instead of only surfacing once
-     * something actually needs to be saved.
+     * Creates a new dead-letter listener, creating the parent directory of the given file right away, so that
+     * a misconfiguration shows at startup rather than when something needs saving.
      *
      * @param file The file to append dropped documents to, created (along with its parent directory) if it
      *             does not exist yet, or appended to if it does
@@ -132,9 +107,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     @Override
     public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
         if (documents.isEmpty()) {
-            // Nothing to append, and nothing worth creating the file for either: an empty dead-letter file
-            // sitting next to an application is read as "logs were lost here", which is the one thing that
-            // did not happen. Reachable from any listener chain forwarding a notification it did not filter.
+            // Nothing to append, nor a file worth creating: an empty dead-letter file reads as logs lost
             return;
         }
         Instant droppedAt = Instant.now();
@@ -155,13 +128,9 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Renders one dropped document as the line to append for it, falling back to a line recording why it
-     * could not be rendered rather than letting that failure escape.
-     * <p>
-     * Rendering runs application code this sink does not control: a value's {@code toString()}, a custom
-     * {@link Map} or {@link Iterable}'s iteration. Unguarded, one document whose rendering fails takes
-     * every other document handed over with it -- up to a full pending batch, discarded a second time by
-     * the very thing meant to be their last resort.
+     * Renders one dropped document as the line to append for it, or as a line naming why it could not be
+     * rendered: rendering runs application code (a {@code toString()}, the iteration of a custom collection),
+     * and one document failing must not cost the others handed over with it.
      *
      * @param document  The document being dropped
      * @param reason    A short, human-readable explanation of why it was dropped
@@ -172,10 +141,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         try {
             return toJson(wrap(document, reason, droppedAt));
         } catch (Throwable e) {
-            // Throwable, not Exception: MAX_DEPTH only rules out recursion between the documents this class
-            // walks, not inside a value whose own toString() recurses. Only the class name is used, and it
-            // is logged as a plain value: this exception is application code too, and its own toString() is
-            // free to throw in turn, right on the path meant to contain the first failure.
+            // Throwable, a value whose own toString() recurses overflowing the stack whatever MAX_DEPTH says.
+            // Only the class name is used, the toString() of this exception being application code too
             String failure = e.getClass().getName();
             log.warn("Unable to render a dropped document as JSON ({}), saving a placeholder in its place", failure);
             return toJson(wrap(Map.of("unrenderable", failure), reason, droppedAt));
@@ -183,9 +150,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Wraps the given document with the reason it was dropped and when, without modifying it, so a field
-     * already present in the document (e.g. a log entry that happens to have its own {@code reason} field)
-     * is never overwritten or shadowed.
+     * Wraps the given document with the reason it was dropped and when, without modifying it, so that a field
+     * of the document bearing the same name is kept.
      *
      * @param document  The document being dropped
      * @param reason    A short, human-readable explanation of why it was dropped
@@ -201,9 +167,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Called when appending dropped documents to {@link #file} fails, logging the failure (including the
-     * documents that could not be saved, as a last resort so they at least appear somewhere) by default.
-     * Override to react differently, e.g. to fall back to another sink.
+     * Called when appending dropped documents to {@link #file} fails, logging the failure along with the
+     * documents by default, so that they at least appear somewhere. Override to fall back to another sink.
      *
      * @param documents The documents that could not be appended
      * @param reason    The reason they were originally dropped
@@ -228,11 +193,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
 
     private static void writeJson(StringBuilder builder, Object value, int depth) {
         if (depth > MAX_DEPTH) {
-            // Cut rather than followed any further: a document that (however unusually) contains itself
-            // would otherwise recurse until the stack runs out, and a StackOverflowError is an Error, so it
-            // slips past every "a misbehaving listener must not break the pipeline" guard in Batcher and
-            // AbstractLogDeliveryAppender -- all of which catch Exception -- and escapes through close(),
-            // taking down the shutdown path this sink is most likely to be called on.
+            // Cut rather than followed, a document containing itself recursing until the stack runs out
             writeJsonString(builder, TRUNCATED_MARKER);
             return;
         }
@@ -249,15 +210,9 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Writes the given number as a JSON number, falling back to a JSON string whenever its rendering is not
-     * one JSON actually accepts.
-     * <p>
-     * {@link Double#NaN} and both infinities render as a bare {@code NaN}, {@code Infinity} or
-     * {@code -Infinity}, none of which JSON has any notion of, and a custom {@link Number} subclass is free
-     * to render as absolutely anything (a thousands separator, a currency symbol, a locale-specific decimal
-     * comma). Appending either verbatim would leave a line no parser can read, which for a file whose whole
-     * purpose is to be machine-readable later means the dropped documents are lost a second time — so the
-     * value is preserved as a string instead of quietly corrupting the line carrying it.
+     * Writes the given number as a JSON number, or as a JSON string when its rendering is not one JSON
+     * accepts: {@link Double#NaN} and the infinities render as bare words, and a custom {@link Number} as
+     * anything, either of which would leave a line no parser can read.
      *
      * @param builder The builder to append to
      * @param number  The number to write
@@ -300,17 +255,12 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Writes the given string as a JSON string literal, escaping the characters JSON requires (quote,
-     * backslash, and control characters) so an arbitrary log message can never produce invalid JSON or break
-     * out of the string it is written into.
+     * Writes the given string as a JSON string literal, escaping the quote, the backslash and the control
+     * characters.
      * <p>
-     * Half of a surrogate pair found without its other half is escaped too, with the same Unicode escape as
-     * a control character, which JSON's grammar allows for any code unit. It is not a character, so UTF-8
-     * has no encoding for it, and {@link Files#write} reports one rather than replacing it: a message cut in
-     * the middle of an emoji failed the write of the whole batch it was dropped with, after part of that
-     * batch had already reached the file -- leaving an unterminated line for the next append to run into,
-     * corrupting a second document as well. Escaped, it is kept exactly as it was, and only ASCII reaches
-     * the encoder in its place.
+     * Half of a surrogate pair without its other half is escaped too, as JSON allows for any code unit: it is
+     * not a character, UTF-8 has no encoding for it, and {@link Files#write} would fail the whole batch on it,
+     * after writing part of it.
      *
      * @param builder The builder to append to
      * @param value   The string to write

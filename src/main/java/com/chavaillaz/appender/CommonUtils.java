@@ -39,10 +39,8 @@ public class CommonUtils {
 
     /**
      * Gets the current host name of the machine, or {@code localhost} if it cannot be determined within
-     * {@link #HOSTNAME_LOOKUP_TIMEOUT}. {@link InetAddress#getCanonicalHostName()}'s reverse DNS lookup has
-     * no built-in bound on how long it can take, unlike a failure reported as {@link UnknownHostException};
-     * since this typically runs once at application startup, an unresponsive DNS server could otherwise
-     * delay it indefinitely for a problem unrelated to the application itself.
+     * {@link #HOSTNAME_LOOKUP_TIMEOUT}: the reverse DNS lookup of {@link InetAddress#getCanonicalHostName()}
+     * has no bound of its own, and this typically runs while the application starts.
      *
      * @return The host name, or {@code localhost} if it cannot be determined within a reasonable time
      */
@@ -58,10 +56,8 @@ public class CommonUtils {
 
     /**
      * Runs the given lookup on a separate thread, waiting at most the given timeout before falling back to
-     * {@code localhost}. If the lookup does not react to interruption (true of the blocking native calls
-     * behind DNS resolution), it keeps running past the timeout on its own thread: this bounds how long the
-     * caller waits, not how long the lookup itself takes, trading an occasional leaked thread for never
-     * blocking application startup indefinitely.
+     * {@code localhost}. A lookup ignoring interruption, as the native calls behind DNS resolution do, keeps
+     * running on its own thread past the timeout: this bounds the wait of the caller, not the lookup.
      *
      * @param timeout The maximum time to wait for the lookup to complete
      * @param lookup  The lookup to run, expected to already have a fallback for its own failures

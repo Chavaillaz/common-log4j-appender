@@ -1124,7 +1124,7 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Notifies the listener with no cause when sendBulk() simply returns false")
+        @DisplayName("Notifies the listener with no cause when sendBulk() reports a failure without one")
         void testListenerNotifiedOnFailureWithoutCause() throws Exception {
             // given
             var configuration = TestLogConfiguration.builder().flushThreshold(1).build();

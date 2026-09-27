@@ -24,49 +24,29 @@ import com.chavaillaz.appender.LogDeliveryListener;
 import com.chavaillaz.appender.TransmissionResult;
 
 /**
- * Abstract implementation of logs transmission by batches.
+ * Base of a delivery transmitting logs by batches, adapting the {@link Batcher} engine to a
+ * {@link LogConfiguration} and a {@link LogDeliveryListener}: a subclass only implements
+ * {@link #sendBulk(List)}.
  * <p>
- * A batch ready to be sent (threshold reached, or {@link #flush()} called) is handed off to a virtual
- * thread instead of being sent by the calling thread, so a slow or blocked transmission never delays
- * accumulation of the next batch. Concurrent transmissions are bounded by
- * {@link DeliveryOptions#maxConcurrentTransmissions()}: beyond that limit, the calling thread (in
- * practice, {@link AbstractLogDeliveryAppender}'s background thread, never the application thread) waits
- * for one to complete before handing over the next.
+ * A batch due (threshold reached, or {@link #flush()} called) is transmitted on a virtual thread of its own,
+ * at most {@link DeliveryOptions#maxConcurrentTransmissions()} at once, the thread accumulating documents (the
+ * background thread of {@link AbstractLogDeliveryAppender}, never the application thread) waiting for a slot
+ * past that. The documents of a failed transmission are put back at the front of the batch and retried, so
+ * that concurrent transmissions may deliver documents out of order, each carrying its own timestamp.
  * <p>
- * A failed transmission's documents are put back at the front of the batch for a later retry instead of
- * being lost. While batching is enabled (a flush threshold greater than {@code 1}) and the last attempt is
- * still failing, a new one is not attempted for every incoming message; retries wait for the next
- * {@link #flush()} instead. Retried documents may end up redelivered out of order under concurrent
- * transmissions; each already carries its own timestamp, so this is an accepted trade-off.
- * <p>
- * Two safety nets bound the cost of a struggling downstream system, or of a single "poison document" it can
- * never accept, so neither can grow memory without bound or wedge the pipeline forever: the pending batch
- * is capped at {@link DeliveryOptions#maxPendingDocuments()} via the shared {@link com.chavaillaz.appender.BoundedTrim}
- * policy (oldest documents discarded past that, both while accumulating and while requeuing after a
- * failure, the same policy {@link AbstractLogDeliveryAppender}'s own pending event queue applies), and a
- * batch that fails {@link DeliveryOptions#maxConsecutiveFailures()} times in a row (counted for the
- * documents that failed, not delivery-wide, so neither an unrelated batch succeeding concurrently nor a
- * newer document joining them can reset it) is discarded instead of retried indefinitely. Both are reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)},
- * so this data loss is never silent.
- * <p>
- * A batch due for (re)transmission bigger than {@link DeliveryOptions#maxRequestDocuments()} is first
- * split into chunks of at most that size, each dispatched, retried and (subject to
- * {@link DeliveryOptions#maxConcurrentTransmissions()}) transmitted independently. Disabled by default;
- * only matters for a downstream system with its own limit on documents or payload size per request.
- * <p>
- * The generic accumulate/backpressure/retry machinery itself lives in {@link Batcher}; this class is a thin
- * adapter wiring it to {@link LogConfiguration}, {@link LogDelivery} and {@link LogDeliveryListener}.
+ * The pending batch is capped by {@link DeliveryOptions#maxPendingDocuments()} and
+ * {@link DeliveryOptions#maxPendingBytes()}, a request by {@link DeliveryOptions#maxRequestDocuments()} and
+ * {@link DeliveryOptions#maxRequestBytes()}, and documents failing
+ * {@link DeliveryOptions#maxConsecutiveFailures()} times in a row are given up on. Every document discarded is
+ * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}.
  *
  * @param <C> The configuration type
  */
 public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> implements LogDelivery {
 
     /**
-     * Log4j2's own internal diagnostic channel rather than an ordinary {@code LogManager} logger: this
-     * class runs inside an appender normally attached to the root logger, so an ordinary logger here would
-     * write its diagnostics straight back into the pipeline they are about, which loops (see {@link
-     * com.chavaillaz.appender.Batcher}, whose own logger carries the measurement). Make it visible with
-     * {@code -Dlog4j2.debug}, a {@code status} attribute on the configuration, or a {@code <StatusListener>}.
+     * The status logger of Log4j2 rather than an application logger, which would feed these diagnostics back
+     * into the appender they are about (see {@link Batcher}).
      */
     private static final Logger log = StatusLogger.getLogger();
 
@@ -74,14 +54,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     private final C configuration;
 
     /**
-     * The listener notified of the outcome of every transmission attempt.
-     * <p>
-     * Volatile because {@link #setListener(LogDeliveryListener)} exists precisely to change it after
-     * construction, from whatever thread the application happens to wire it up on, while every read of it
-     * happens on one of the virtual threads the {@link Batcher} transmits on. Nothing links the two: the
-     * writer touches neither the batching engine's monitor nor its semaphore, so without this a
-     * transmission thread is free to keep using the previous listener indefinitely, or to see a new one
-     * before its own constructor finished.
+     * The listener notified of the outcome of every transmission attempt, volatile since
+     * {@link #setListener(LogDeliveryListener)} may replace it from any thread while transmissions read it.
      */
     @Getter
     private volatile LogDeliveryListener listener;
@@ -89,9 +63,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     private final Batcher<Map<String, Object>> batcher;
 
     /**
-     * The close timeout this delivery was built with, kept only as a fallback for {@link #closeTimeout()}
-     * when reading the current one fails. Every other setting can go unenforced until the next read; this
-     * one is read once, at the only moment that matters, with no later attempt to fall back on.
+     * The close timeout this delivery was built with, used by {@link #closeTimeout()} when the current one
+     * cannot be read.
      */
     private final @Nullable Duration initialCloseTimeout;
 
@@ -118,17 +91,14 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         warnAboutDegradedConfiguration(options);
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
         Batcher.Builder<Map<String, Object>> batcherBuilder = Batcher.<Map<String, Object>>builder()
-                // Read through getDeliveryOptions() on every call rather than off the instance captured
-                // above, so a configuration varying a limit at runtime is still honored, exactly as the
-                // per-setting getters it replaced were.
+                // Read again on every call, so that a limit varied at runtime is honored
                 .flushThreshold(() -> configuration.getDeliveryOptions().flushThreshold())
                 .maxPendingElements(this::getMaxPendingDocuments)
                 .maxRequestElements(this::getMaxRequestDocuments)
                 .maxConsecutiveFailures(this::getMaxConsecutiveFailures)
                 .maxPendingBytes(this::getMaxPendingBytes)
                 .maxRequestBytes(this::getMaxRequestBytes)
-                // Fixed once here, unlike the limits above: the Batcher sizes its semaphore from it, and the
-                // backoff policy is built once from these two durations.
+                // Fixed once, unlike the limits above
                 .maxConcurrentTransmissions(options.maxConcurrentTransmissions())
                 .backoff(BackoffPolicy.exponential(options.retryBackoff(), options.maxRetryBackoff()))
                 .transmissionThreadPrefix("log-delivery-transmission-")
@@ -151,10 +121,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     }
                 });
 
-        // Always wired in, but only measuring while a byte limit is in effect (see measureIfBounded).
-        // Deciding that once here instead, from the configuration, made getMaxPendingBytes() and
-        // getMaxRequestBytes() useless as the overridable hooks they are documented to be: a subclass
-        // raising a limit through one of them got a limit that silently enforced nothing.
+        // Always wired in, measuring only while a byte limit is in effect, so that the overridable getters of
+        // both limits can turn them on at any time
         batcherBuilder.elementSize(this::measureIfBounded);
         this.batcher = batcherBuilder.build();
     }
@@ -171,14 +139,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Measures the given document through {@link #estimateDocumentSize(Map)}, or counts it as weightless
-     * while neither byte limit is in effect: measuring costs something on the path every document takes, and
-     * a delivery with no size limit to enforce should not pay it.
-     * <p>
-     * Checked per document rather than once at construction, so both limits keep working through the
-     * overridable getters below. A limit coming into effect while documents are already accumulating starts
-     * out under-counting them; the running total re-anchors on the next batch, so it is at worst enforced
-     * a little late rather than not at all.
+     * Measures the given document through {@link #estimateDocumentSize(Map)}, or counts it as weightless while
+     * neither byte limit is in effect, measuring costing something for every document. A limit coming into
+     * effect under-counts the documents already pending until the next batch, being enforced late at worst.
      *
      * @param document The document to measure
      * @return The estimated size of the document in bytes, or {@code 0} while no byte limit is in effect
@@ -190,12 +153,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Warns about configuration values that degrade this delivery's functionality instead of leaving it
-     * fully working, so a misconfiguration is visible at startup instead of only showing up later as
-     * unexplained data loss or runaway retries. Unlike {@code MaxConcurrentTransmissions} below {@code 1}
-     * (validated by {@link Batcher}'s constructor below, which throws rather than warns), none of these
-     * leave the pipeline stuck: a request never blocks waiting for one, so they are deliberately still
-     * allowed, only reported.
+     * Warns about the values degrading this delivery, allowed as they are since none leaves the pipeline
+     * stuck, so that a misconfiguration shows at startup rather than as unexplained data loss or retries.
      *
      * @param options The options to inspect
      */
@@ -228,10 +187,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum number of documents a pending batch can hold in memory; past it, the oldest documents are
-     * discarded, favoring the most recently received ones. Independent of {@link #getMaxRequestDocuments()}.
-     * Defaults to {@link DeliveryOptions#maxPendingDocuments()}; override if the limit should depend on
-     * more than just the configuration.
+     * Maximum number of documents the pending batch holds, the oldest ones being discarded past it. Defaults
+     * to {@link DeliveryOptions#maxPendingDocuments()}; override it for a limit depending on more than that.
      *
      * @return The maximum number of documents a pending batch can hold in memory
      */
@@ -240,9 +197,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum number of documents sent together in a single request; a bigger pending batch is split into
-     * chunks of at most this size before dispatch. Defaults to {@link DeliveryOptions#maxRequestDocuments()}
-     * (unbounded, no chunking); override if the limit should depend on more than just the configuration.
+     * Maximum number of documents per request, a bigger batch being split into chunks. Defaults to
+     * {@link DeliveryOptions#maxRequestDocuments()}; override it for a limit depending on more than that.
      *
      * @return The maximum number of documents sent together in a single request
      */
@@ -251,11 +207,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum number of consecutive failed transmission attempts allowed for the same pending batch before
-     * it is discarded instead of retried again, so a single document the downstream system can never accept
-     * (a "poison document") cannot block everything behind it forever. Defaults to
-     * {@link DeliveryOptions#maxConsecutiveFailures()}; override if the limit should depend on more than
-     * just the configuration.
+     * Maximum number of consecutive failed attempts for the same documents before they are discarded. Defaults
+     * to {@link DeliveryOptions#maxConsecutiveFailures()}; override it for a limit depending on more than that.
      *
      * @return The maximum number of consecutive failed attempts allowed
      */
@@ -264,10 +217,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum estimated size a pending batch can reach in memory; past it, the oldest documents are
-     * discarded, the size-based counterpart of {@link #getMaxPendingDocuments()}. Defaults to
-     * {@link DeliveryOptions#maxPendingBytes()} (unbounded); override if the limit should depend on more than
-     * just the configuration.
+     * Maximum estimated size of the pending batch, the oldest documents being discarded past it. Defaults to
+     * {@link DeliveryOptions#maxPendingBytes()}; override it for a limit depending on more than that.
      *
      * @return The maximum estimated size a pending batch can reach, in bytes
      */
@@ -276,10 +227,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum estimated size of a single request; a batch weighing more is split into chunks that each stay
-     * under it, the size-based counterpart of {@link #getMaxRequestDocuments()}. Defaults to
-     * {@link DeliveryOptions#maxRequestBytes()} (unbounded); override if the limit should depend on more than
-     * just the configuration.
+     * Maximum estimated size of a request, a heavier batch being split into chunks. Defaults to
+     * {@link DeliveryOptions#maxRequestBytes()}; override it for a limit depending on more than that.
      *
      * @return The maximum estimated size of a single request, in bytes
      */
@@ -288,16 +237,13 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Estimates how many bytes the given document takes on the wire, used only to enforce
-     * {@link #getMaxPendingBytes()} and {@link #getMaxRequestBytes()} — and never called at all while both
-     * are left unbounded, so a delivery that does not use them pays nothing for this.
+     * Estimates how many bytes the given document takes on the wire, to enforce {@link #getMaxPendingBytes()}
+     * and {@link #getMaxRequestBytes()}, and never called while both are unbounded.
      * <p>
-     * Defaults to {@link DocumentSizeEstimator#estimate(Map)}, a compact-JSON approximation good enough to
-     * keep a request under a server's maximum content length. Override it when the actual encoding is known
-     * and differs enough to matter: an Elasticsearch bulk body adds an action line per document, a
-     * compressed or binary transport is smaller than its JSON rendering, and either way the transport itself
-     * is the only thing that knows. Expected to be cheap and free of side effects: it is called once per
-     * document on the way in, and again per document when a batch is split for transmission.
+     * Defaults to {@link DocumentSizeEstimator#estimate(Map)}, a compact JSON approximation. Override it when
+     * the encoding differs enough to matter: an Elasticsearch bulk body adds an action line per document, and a
+     * compressed or binary transport is smaller. Expected to be cheap and free of side effects, being called
+     * for every document on the way in, and again when a batch is split for transmission.
      *
      * @param document The document to measure
      * @return The estimated size of the document in bytes
@@ -313,8 +259,6 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     @Override
     public void send(@Nullable Map<String, Object> document) {
-        // A null document is treated as a no-op rather than stacked as-is, be it because of a caller
-        // mistake or a LogConverter implementation choosing to signal "skip this event" by returning null.
         if (document != null) {
             send(singletonList(document));
         }
@@ -336,8 +280,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Filters out any {@code null} element of the given list, only allocating a new list if at least one
-     * was actually found, so that the common case (no null element) does not pay for an extra copy.
+     * Filters out the {@code null} elements of the given list, copying it only if it has any.
      *
      * @param documents The list of documents to filter
      * @return The given list, or a copy of it without its null elements if it had any
@@ -382,18 +325,15 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Sends the given list of documents representing logs.
+     * Sends the given documents, called concurrently from the virtual threads transmitting.
      * <p>
-     * The returned future may be completed synchronously (before this method even returns) or
-     * asynchronously from another thread once the transmission actually completes; either way, this method
-     * itself is not expected to block on the transmission. Use {@link TransmissionResult#success()} when
-     * every document was accepted, {@link TransmissionResult#failure(Throwable)} when none were (letting the
-     * whole batch be retried or eventually discarded together), or
-     * {@link TransmissionResult#partialFailure(List, Throwable)} when only some were rejected (e.g. one
-     * malformed document in an otherwise-successful bulk response) so only those, not the accepted ones
-     * alongside them, are retried or counted toward {@link DeliveryOptions#maxConsecutiveFailures()}. A
-     * synchronously thrown exception, a future completed exceptionally, or a future completed with
-     * {@code null} are all treated the same as {@link TransmissionResult#failure(Throwable)}.
+     * The returned future may be completed right away or later, from another thread, by an asynchronous
+     * client, this method not being expected to block on the transmission. It completes with
+     * {@link TransmissionResult#success()} when every document was accepted,
+     * {@link TransmissionResult#failure(Throwable)} when none was, or
+     * {@link TransmissionResult#partialFailure(List, Throwable)} when only some were rejected, a malformed
+     * document in a bulk response for instance, so that only those are retried. An exception thrown, a future
+     * completed exceptionally or with {@code null} all count as a failure.
      *
      * @param documents The documents to send, as an unmodifiable list
      * @return A future completed with the outcome of the transmission
@@ -401,15 +341,12 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     protected abstract CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents);
 
     /**
-     * Flushes the current batch and waits, up to {@link DeliveryOptions#closeTimeout()}, for every
-     * pending transmission (including that final one) to complete, so a subclass can safely release
-     * resources used by {@link #sendBulk(List)} right after this call returns without racing an in-flight
-     * transmission.
+     * Flushes the current batch and waits, up to {@link DeliveryOptions#closeTimeout()}, for every pending
+     * transmission, that final one included: a subclass overriding it calls it first, and releases the
+     * resources of {@link #sendBulk(List)} once it returns.
      * <p>
-     * Whatever is still pending once that wait is over — documents a failing final transmission put back, or
-     * documents held by a transmission that never completed — is reported through
-     * {@link LogDeliveryListener#onDocumentsDropped(List, String)} rather than discarded along with this
-     * delivery, giving a dead-letter sink a last chance to save them.
+     * What is still pending once that wait is over is reported through
+     * {@link LogDeliveryListener#onDocumentsDropped(List, String)}, giving a dead-letter sink a last chance.
      *
      * @throws Exception Never thrown by this implementation (an interruption while waiting is caught,
      *                    re-flagged on the current thread, and logged instead)
@@ -421,11 +358,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * Reads how long to wait for in-flight transmissions while closing, falling back to the value this
-     * delivery was built with if the configuration cannot be read at all.
-     * <p>
-     * Guarded because of where it sits: this is the argument to the one call that flushes the pending
-     * batch, waits for it and reports whatever is left, so a failure to read it never reached that call --
-     * losing the batch in silence and leaving the engine running with nothing left to close it.
+     * delivery was built with: a failure here would skip the close flushing and reporting the pending batch.
      *
      * @return The close timeout, or {@code null} to wait indefinitely
      */
@@ -440,11 +373,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Waits until every currently dispatched transmission (including the one triggered by the last call to
-     * {@link #flush()}) has completed, so that closing any resource used by {@link #sendBulk(List)}
-     * (typically done right after calling this method) does not race with an in-flight transmission.
-     * <p>
-     * Also used by tests to deterministically wait for asynchronous transmissions to complete.
+     * Waits until every transmission dispatched so far has completed, for the tests to wait for them.
      */
     void awaitPendingTransmissions() throws InterruptedException {
         batcher.awaitPendingTransmissions();

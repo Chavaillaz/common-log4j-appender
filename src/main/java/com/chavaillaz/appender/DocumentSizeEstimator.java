@@ -10,27 +10,20 @@ import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Approximates how many bytes a document takes on the wire, so the delivery pipeline can bound what it holds
- * in memory and what it puts in one request by size rather than only by document count (see
- * {@link DeliveryOptions#maxPendingBytes()} and {@link DeliveryOptions#maxRequestBytes()}).
+ * Approximates how many bytes a document takes on the wire, so that the delivery pipeline can bound what it
+ * holds and what it puts in one request by size (see {@link DeliveryOptions#maxPendingBytes()} and
+ * {@link DeliveryOptions#maxRequestBytes()}).
  * <p>
- * Deliberately an approximation, not a measurement: the exact size depends on the downstream system's own
- * encoding (an Elasticsearch bulk body interleaves an action line per document, a protobuf payload looks
- * nothing like either), and actually serializing every document just to measure it would cost more than the
- * limits save. What is computed here is the size of a compact, UTF-8 encoded JSON rendering of the document:
- * the right order of magnitude for any JSON-ish transport, which is what a limit meant to keep requests under
- * a server's maximum content length needs. A transport that knows its own encoding should override
- * {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)} with something
- * exact instead.
+ * An approximation rather than a measurement, serializing every document to measure it costing more than the
+ * limits save: the size of a compact UTF-8 JSON rendering of the document, the right order of magnitude for any
+ * JSON transport. A transport knowing its own encoding overrides
+ * {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)} instead.
  * <p>
- * {@code null}, {@link Boolean}, {@link Number}, {@link Map}, {@link Iterable} and array values are accounted
- * for as their natural JSON counterpart (recursively for the latter three), anything else as a JSON string of its
- * {@link String#valueOf(Object)} rendering — mirroring what {@link FileDeadLetterListener} writes, so a
- * document's estimate here matches what that sink would actually produce for it.
- * <p>
- * Escaping is not accounted for: a string full of quotes or control characters really serializes a little
- * larger than estimated here. Nesting is followed to a bounded depth, past which a value counts as zero,
- * so a document that (however unusually) contains itself cannot recurse forever.
+ * {@code null}, {@link Boolean}, {@link Number}, {@link Map}, {@link Iterable} and array values count as their
+ * JSON counterpart, the latter three recursively, and anything else as a JSON string of its
+ * {@link String#valueOf(Object)} rendering, as {@link FileDeadLetterListener} writes them. Escaping is not
+ * counted, and nesting is followed to a bounded depth, past which a value counts as zero, so that a document
+ * containing itself cannot recurse forever.
  */
 @UtilityClass
 public class DocumentSizeEstimator {
@@ -58,9 +51,8 @@ public class DocumentSizeEstimator {
     private static final int NULL_LENGTH = 4;
 
     /**
-     * Maximum nesting depth followed before a value stops being counted, guarding against a structure that
-     * contains itself (which would otherwise recurse until the stack runs out). Far deeper than any log
-     * document has reason to be.
+     * Maximum nesting depth followed before a value stops being counted, so that a structure containing
+     * itself does not recurse until the stack runs out. Far deeper than any log document has reason to be.
      */
     private static final int MAX_DEPTH = 16;
 
@@ -151,9 +143,7 @@ public class DocumentSizeEstimator {
     }
 
     /**
-     * Counts how many bytes the given text takes once encoded as UTF-8, without allocating the encoded form
-     * (unlike {@code value.getBytes(UTF_8).length}, which would copy the whole thing just to read its
-     * length, on a path taken once per document).
+     * Counts how many bytes the given text takes once encoded as UTF-8, without allocating the encoded form.
      *
      * @param value The text to measure
      * @return The number of bytes its UTF-8 encoding would take
