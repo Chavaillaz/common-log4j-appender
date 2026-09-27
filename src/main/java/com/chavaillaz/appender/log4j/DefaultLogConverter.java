@@ -1,7 +1,7 @@
 package com.chavaillaz.appender.log4j;
 
 import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.io.Serial;
 import java.io.Writer;
 import java.time.Instant;
 import java.util.HashMap;
@@ -185,11 +185,23 @@ public class DefaultLogConverter implements LogConverter {
         if (value == null || maxLength <= 0 || value.length() <= maxLength) {
             return value;
         }
-        int keep = Character.isHighSurrogate(value.charAt(maxLength - 1)) && Character.isLowSurrogate(value.charAt(maxLength))
-                ? maxLength - 1
-                : maxLength;
+        int keep = cutIndex(value, maxLength);
         int truncatedChars = value.length() - keep;
         return value.substring(0, keep) + "... (truncated, " + truncatedChars + " more characters)";
+    }
+
+    /**
+     * Where to cut the given value, longer than {@code maxLength}, so that it keeps at most that many characters:
+     * one character earlier rather than between the two halves of a surrogate pair.
+     *
+     * @param value     The value to cut, longer than {@code maxLength}
+     * @param maxLength The maximum length to keep, positive
+     * @return The number of characters to keep
+     */
+    private static int cutIndex(String value, int maxLength) {
+        return Character.isHighSurrogate(value.charAt(maxLength - 1)) && Character.isLowSurrogate(value.charAt(maxLength))
+                ? maxLength - 1
+                : maxLength;
     }
 
     /**
@@ -246,16 +258,102 @@ public class DefaultLogConverter implements LogConverter {
     /**
      * Gets the stack trace of the given throwable, truncated to {@link #getMaxStackTraceLength()} characters so
      * that a deep cause chain cannot inflate a document, and the batch holding it, past what the downstream
-     * system accepts.
+     * system accepts. Printing stops right past that length, rather than rendering every frame to cut them.
      *
      * @param throwable The throwable
      * @return The stack trace
      */
     protected String getStackTrace(Throwable throwable) {
-        Writer result = new StringWriter();
-        PrintWriter printWriter = new PrintWriter(result);
-        throwable.printStackTrace(printWriter);
-        return truncate(result.toString(), getMaxStackTraceLength());
+        int maxLength = getMaxStackTraceLength();
+        BoundedWriter writer = new BoundedWriter(maxLength);
+        try {
+            throwable.printStackTrace(new PrintWriter(writer));
+        } catch (LimitReached e) {
+            // What is left would only be cut
+        }
+        String printed = writer.toString();
+        if (maxLength <= 0 || printed.length() <= maxLength) {
+            return printed;
+        }
+        return printed.substring(0, cutIndex(printed, maxLength)) + "... (truncated)";
+    }
+
+    /**
+     * Collects what is printed into it, and stops the printing by throwing {@link LimitReached} once it holds
+     * one character past the given length, which tells a stack trace of exactly that length from a longer one.
+     */
+    private static final class BoundedWriter extends Writer {
+
+        private final StringBuilder printed = new StringBuilder();
+
+        /**
+         * How many characters to collect, {@link Long#MAX_VALUE} for no limit.
+         */
+        private final long capacity;
+
+        /**
+         * Creates a writer collecting at most one character past the given length.
+         *
+         * @param maxLength The maximum length of the stack trace, a non-positive value disabling the limit
+         */
+        private BoundedWriter(int maxLength) {
+            this.capacity = maxLength > 0 ? maxLength + 1L : Long.MAX_VALUE;
+        }
+
+        @Override
+        public void write(char[] chars, int offset, int length) {
+            printed.append(chars, offset, room(length));
+            stopOnceFull();
+        }
+
+        @Override
+        public void write(String string, int offset, int length) {
+            printed.append(string, offset, offset + room(length));
+            stopOnceFull();
+        }
+
+        private int room(int length) {
+            return (int) Math.min(length, capacity - printed.length());
+        }
+
+        private void stopOnceFull() {
+            if (printed.length() == capacity) {
+                throw LimitReached.INSTANCE;
+            }
+        }
+
+        @Override
+        public void flush() {
+            // Nothing buffered beyond the builder itself
+        }
+
+        @Override
+        public void close() {
+            // Nothing to release
+        }
+
+        @Override
+        public String toString() {
+            return printed.toString();
+        }
+
+    }
+
+    /**
+     * Thrown by {@link BoundedWriter} to stop the printing of a stack trace, which only catches an
+     * {@link java.io.IOException} of its writer. Without a stack trace nor any state, and so shared.
+     */
+    private static final class LimitReached extends RuntimeException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        private static final LimitReached INSTANCE = new LimitReached();
+
+        private LimitReached() {
+            super(null, null, false, false);
+        }
+
     }
 
     /**

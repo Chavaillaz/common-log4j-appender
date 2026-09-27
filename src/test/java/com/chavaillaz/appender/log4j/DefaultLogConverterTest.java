@@ -6,8 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.impl.JdkMapAdapterStringMap;
@@ -326,19 +329,52 @@ class DefaultLogConverterTest {
                 }
             };
             converter.configure(configuration);
+            var exception = new RuntimeException("my-exception");
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
-                    .setThrown(new RuntimeException("my-exception"))
+                    .setThrown(exception)
                     .build();
 
             // when
             var document = converter.convert(event);
 
-            // then
-            String stacktrace = document.get("stacktrace").toString();
-            assertEquals(50, stacktrace.indexOf("... (truncated"));
-            assertTrue(stacktrace.startsWith("java.lang.RuntimeException: my-exception"));
+            // then: the first characters of the stack trace, as printed in full
+            var fullStackTrace = new StringWriter();
+            exception.printStackTrace(new PrintWriter(fullStackTrace));
+            assertEquals(fullStackTrace.toString().substring(0, 50) + "... (truncated)", document.get("stacktrace"));
+        }
+
+        @Test
+        @DisplayName("Stops printing a stack trace once past the configured maximum length rather than printing it all")
+        void testConversionStopsPrintingPastTheMaximumLength() {
+            // given: a cause chain a thousand deep, as a framework wrapping an exception at each layer builds,
+            // each cause counting how often it is printed
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter() {
+                @Override
+                protected int getMaxStackTraceLength() {
+                    return 1_000;
+                }
+            };
+            converter.configure(configuration);
+            var printed = new AtomicInteger();
+            Throwable exception = new CountedException("innermost", null, printed);
+            for (int i = 0; i < 1_000; i++) {
+                exception = new CountedException("wrapper-" + i, exception, printed);
+            }
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(exception)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: only the causes that fit were printed, rather than all of them only to cut the rest
+            assertTrue(printed.get() < 100, "Only the causes within the limit should have been printed, but " + printed.get() + " were");
+            assertTrue(document.get("stacktrace").toString().endsWith("... (truncated)"));
         }
 
         @Test
@@ -610,6 +646,26 @@ class DefaultLogConverterTest {
         @Override
         public String getMessage() {
             throw new RuntimeException("Simulated getMessage failure");
+        }
+
+    }
+
+    /**
+     * An exception counting how often it is printed, which its stack trace does through its description.
+     */
+    private static class CountedException extends RuntimeException {
+
+        private final transient AtomicInteger printed;
+
+        CountedException(String message, Throwable cause, AtomicInteger printed) {
+            super(message, cause);
+            this.printed = printed;
+        }
+
+        @Override
+        public String toString() {
+            printed.incrementAndGet();
+            return super.toString();
         }
 
     }
