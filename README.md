@@ -129,7 +129,8 @@ one instance from another without restating the rest.
 Extend `AbstractBatchLogDelivery` and implement `sendBulk(List<Map<String, Object>>)`, returning a
 `CompletableFuture<TransmissionResult<Map<String, Object>>>` completed with the outcome. The future may be
 completed synchronously (as below) or later from another thread by an asynchronous client, without
-blocking the caller either way:
+blocking the caller either way. The outcome is handled on a thread of the library, never on the one of the
+client completing the future, whose I/O the listener or a retry therefore never holds up:
 
 ```java
 public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {

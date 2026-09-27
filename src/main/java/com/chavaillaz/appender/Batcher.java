@@ -16,6 +16,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
@@ -36,7 +37,8 @@ import org.jspecify.annotations.Nullable;
  * to complete past that.
  * <p>
  * The transport returns a future, completed right away or later by an asynchronous client, with a
- * {@link TransmissionResult}. What failed is put back at the front of the batch, and retried once a
+ * {@link TransmissionResult}, handled on a virtual thread rather than on the thread of the client completing
+ * it. What failed is put back at the front of the batch, and retried once a
  * {@link BackoffPolicy} allows it: on the next flush while batching, rather than on every new element. A
  * {@link TransmissionResult.PartialFailure} retries only the elements it rejected.
  * <p>
@@ -412,7 +414,8 @@ public class Batcher<T> {
         /**
          * Sets the transport function, called with a batch (or chunk) to transmit, as an unmodifiable list;
          * it may complete the returned future synchronously or asynchronously, and is not expected to block
-         * the calling thread either way. Required, having no sensible default.
+         * the calling thread either way. A future completed later is handled on a virtual thread of this
+         * engine, never on the thread completing it. Required, having no sensible default.
          *
          * @param transport The transport function
          * @return This builder
@@ -943,8 +946,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Calls the transport function and handles the result once its future completes, on whichever thread
-     * completes it.
+     * Calls the transport function and handles the result once its future completes: on this virtual thread
+     * if the transport completed it before returning, or on a virtual thread of its own otherwise, never on
+     * the thread of the client completing it.
      *
      * @param elements      The chunk to transmit
      * @param failureStreak The number of consecutive times this exact content has already failed to be
@@ -962,7 +966,7 @@ public class Batcher<T> {
             // of the permit below, and a few of them wedge every later dispatch
             future = CompletableFuture.failedFuture(e);
         }
-        future.whenComplete((result, throwable) -> {
+        BiConsumer<TransmissionResult<T>, Throwable> handler = (result, throwable) -> {
             try {
                 long durationMillis = (System.nanoTime() - start) / 1_000_000;
                 handleResult(elements, failureStreak, normalizeResult(elements, result, throwable), durationMillis);
@@ -976,7 +980,30 @@ public class Batcher<T> {
             } finally {
                 transmissionPermits.release();
             }
-        });
+        };
+        if (future.isDone()) {
+            future.whenComplete(handler);
+        } else {
+            // The thread completing it belongs to the client, an I/O thread serving other requests, which the
+            // listener, a dead-letter write or a requeue waiting for the monitor must not hold up
+            future.whenCompleteAsync(handler, this::executeOffTheCompletingThread);
+        }
+    }
+
+    /**
+     * Runs the handling of a transmission result on a virtual thread of its own, or on the calling thread once
+     * that fails, the executor being shut down by a close whose wait is over: a result never handled would
+     * lose its elements, and the permit it holds.
+     *
+     * @param task The handling of the result
+     */
+    private void executeOffTheCompletingThread(Runnable task) {
+        try {
+            transmissionExecutor.execute(task);
+        } catch (Throwable e) {
+            // Throwable: an Error starting the thread would be caught by the future, which then skips the task
+            task.run();
+        }
     }
 
     /**

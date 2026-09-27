@@ -4,6 +4,7 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -12,6 +13,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -306,6 +308,45 @@ class BatcherTest {
 
         // cleanup
         releaseTransport.complete(null);
+        batcher.awaitPendingTransmissions();
+    }
+
+    @Test
+    @DisplayName("Never holds up the client thread completing a transmission with the handling of its result")
+    void testResultIsHandledOffTheThreadCompletingIt() throws Exception {
+        // given: a future the client completes later from a thread of its own, as the I/O thread of an
+        // asynchronous HTTP client does, and a listener slow to return, as one writing to a file is
+        var pending = new CompletableFuture<TransmissionResult<String>>();
+        var releaseListener = new CountDownLatch(1);
+        var listenerThread = new CompletableFuture<Thread>();
+        Batcher<String> batcher = batcher(1, elements -> pending, new BatcherListener<>() {
+            @Override
+            public void onSucceeded(int count, long durationMillis) {
+                listenerThread.complete(Thread.currentThread());
+                try {
+                    releaseListener.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        batcher.add(List.of("a"));
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        while (pending.getNumberOfDependents() == 0 && System.nanoTime() < deadlineNanos) {
+            Thread.sleep(5);
+        }
+
+        // when
+        var client = Thread.ofPlatform().name("client-io")
+                .start(() -> pending.complete(TransmissionResult.success()));
+
+        // then: the client thread is free to serve its other requests while the listener still runs elsewhere
+        client.join(SECONDS.toMillis(5));
+        assertFalse(client.isAlive(), "The client thread should not have waited for the listener");
+        assertNotSame(client, listenerThread.get(5, SECONDS));
+
+        // cleanup
+        releaseListener.countDown();
         batcher.awaitPendingTransmissions();
     }
 
