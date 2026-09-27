@@ -310,6 +310,41 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Keeps the elements of a failed request whose transport tried to empty the list it was given")
+    void testTransportCannotChangeTheElementsItWasGiven() throws Exception {
+        // given: a transport clearing the list it was handed once done with it, then reporting a failure
+        var attempts = new CopyOnWriteArrayList<List<String>>();
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxConsecutiveFailures(() -> 2)
+                .transport(elements -> {
+                    attempts.add(List.copyOf(elements));
+                    elements.clear();
+                    return completedFuture(TransmissionResult.failure(null));
+                })
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("a", "b"));
+
+        // when: transmitted, then retried
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: the list the engine retries from was not the transport's to empty, so the elements were
+        // retried, then given up on and reported, rather than lost after the first attempt without a trace
+        assertEquals(List.of(List.of("a", "b"), List.of("a", "b")), attempts);
+        assertEquals(List.of("a", "b"), dropped);
+    }
+
+    @Test
     @DisplayName("Never requeues an element a PartialFailure referenced but the chunk never contained")
     void testPartialFailureCannotInjectForeignElements() throws Exception {
         // given: a misbehaving transport reporting, alongside the element it was actually given, one that

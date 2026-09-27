@@ -478,9 +478,9 @@ public class Batcher<T> {
         }
 
         /**
-         * Sets the transport function, called with a batch (or chunk) to transmit; it may complete the
-         * returned future synchronously or asynchronously, and is not expected to block the calling thread
-         * either way. Required, having no sensible default.
+         * Sets the transport function, called with a batch (or chunk) to transmit, as an unmodifiable list;
+         * it may complete the returned future synchronously or asynchronously, and is not expected to block
+         * the calling thread either way. Required, having no sensible default.
          *
          * @param transport The transport function
          * @return This builder
@@ -1082,7 +1082,8 @@ public class Batcher<T> {
         long start = System.nanoTime();
         CompletableFuture<TransmissionResult<T>> future;
         try {
-            CompletableFuture<TransmissionResult<T>> applied = transport.apply(elements);
+            // Unmodifiable, since what the transport is handed is what gets retried or reported if it fails
+            CompletableFuture<TransmissionResult<T>> applied = transport.apply(Collections.unmodifiableList(elements));
             future = applied != null ? applied : CompletableFuture.completedFuture(null);
         } catch (Throwable e) {
             // Throwable, not Exception: an Error here (a NoClassDefFoundError from a missing transport

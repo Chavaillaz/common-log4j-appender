@@ -395,7 +395,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * synchronously thrown exception, a future completed exceptionally, or a future completed with
      * {@code null} are all treated the same as {@link TransmissionResult#failure(Throwable)}.
      *
-     * @param documents The list of record data
+     * @param documents The documents to send, as an unmodifiable list
      * @return A future completed with the outcome of the transmission
      */
     protected abstract CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents);
