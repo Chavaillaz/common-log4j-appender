@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -20,6 +21,7 @@ import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -102,6 +104,20 @@ class AbstractLogDeliveryAppenderTest {
                 .filter(Thread::isAlive)
                 .filter(thread -> name.equals(thread.getName()))
                 .collect(Collectors.toCollection(HashSet::new));
+    }
+
+    /**
+     * Waits until the worker has taken every queued event, so a blocking one it runs no longer holds a queue
+     * slot: the worker already runs when the appender starts, and takes each event from the queue.
+     */
+    private static void awaitEmptyQueue(AbstractLogDeliveryAppender<?> appender) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        while (appender.getQueuedEventCount() > 0) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new AssertionError("Timed out waiting for the worker to take the queued events");
+            }
+            sleep(1);
+        }
     }
 
     private ErrorHandler recordingErrorHandler(List<Throwable> errors) {
@@ -582,6 +598,7 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             appender.append(loggingEvent); // occupies the worker thread (blocked on releaseTask)
+            awaitEmptyQueue(appender);
             appender.append(loggingEvent); // fills the one-slot queue
             var start = System.nanoTime();
             appender.append(loggingEvent); // discards the previously queued one instead of blocking
@@ -623,6 +640,7 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
             appender.append(realLogEvent("B")); // fills the one-slot queue
 
             // then: the discard reaches the error handler, not whatever application code called append()
@@ -661,6 +679,7 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
             appender.append(realLogEvent("B")); // fills the one-slot queue
             appender.append(realLogEvent("C")); // evicts B, the oldest queued event, taking its place
             releaseFirstTask.countDown();
@@ -699,6 +718,7 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
             appender.append(realLogEvent("B")); // fills the one-slot queue
             appender.append(realLogEvent("C")); // evicts B and takes its place
 
@@ -875,6 +895,44 @@ class AbstractLogDeliveryAppenderTest {
             schedulersCreated.removeAll(schedulersBefore);
             assertFalse(schedulersCreated.isEmpty(), "Starting should have created a flush scheduler");
             assertTrue(schedulersCreated.stream().allMatch(Thread::isDaemon), "The flush scheduler thread should be a daemon");
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Never keeps the context of the first thread to log for as long as it runs")
+        void testWorkerDoesNotTakeAfterTheFirstThreadToLog() throws Exception {
+            // given: a worker task reporting the context it runs with
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var requestContext = new InheritableThreadLocal<String>();
+            var requestClassLoader = new ClassLoader() {
+            };
+            var workerContext = new CompletableFuture<List<Object>>();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration) {
+                @Override
+                public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                    return () -> workerContext.complete(Arrays.asList(
+                            requestContext.get(), Thread.currentThread().getContextClassLoader()));
+                }
+            };
+            appender.start();
+
+            // when: the first thread to log carries a context of its own, as a request thread of a web
+            // application does, with an inheritable thread-local and the class loader of the application
+            Thread.ofPlatform().start(() -> {
+                requestContext.set("request-1");
+                Thread.currentThread().setContextClassLoader(requestClassLoader);
+                appender.append(mockLogEvent());
+            }).join();
+
+            // then: the worker runs until the appender stops, so a context it took from that thread would be
+            // kept alive as long, the class loader of an undeployed application included
+            var context = workerContext.get(5, SECONDS);
+            assertNull(context.get(0), "The worker should not see the inheritable thread-locals of that thread");
+            assertNotSame(requestClassLoader, context.get(1), "The worker should not use the class loader of that thread");
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -1112,6 +1170,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // when: A occupies the worker thread (blocked), B fills the one-slot queue
             appender.append(mockLogEvent());
+            awaitEmptyQueue(appender);
             appender.append(mockLogEvent());
 
             // then
@@ -1142,6 +1201,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // when: the first event occupies the (blocked) worker thread, the next two sit in the queue
             appender.append(mockLogEvent());
+            awaitEmptyQueue(appender);
             appender.append(mockLogEvent());
             appender.append(mockLogEvent());
 

@@ -72,18 +72,21 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * thread dump instead of showing up as a generic {@code pool-N-thread-1}.
      * <p>
      * Daemon threads, like every background thread Log4j2 starts itself. A platform thread otherwise takes
-     * after whichever thread creates it -- for the worker, the first application thread to log, typically
-     * {@code main} -- and neither of these ever ends before {@link #stop(long, TimeUnit)}. Only Log4j2's
-     * shutdown hook calls that, and the hook only runs once the JVM starts shutting down, which a live
-     * non-daemon thread prevents: an application returning from {@code main()} never exited. Nothing is
-     * lost by this: once its shutdown hooks have run the JVM halts every thread, daemon or not, so that
-     * hook stopping the appender was always what flushed it on the way out, and still is.
+     * after the thread creating it, typically {@code main}, and neither of these ever ends before
+     * {@link #stop(long, TimeUnit)}. Only Log4j2's shutdown hook calls that, and the hook only runs once the
+     * JVM starts shutting down, which a live non-daemon thread prevents: an application returning from
+     * {@code main()} never exited. Nothing is lost by this: once its shutdown hooks have run the JVM halts
+     * every thread, daemon or not, so that hook stopping the appender was always what flushed it on the way
+     * out, and still is.
+     * <p>
+     * Nor do they inherit the inheritable thread-locals of the thread creating them, which they would
+     * otherwise keep reachable until the appender stops.
      *
      * @param name The thread name prefix
      * @return The thread factory to use
      */
     private static ThreadFactory namedThreadFactory(String name) {
-        return Thread.ofPlatform().name(name).daemon(true).factory();
+        return Thread.ofPlatform().name(name).daemon(true).inheritInheritableThreadLocals(false).factory();
     }
 
     /**
@@ -257,6 +260,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         startLogDeliveryHandler();
 
         if (logDeliveryHandler != null) {
+            // Created here, by the thread applying the configuration, rather than by the first thread to log:
+            // it would otherwise keep that thread's context class loader, a web application's for a request
+            // thread, until the appender stops
+            workerExecutor.prestartCoreThread();
             startPeriodicFlush();
         }
 
