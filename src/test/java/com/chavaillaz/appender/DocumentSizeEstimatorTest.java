@@ -61,6 +61,19 @@ class DocumentSizeEstimatorTest {
     }
 
     @Test
+    @DisplayName("Counts an array by its elements rather than as one opaque value")
+    void testArraysAreFollowed() {
+        // given: arrays serialize as their elements, however large, and not as the identity hash String.valueOf()
+        // renders them as, a few dozen bytes whatever they hold
+        long objects = DocumentSizeEstimator.estimate(Map.of("parameters", new Object[]{"x".repeat(10_000)}));
+        long primitives = DocumentSizeEstimator.estimate(Map.of("payload", new int[10_000]));
+
+        // then
+        assertTrue(objects > 10_000, "The elements of an object array should be counted, got " + objects);
+        assertTrue(primitives > 10_000, "The elements of a primitive array should be counted, got " + primitives);
+    }
+
+    @Test
     @DisplayName("Terminates on a document that contains itself instead of recursing forever")
     void testSelfReferentialDocumentTerminates() {
         // given: pathological, but reachable through a caller-supplied MDC value or a custom converter, and

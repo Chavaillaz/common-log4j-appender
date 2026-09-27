@@ -172,6 +172,26 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Writes an array as a JSON array rather than as its identity hash")
+    void testSerializesArrays(@TempDir Path tempDir) throws Exception {
+        // given: arrays of objects and of primitives, as a custom converter putting the parameters of a
+        // message in its document produces
+        var file = tempDir.resolve("dead-letters.ndjson");
+        var listener = new FileDeadLetterListener(file);
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("parameters", new Object[]{"a", 1, null});
+        document.put("codes", new int[]{4, 2});
+
+        // when
+        listener.onDocumentsDropped(List.of(document), "reason");
+
+        // then: their content is saved, where "[Ljava.lang.Object;@1b6d3586" saved nothing of it
+        String line = Files.readString(file, UTF_8).strip();
+        assertTrue(line.endsWith(",\"document\":{\"parameters\":[\"a\",1,null],\"codes\":[4,2]}}"),
+                "Unexpected line: " + line);
+    }
+
+    @Test
     @DisplayName("Keeps a number JSON cannot express as a string instead of writing an unreadable line")
     void testNonFiniteNumbersStayParseable(@TempDir Path tempDir) throws Exception {
         // given: a computed value that happened to come out as NaN or an infinity, which render as bare

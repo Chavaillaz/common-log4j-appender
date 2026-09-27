@@ -40,8 +40,8 @@ import org.apache.logging.log4j.status.StatusLogger;
  * dead-letter sink failing must never itself disrupt the delivery pipeline calling it.
  * <p>
  * Only a minimal, self-contained JSON representation is produced (no external dependency): {@code null},
- * {@link Boolean}, {@link Number}, {@link Map} and {@link Iterable} values are written as their natural JSON
- * counterpart (recursively for the latter two), anything else (including {@link String}) is written as a
+ * {@link Boolean}, {@link Number}, {@link Map}, {@link Iterable} and array values are written as their natural
+ * JSON counterpart (recursively for the latter three), anything else (including {@link String}) is written as a
  * JSON string via {@link String#valueOf(Object)}. A key's own iteration order is preserved as-is, without
  * imposing any sorting. A number JSON has no notion of ({@link Double#NaN}, either infinity, or whatever a
  * custom {@link Number} subclass renders as) falls back to a JSON string, so a single such value cannot
@@ -242,6 +242,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             case Number number -> writeJsonNumber(builder, number);
             case Map<?, ?> map -> writeJsonObject(builder, map, depth);
             case Iterable<?> iterable -> writeJsonArray(builder, iterable, depth);
+            case Object array when array.getClass().isArray() ->
+                    writeJsonArray(builder, DocumentSizeEstimator.elementsOf(array), depth);
             default -> writeJsonString(builder, String.valueOf(value));
         }
     }
