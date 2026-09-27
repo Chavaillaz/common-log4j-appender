@@ -8,7 +8,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,10 +28,16 @@ import org.apache.logging.log4j.status.StatusLogger;
  * is not lost outright. Every other method is a no-op: compose it with another listener, or extend it, to
  * observe transmissions as well.
  * <p>
+ * The file rotates every day, the date of the drop being inserted before the extension of the file given:
+ * documents dropped on 28 September 2026 go to {@code dead-letters-2026-09-28.ndjson} for
+ * {@code dead-letters.ndjson}, so that an outage lasting days leaves files that can be replayed, archived or
+ * deleted one day at a time.
+ * <p>
  * Each line wraps the document, unmodified, with the reason it was dropped and when:
  * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Appends are serialized, so that concurrent
  * callers never interleave lines, and a failure to write is passed to
- * {@link #onWriteFailure(List, String, IOException)}, logged by default, rather than thrown into the pipeline.
+ * {@link #onWriteFailure(Path, List, String, IOException)}, logged by default, rather than thrown into the
+ * pipeline.
  * <p>
  * The JSON is written without any dependency: {@code null}, {@link Boolean}, {@link Number}, {@link Map},
  * {@link Iterable} and array values as their JSON counterpart, the latter three recursively and keys in their
@@ -66,10 +74,28 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      */
     private static final String TRUNCATED_MARKER = "<truncated: maximum nesting depth of " + MAX_DEPTH + " reached>";
 
+    /**
+     * The file whose name the one of each day is derived from, never written to itself.
+     */
     private final Path file;
 
     /**
-     * Serializes appends to {@link #file}, so that concurrent callers never interleave lines.
+     * The name of {@link #file} up to its extension, which the date of each file follows.
+     */
+    private final String baseName;
+
+    /**
+     * The extension of {@link #file}, its dot included, or an empty string for a file without one.
+     */
+    private final String extension;
+
+    /**
+     * Tells when a document is dropped, and in which time zone its day starts.
+     */
+    private final Clock clock;
+
+    /**
+     * Serializes appends to the files, so that concurrent callers never interleave lines.
      * <p>
      * A lock rather than {@code synchronized}, the callers often being virtual threads: on Java 21, one blocked
      * entering a monitor keeps its carrier, so that writers waiting their turn could hold every carrier and
@@ -79,15 +105,34 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     final ReentrantLock writeLock = new ReentrantLock();
 
     /**
-     * Creates a new dead-letter listener, creating the parent directory of the given file right away, so that
-     * a misconfiguration shows at startup rather than when something needs saving.
+     * Creates a new dead-letter listener rotating its file at midnight in the default time zone of the system
+     * (see {@link #FileDeadLetterListener(Path, Clock)}).
      *
-     * @param file The file to append dropped documents to, created (along with its parent directory) if it
-     *             does not exist yet, or appended to if it does
+     * @param file The file the name of the file of each day is derived from
      * @throws UncheckedIOException If the parent directory does not exist and cannot be created
      */
     public FileDeadLetterListener(Path file) {
+        this(file, Clock.systemDefaultZone());
+    }
+
+    /**
+     * Creates a new dead-letter listener, creating the parent directory of the given file right away, so that
+     * a misconfiguration shows at startup rather than when something needs saving.
+     *
+     * @param file  The file the name of the file of each day is derived from, in the same directory: each is
+     *              created if it does not exist yet, or appended to if it does
+     * @param clock The clock telling when a document is dropped, whose time zone decides when a day starts
+     * @throws UncheckedIOException If the parent directory does not exist and cannot be created
+     */
+    public FileDeadLetterListener(Path file, Clock clock) {
         this.file = Objects.requireNonNull(file, "file must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        Path fileName = file.getFileName();
+        String name = fileName != null ? fileName.toString() : "";
+        // A leading dot starts a hidden name rather than an extension
+        int extensionStart = name.lastIndexOf('.');
+        this.baseName = extensionStart > 0 ? name.substring(0, extensionStart) : name;
+        this.extension = extensionStart > 0 ? name.substring(extensionStart) : "";
         Path parent = file.toAbsolutePath().getParent();
         if (parent != null) {
             try {
@@ -110,21 +155,32 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             // Nothing to append, nor a file worth creating: an empty dead-letter file reads as logs lost
             return;
         }
-        Instant droppedAt = Instant.now();
+        Instant droppedAt = clock.instant();
         List<String> lines = new ArrayList<>(documents.size());
         for (Map<String, Object> document : documents) {
             lines.add(toLine(document, reason, droppedAt));
         }
+        Path target = fileOf(LocalDate.ofInstant(droppedAt, clock.getZone()));
         try {
             writeLock.lock();
             try {
-                Files.write(file, lines, UTF_8, CREATE, APPEND);
+                Files.write(target, lines, UTF_8, CREATE, APPEND);
             } finally {
                 writeLock.unlock();
             }
         } catch (IOException e) {
-            onWriteFailure(documents, reason, e);
+            onWriteFailure(target, documents, reason, e);
         }
+    }
+
+    /**
+     * The file collecting the documents dropped on the given day, next to the file given at construction.
+     *
+     * @param day The day the documents were dropped on
+     * @return The file of that day
+     */
+    private Path fileOf(LocalDate day) {
+        return file.resolveSibling(baseName + "-" + day + extension);
     }
 
     /**
@@ -167,14 +223,15 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Called when appending dropped documents to {@link #file} fails, logging the failure along with the
+     * Called when appending dropped documents to their file fails, logging the failure along with the
      * documents by default, so that they at least appear somewhere. Override to fall back to another sink.
      *
+     * @param file      The file of the day the documents could not be appended to
      * @param documents The documents that could not be appended
      * @param reason    The reason they were originally dropped
      * @param cause     The failure encountered while appending them
      */
-    protected void onWriteFailure(List<Map<String, Object>> documents, String reason, IOException cause) {
+    protected void onWriteFailure(Path file, List<Map<String, Object>> documents, String reason, IOException cause) {
         log.error("Unable to append {} dropped document(s) (originally dropped because: {}) to {}: {}",
                 documents.size(), reason, file, documents, cause);
     }

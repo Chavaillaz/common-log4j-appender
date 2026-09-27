@@ -265,6 +265,11 @@ with your own listener (e.g. one that also records metrics) if you need both.
 new FileDeadLetterListener(Path.of("/var/log/myapp/dead-letters.ndjson"));
 ```
 
+The file rotates every day, the date being inserted before its extension: the documents dropped on 28
+September 2026 go to `dead-letters-2026-09-28.ndjson`, so that each day can be replayed, archived or deleted
+on its own. A day starts at midnight in the default time zone of the system, or in the one of the `Clock`
+passed as second argument.
+
 Three methods also let you poll the current state of the pipeline directly, e.g. from a readiness
 endpoint, instead of only reacting to listener callbacks:
 

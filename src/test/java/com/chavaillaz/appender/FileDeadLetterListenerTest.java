@@ -11,7 +11,10 @@ import java.io.IOException;
 import java.lang.Thread.State;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,43 +29,119 @@ import org.junit.jupiter.api.io.TempDir;
 @DisplayName("FileDeadLetterListener")
 class FileDeadLetterListenerTest {
 
+    /**
+     * The clock of most listeners here, all of them dropping on 28 September 2026 and so appending to
+     * {@code dead-letters-2026-09-28.ndjson} for {@code dead-letters.ndjson}.
+     */
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-09-28T10:15:30Z"), ZoneOffset.UTC);
+
+    /**
+     * A clock a test moves forward, across midnight for instance.
+     */
+    private static final class SettableClock extends Clock {
+
+        private final ZoneId zone;
+        private volatile Instant instant;
+
+        private SettableClock(Instant instant, ZoneId zone) {
+            this.instant = instant;
+            this.zone = zone;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return zone;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return new SettableClock(instant, zone);
+        }
+
+        @Override
+        public Instant instant() {
+            return instant;
+        }
+
+    }
+
     @Test
     @DisplayName("Appends one JSON line per dropped document, wrapping it with the reason and a timestamp")
     void testAppendsWrappedDocumentAsJsonLine(@TempDir Path tempDir) throws Exception {
         // given
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("logmessage", "boom");
         document.put("level", "ERROR");
 
         // when
-        var before = Instant.now();
         listener.onDocumentsDropped(List.of(document), "maximum consecutive transmission failures exceeded");
-        var after = Instant.now();
 
-        // then: the document is wrapped, unmodified, with the reason and a timestamp
+        // then: the document is wrapped, unmodified, with the reason and the instant it was dropped at
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(1, lines.size());
-        String line = lines.get(0);
-        assertTrue(line.startsWith("{\"reason\":\"maximum consecutive transmission failures exceeded\",\"droppedAt\":\""),
-                "Unexpected line: " + line);
-        assertTrue(line.endsWith(",\"document\":{\"logmessage\":\"boom\",\"level\":\"ERROR\"}}"),
-                "Unexpected line: " + line);
+        assertEquals(List.of("{\"reason\":\"maximum consecutive transmission failures exceeded\","
+                + "\"droppedAt\":\"2026-09-28T10:15:30Z\","
+                + "\"document\":{\"logmessage\":\"boom\",\"level\":\"ERROR\"}}"), lines);
+    }
 
-        // and: the embedded timestamp is a genuine, plausible ISO-8601 instant
-        String droppedAt = line.substring(line.indexOf("\"droppedAt\":\"") + 13, line.indexOf("\",\"document\""));
-        Instant parsed = Instant.parse(droppedAt);
-        assertTrue(!parsed.isBefore(before) && !parsed.isAfter(after),
-                "droppedAt (" + parsed + ") should be within [" + before + ", " + after + "]");
+    @Test
+    @DisplayName("Moves on to the file of the next day at midnight")
+    void testRotatesEveryDay(@TempDir Path tempDir) throws Exception {
+        // given
+        var clock = new SettableClock(Instant.parse("2026-09-28T23:59:59Z"), ZoneOffset.UTC);
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), clock);
+
+        // when: a document is dropped either side of midnight
+        listener.onDocumentsDropped(List.of(Map.of("id", 1)), "before midnight");
+        clock.instant = Instant.parse("2026-09-29T00:00:01Z");
+        listener.onDocumentsDropped(List.of(Map.of("id", 2)), "after midnight");
+
+        // then: each went to the file of its own day, the one given never being written to itself
+        assertEquals(1, Files.readAllLines(tempDir.resolve("dead-letters-2026-09-28.ndjson"), UTF_8).size());
+        List<String> nextDay = Files.readAllLines(tempDir.resolve("dead-letters-2026-09-29.ndjson"), UTF_8);
+        assertEquals(1, nextDay.size());
+        assertTrue(nextDay.get(0).contains("\"reason\":\"after midnight\""), "Unexpected line: " + nextDay.get(0));
+        assertFalse(Files.exists(tempDir.resolve("dead-letters.ndjson")));
+    }
+
+    @Test
+    @DisplayName("Starts a day at midnight in the time zone of its clock")
+    void testDayStartsInTheTimeZoneOfTheClock(@TempDir Path tempDir) throws Exception {
+        // given: half past midnight in Zurich, still the day before in UTC
+        var clock = Clock.fixed(Instant.parse("2026-09-28T22:30:00Z"), ZoneId.of("Europe/Zurich"));
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), clock);
+
+        // when
+        listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason");
+
+        // then: filed on the day of the time zone, while the line keeps the instant itself
+        List<String> lines = Files.readAllLines(tempDir.resolve("dead-letters-2026-09-29.ndjson"), UTF_8);
+        assertTrue(lines.get(0).contains("\"droppedAt\":\"2026-09-28T22:30:00Z\""), "Unexpected line: " + lines.get(0));
+    }
+
+    @Test
+    @DisplayName("Appends the date to a file name with no extension, a leading dot not starting one")
+    void testDatesAFileNameWithoutExtension(@TempDir Path tempDir) throws Exception {
+        // given
+        var plain = new FileDeadLetterListener(tempDir.resolve("dead-letters"), CLOCK);
+        var hidden = new FileDeadLetterListener(tempDir.resolve(".dead-letters"), CLOCK);
+
+        // when
+        plain.onDocumentsDropped(List.of(Map.of("id", 1)), "reason");
+        hidden.onDocumentsDropped(List.of(Map.of("id", 2)), "reason");
+
+        // then
+        assertTrue(Files.exists(tempDir.resolve("dead-letters-2026-09-28")));
+        assertTrue(Files.exists(tempDir.resolve(".dead-letters-2026-09-28")));
     }
 
     @Test
     @DisplayName("Appends across multiple calls instead of overwriting")
     void testAppendsAcrossMultipleCalls(@TempDir Path tempDir) throws Exception {
         // given
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
 
         // when
         listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason-1");
@@ -79,8 +158,8 @@ class FileDeadLetterListenerTest {
     @DisplayName("Writes one line per document when multiple are dropped together")
     void testOneLinePerDocument(@TempDir Path tempDir) throws Exception {
         // given
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
 
         // when
         listener.onDocumentsDropped(List.of(Map.of("id", 1), Map.of("id", 2)), "reason");
@@ -94,8 +173,8 @@ class FileDeadLetterListenerTest {
     @DisplayName("Escapes characters JSON requires escaping in string values")
     void testEscapesSpecialCharacters(@TempDir Path tempDir) throws Exception {
         // given
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("logmessage", "line one\nline \"two\"\\three\ttab");
 
@@ -113,11 +192,11 @@ class FileDeadLetterListenerTest {
     void testLoneSurrogateDoesNotFailTheBatch(@TempDir Path tempDir) throws Exception {
         // given: a message cut in the middle of an emoji, as any substring() of user content can produce,
         // dropped in the middle of a batch
-        var file = tempDir.resolve("dead-letters.ndjson");
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
         var failures = new CopyOnWriteArrayList<IOException>();
-        var listener = new FileDeadLetterListener(file) {
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK) {
             @Override
-            protected void onWriteFailure(List<Map<String, Object>> documents, String reason, IOException cause) {
+            protected void onWriteFailure(Path target, List<Map<String, Object>> documents, String reason, IOException cause) {
                 failures.add(cause);
             }
         };
@@ -150,8 +229,8 @@ class FileDeadLetterListenerTest {
     @DisplayName("Serializes nested maps, lists, numbers, booleans and null correctly")
     void testSerializesNestedStructures(@TempDir Path tempDir) throws Exception {
         // given
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> nested = new LinkedHashMap<>();
         nested.put("code", 42);
         Map<String, Object> document = new LinkedHashMap<>();
@@ -176,8 +255,8 @@ class FileDeadLetterListenerTest {
     void testSerializesArrays(@TempDir Path tempDir) throws Exception {
         // given: arrays of objects and of primitives, as a custom converter putting the parameters of a
         // message in its document produces
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("parameters", new Object[]{"a", 1, null});
         document.put("codes", new int[]{4, 2});
@@ -196,8 +275,8 @@ class FileDeadLetterListenerTest {
     void testNonFiniteNumbersStayParseable(@TempDir Path tempDir) throws Exception {
         // given: a computed value that happened to come out as NaN or an infinity, which render as bare
         // NaN/Infinity tokens no JSON parser accepts
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("ratio", Double.NaN);
         document.put("rate", Double.POSITIVE_INFINITY);
@@ -220,8 +299,8 @@ class FileDeadLetterListenerTest {
     void testCustomNumberRenderingIsQuoted(@TempDir Path tempDir) throws Exception {
         // given: a Number subclass is free to render as anything at all (a separator, a currency symbol,
         // a locale-specific decimal comma), which would break the line just as badly
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("amount", new Number() {
             @Override public int intValue() { return 1; }
@@ -245,8 +324,8 @@ class FileDeadLetterListenerTest {
     @DisplayName("Writes the numbers JSON does accept as bare numbers")
     void testValidNumbersStayUnquoted(@TempDir Path tempDir) throws Exception {
         // given
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("integer", 42);
         document.put("negative", -7L);
@@ -270,8 +349,8 @@ class FileDeadLetterListenerTest {
         // given: a document reachable from itself, e.g. an application logging a list that holds the very
         // map being logged. A StackOverflowError here is an Error, so it slips past every catch(Exception)
         // guard in the pipeline and escapes through close(), on the shutdown path this sink serves.
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         List<Object> holder = new java.util.ArrayList<>();
         holder.add(document);
@@ -290,8 +369,8 @@ class FileDeadLetterListenerTest {
     @DisplayName("Truncates a document nested deeper than the limit instead of overflowing the stack")
     void testDeeplyNestedDocumentIsTruncated(@TempDir Path tempDir) throws Exception {
         // given: no cycle, just a structure deep enough to exhaust the stack on its own
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> deepest = new LinkedHashMap<>();
         deepest.put("bottom", "reached");
         Object current = deepest;
@@ -316,8 +395,8 @@ class FileDeadLetterListenerTest {
     @DisplayName("Writes nesting up to the depth limit in full")
     void testNestingWithinTheLimitIsWrittenInFull(@TempDir Path tempDir) throws Exception {
         // given: the wrapper adds one level, so a document nested well inside the limit must survive intact
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("a", Map.of("b", Map.of("c", Map.of("d", "leaf"))));
 
@@ -367,7 +446,7 @@ class FileDeadLetterListenerTest {
         var file = tempDir.resolve("nested/does/not/exist/dead-letters.ndjson");
 
         // when
-        assertDoesNotThrow(() -> new FileDeadLetterListener(file));
+        assertDoesNotThrow(() -> new FileDeadLetterListener(file, CLOCK));
 
         // then
         assertTrue(Files.isDirectory(file.getParent()));
@@ -378,8 +457,8 @@ class FileDeadLetterListenerTest {
     void testUnrenderableDocumentOnlyCostsItsOwnLine(@TempDir Path tempDir) throws Exception {
         // given: a document holding a value whose toString() throws, as any application object put into a
         // document by a custom converter is free to do
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> unrenderable = new LinkedHashMap<>();
         unrenderable.put("payload", new Object() {
             @Override
@@ -421,28 +500,31 @@ class FileDeadLetterListenerTest {
     @Test
     @DisplayName("Reports a write failure through onWriteFailure instead of throwing")
     void testReportsWriteFailureInsteadOfThrowing(@TempDir Path tempDir) throws Exception {
-        // given: the target "file" is actually a directory, so Files.write() will fail
-        var file = tempDir.resolve("actually-a-directory");
+        // given: the file of the day is actually a directory, so Files.write() will fail
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
         Files.createDirectory(file);
         var failures = new CopyOnWriteArrayList<String>();
-        var listener = new FileDeadLetterListener(file) {
+        var failedFiles = new CopyOnWriteArrayList<Path>();
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK) {
             @Override
-            protected void onWriteFailure(List<Map<String, Object>> documents, String reason, IOException cause) {
+            protected void onWriteFailure(Path target, List<Map<String, Object>> documents, String reason, IOException cause) {
                 failures.add(reason);
+                failedFiles.add(target);
             }
         };
 
         // when / then
         assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
         assertEquals(List.of("reason"), failures);
+        assertEquals(List.of(file), failedFiles);
     }
 
     @Test
     @DisplayName("Does not create the file at all when there is nothing to append")
     void testEmptyNotificationDoesNotCreateTheFile(@TempDir Path tempDir) {
         // given: an empty notification, as a listener chain forwarding one it did not filter produces
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
 
         // when
         listener.onDocumentsDropped(List.of(), "nothing was actually dropped");
@@ -457,8 +539,8 @@ class FileDeadLetterListenerTest {
         // given: a write in progress, held here the way a slow disk would hold it, and as many virtual
         // threads waiting behind it as the scheduler has carriers, the transmissions giving up on documents
         // and the reports of the discarded events all running on virtual threads
-        var file = tempDir.resolve("dead-letters.ndjson");
-        var listener = new FileDeadLetterListener(file);
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         int carriers = Integer.getInteger("jdk.virtualThreadScheduler.parallelism", Runtime.getRuntime().availableProcessors());
         var writers = new ArrayList<Thread>();
         boolean othersRan;
