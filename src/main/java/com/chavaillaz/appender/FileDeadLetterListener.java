@@ -25,8 +25,8 @@ import org.apache.logging.log4j.status.StatusLogger;
 /**
  * A ready-made {@link LogDeliveryListener} appending every irrecoverably dropped document to a local file, one
  * JSON object per line (newline-delimited JSON), as a last resort so that data a {@link LogDelivery} gave up on
- * is not lost outright. Every other method is a no-op: compose it with another listener, or extend it, to
- * observe transmissions as well.
+ * is not lost outright. Every other method is a no-op: compose it with another listener (see
+ * {@link LogDeliveryListener#compose(LogDeliveryListener...)}), or extend it, to observe transmissions as well.
  * <p>
  * The file rotates every day, the date of the drop being inserted before the extension of the file given:
  * documents dropped on 28 September 2026 go to {@code dead-letters-2026-09-28.ndjson} for

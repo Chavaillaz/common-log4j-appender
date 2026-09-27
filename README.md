@@ -256,11 +256,14 @@ count, as a last chance to save them.
 
 `FileDeadLetterListener` provides a ready-made `onDocumentsDropped` for the most common case: it appends
 every dropped document to a local file, one JSON object per line (newline-delimited JSON), wrapped with the
-reason and a timestamp, so nothing irrecoverably discarded is lost outright. Use it as-is, or compose it
-with your own listener (e.g. one that also records metrics) if you need both.
+reason and a timestamp, so nothing irrecoverably discarded is lost outright. Use it as-is, or combine it
+with your own listener (e.g. one that also records metrics) through `LogDeliveryListener.compose(...)`,
+which notifies each in turn, one failing not keeping the others from being notified:
 
 ```java
-new FileDeadLetterListener(Path.of("/var/log/myapp/dead-letters.ndjson"));
+LogDeliveryListener.compose(
+        new MetricsListener(),
+        new FileDeadLetterListener(Path.of("/var/log/myapp/dead-letters.ndjson")));
 ```
 
 The file rotates every day, the date being inserted before its extension: the documents dropped on 28

@@ -24,6 +24,25 @@ public interface LogDeliveryListener {
     };
 
     /**
+     * Combines the given listeners into one notifying each of them in turn, so that a delivery taking a single
+     * listener can feed a dead-letter sink and a metrics library at once, for instance. One failing does not
+     * keep the next ones from being notified: its failure is thrown once all of them were, a later one being
+     * logged.
+     *
+     * @param listeners The listeners to notify, in order
+     * @return A listener notifying all of them, {@link #NOOP} for none, or the listener itself for one
+     * @throws NullPointerException If one of the listeners is {@code null}
+     */
+    static LogDeliveryListener compose(LogDeliveryListener... listeners) {
+        List<LogDeliveryListener> all = List.of(listeners);
+        return switch (all.size()) {
+            case 0 -> NOOP;
+            case 1 -> all.getFirst();
+            default -> new CompositeLogDeliveryListener(all);
+        };
+    }
+
+    /**
      * Called after a batch of documents has been transmitted successfully.
      *
      * @param documentCount  The number of documents in the batch
