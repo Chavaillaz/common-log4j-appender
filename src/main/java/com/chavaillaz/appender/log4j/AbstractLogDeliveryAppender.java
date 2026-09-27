@@ -512,29 +512,30 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Stops accepting new logging events, waits (up to the given timeout) for already-accepted ones to be
-     * processed, then flushes and closes the delivery handler, so logs accepted just before shutdown are
-     * not lost.
+     * Stops accepting new logging events, waits for already-accepted ones to be processed, then flushes and
+     * closes the delivery handler, so logs accepted just before shutdown are not lost. Both waits share one
+     * budget, the close getting what the events left of it.
      *
-     * @param timeout  The maximum time to wait for pending events to be processed before giving up, or
-     *                 {@code 0} or less to wait up to {@link DeliveryOptions#closeTimeout()} instead: Log4j2
-     *                 passes {@code 0} when its {@code shutdownTimeout} is left unset, and on every
-     *                 reconfiguration, meaning each appender uses its own default
+     * @param timeout  The maximum time the whole stop may take, or {@code 0} or less for
+     *                 {@link DeliveryOptions#closeTimeout()} instead: Log4j2 passes {@code 0} when its
+     *                 {@code shutdownTimeout} is left unset, and on every reconfiguration, meaning each appender
+     *                 uses its own default
      * @param timeUnit The unit of {@code timeout}
      * @return Always {@code true}
      */
     @Override
     public boolean stop(long timeout, TimeUnit timeUnit) {
+        long startNanos = System.nanoTime();
+        long budgetNanos = timeout > 0 ? timeUnit.toNanos(timeout) : defaultStopTimeoutNanos();
         try {
             // No more flushes nor events, and the queued ones processed, so that closing the handler flushes them
             if (flushScheduler != null) {
                 flushScheduler.shutdownNow();
             }
             workerExecutor.shutdown();
-            long waitNanos = timeout > 0 ? timeUnit.toNanos(timeout) : defaultStopTimeoutNanos();
-            boolean terminated = workerExecutor.awaitTermination(waitNanos, NANOSECONDS);
+            boolean terminated = workerExecutor.awaitTermination(budgetNanos, NANOSECONDS);
             if (!terminated) {
-                error("Log delivery thread pool did not terminate within " + Duration.ofNanos(waitNanos)
+                error("Log delivery thread pool did not terminate within " + Duration.ofNanos(budgetNanos)
                         + ", some logs may be lost");
                 // Interrupts the task still running, possibly stuck, and reports the events still queued, which
                 // never ran, in one notification
@@ -550,14 +551,28 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             error("Thread interrupted during termination", e);
             currentThread().interrupt();
         } finally {
-            stopLogDeliveryHandler();
+            stopLogDeliveryHandler(remainingBudget(startNanos, budgetNanos));
             super.stop(timeout, timeUnit);
         }
         return true;
     }
 
     /**
-     * How long {@link #stop(long, TimeUnit)} waits for queued events when Log4j2 leaves it to the appender:
+     * What is left of the budget of {@link #stop(long, TimeUnit)} for closing the delivery handler.
+     *
+     * @param startNanos  The {@link System#nanoTime()} reading the stop started at
+     * @param budgetNanos The budget of the whole stop in nanoseconds, {@link Long#MAX_VALUE} for none
+     * @return The time left, never negative, or {@code null} to wait indefinitely
+     */
+    private static @Nullable Duration remainingBudget(long startNanos, long budgetNanos) {
+        if (budgetNanos == Long.MAX_VALUE) {
+            return null;
+        }
+        return Duration.ofNanos(Math.max(0, budgetNanos - (System.nanoTime() - startNanos)));
+    }
+
+    /**
+     * How long {@link #stop(long, TimeUnit)} may take when Log4j2 leaves it to the appender:
      * {@link DeliveryOptions#closeTimeout()}, or the one this appender was built with if it cannot be read.
      *
      * @return The time to wait in nanoseconds, {@link Long#MAX_VALUE} to wait indefinitely
@@ -576,14 +591,17 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Stops the client for logs transmission.
+     *
+     * @param timeout The maximum time closing it may take, or {@code null} to wait indefinitely
      */
-    private void stopLogDeliveryHandler() {
-        if (logDeliveryHandler == null) {
+    private void stopLogDeliveryHandler(@Nullable Duration timeout) {
+        LogDelivery handler = logDeliveryHandler;
+        if (handler == null) {
             return;
         }
 
         try {
-            logDeliveryHandler.close();
+            handler.close(timeout);
         } catch (Throwable e) {
             // Throwable: a class the client only needs to close may fail to load while the JVM shuts down, and
             // super.stop() must still run

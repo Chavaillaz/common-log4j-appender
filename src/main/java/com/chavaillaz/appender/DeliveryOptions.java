@@ -61,10 +61,11 @@ import org.jspecify.annotations.Nullable;
  *                                   it. Defaults to thirty seconds.
  * @param closeTimeout               Maximum time closing a delivery waits for the transmissions in flight, its
  *                                   final flush included, before reporting what is still pending through
- *                                   {@link LogDeliveryListener#onDocumentsDropped(List, String)}. Also bounds
- *                                   how long a stopping appender waits for the events it accepted while the
- *                                   {@code shutdownTimeout} of the Log4j2 configuration is left at {@code 0}.
- *                                   Defaults to thirty seconds; {@code null} waits indefinitely.
+ *                                   {@link LogDeliveryListener#onDocumentsDropped(List, String)}. While the
+ *                                   {@code shutdownTimeout} of the Log4j2 configuration is left at {@code 0},
+ *                                   also the budget of a whole appender stop: the events it accepted are
+ *                                   processed first, and its delivery closed within what they left. Defaults
+ *                                   to thirty seconds; {@code null} waits indefinitely.
  */
 public record DeliveryOptions(
         long flushThreshold,

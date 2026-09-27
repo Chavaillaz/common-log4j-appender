@@ -558,6 +558,57 @@ class AbstractBatchLogDeliveryTest {
             assertEquals(List.of(pending), listener.dropped.get(0).documents());
         }
 
+        @Test
+        @DisplayName("Gives up after the timeout it is closed with, however long the configured one")
+        void testCloseWithTimeoutIsBoundedByThatTimeout() throws Exception {
+            // given: the same stuck transmission, and a configured close timeout far longer than what is left
+            // of the budget of an appender stopping, which it closes the delivery with
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .maxConcurrentTransmissions(1)
+                    .closeTimeout(Duration.ofMinutes(1))
+                    .build();
+            var listener = new RecordingListener();
+            var logDelivery = new StuckTestLogDelivery(configuration, listener);
+            logDelivery.send(Map.<String, Object>of("logmessage", "in flight"));
+            logDelivery.flush();
+            var pending = Map.<String, Object>of("logmessage", "never dispatched");
+            logDelivery.send(pending);
+
+            // when
+            long start = System.nanoTime();
+            logDelivery.close(Duration.ofMillis(200));
+            long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then
+            assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
+            assertEquals(1, listener.dropped.size());
+            assertEquals(List.of(pending), listener.dropped.get(0).documents());
+        }
+
+        @Test
+        @DisplayName("Closes through close(Duration) with the configured timeout, so an override releasing resources runs")
+        void testCloseGoesThroughTheOverridableClose() throws Exception {
+            // given: a delivery releasing its client once closed, as one built on an HTTP client does
+            var configuration = TestLogConfiguration.builder()
+                    .closeTimeout(Duration.ofSeconds(3))
+                    .build();
+            var closedWithin = new CopyOnWriteArrayList<Duration>();
+            var logDelivery = new TestLogDelivery(configuration) {
+                @Override
+                public void close(Duration timeout) throws Exception {
+                    super.close(timeout);
+                    closedWithin.add(timeout);
+                }
+            };
+
+            // when
+            logDelivery.close();
+
+            // then
+            assertEquals(List.of(Duration.ofSeconds(3)), closedWithin);
+        }
+
     }
 
     @Nested

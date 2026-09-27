@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -47,6 +48,7 @@ import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.status.StatusData;
 import org.apache.logging.log4j.status.StatusListener;
 import org.apache.logging.log4j.status.StatusLogger;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -167,7 +169,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop();
 
             // then
-            verify(appender.getLogDeliveryHandler()).close();
+            verify(appender.getLogDeliveryHandler()).close(any());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
 
@@ -202,7 +204,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // cleanup
             appender.stop();
-            verify(appender.getLogDeliveryHandler()).close();
+            verify(appender.getLogDeliveryHandler()).close(any());
         }
 
         @Test
@@ -256,7 +258,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop();
 
             // then
-            verify(appender.getLogDeliveryHandler()).close();
+            verify(appender.getLogDeliveryHandler()).close(any());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
 
@@ -353,7 +355,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop();
 
             // then
-            verify(appender.getLogDeliveryHandler()).close();
+            verify(appender.getLogDeliveryHandler()).close(any());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
 
@@ -883,6 +885,45 @@ class AbstractLogDeliveryAppenderTest {
             // then: waited up to CloseTimeout, rather than abandoning all but the running task in the queue
             assertEquals(5, events.stream().filter("send"::equals).count());
             assertEquals("close", events.get(events.size() - 1));
+
+            // and: closed the delivery within what the tasks left of it, rather than a whole one of its own
+            assertClosedWithin(appender, Duration.ofSeconds(10).minusMillis(250));
+        }
+
+        @Test
+        @DisplayName("Closes the delivery within what processing the queued events left of the stop budget")
+        void testStopClosesTheDeliveryWithinWhatIsLeftOfItsBudget() throws Exception {
+            // given: slow tasks queued right before stopping, taking a quarter of the budget between them
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var events = new CopyOnWriteArrayList<String>();
+            var appender = new RecordingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, events, 50);
+
+            // when
+            appender.start();
+            for (int i = 0; i < 5; i++) {
+                appender.append(mockLogEvent());
+            }
+            appender.stop(1, SECONDS);
+
+            // then: the delivery got the rest of that second, rather than its own CloseTimeout on top of it,
+            // which let a stop take twice as long as the shutdownTimeout Log4j2 was configured with
+            assertEquals(5, events.stream().filter("send"::equals).count());
+            assertClosedWithin(appender, Duration.ofMillis(750));
+        }
+
+        /**
+         * Asserts that the delivery of the given appender was closed once, with a timeout between zero and the
+         * given maximum.
+         */
+        private static void assertClosedWithin(RecordingLogDeliveryAppender appender, Duration maximum) {
+            assertEquals(1, appender.getCloseTimeouts().size(), "The delivery should have been closed once");
+            Duration timeout = appender.getCloseTimeouts().get(0);
+            assertNotNull(timeout, "The delivery should have been closed with a bounded timeout");
+            assertFalse(timeout.isNegative(), "The delivery should not have been closed with a negative timeout");
+            assertTrue(timeout.compareTo(maximum) <= 0,
+                    "The delivery should have been closed within " + maximum + ", but was given " + timeout);
         }
 
         @Test
@@ -1534,6 +1575,7 @@ class AbstractLogDeliveryAppenderTest {
 
         List<String> events;
         long taskDelayMillis;
+        List<Duration> closeTimeouts = new CopyOnWriteArrayList<>();
 
         protected RecordingLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
                                                 List<String> events, long taskDelayMillis) {
@@ -1562,6 +1604,12 @@ class AbstractLogDeliveryAppenderTest {
 
                 @Override
                 public void close() {
+                    close(null);
+                }
+
+                @Override
+                public void close(@Nullable Duration timeout) {
+                    closeTimeouts.add(timeout);
                     events.add("close");
                 }
             };

@@ -341,19 +341,31 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     protected abstract CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents);
 
     /**
-     * Flushes the current batch and waits, up to {@link DeliveryOptions#closeTimeout()}, for every pending
-     * transmission, that final one included: a subclass overriding it calls it first, and releases the
-     * resources of {@link #sendBulk(List)} once it returns.
+     * Closes this delivery within {@link DeliveryOptions#closeTimeout()} (see {@link #close(Duration)}, the
+     * one to override).
+     *
+     * @throws Exception If closing fails
+     */
+    @Override
+    public final void close() throws Exception {
+        close(closeTimeout());
+    }
+
+    /**
+     * Flushes the current batch and waits, up to the given timeout, for every pending transmission, that final
+     * one included: a subclass overriding it calls it first, and releases the resources of
+     * {@link #sendBulk(List)} once it returns.
      * <p>
      * What is still pending once that wait is over is reported through
      * {@link LogDeliveryListener#onDocumentsDropped(List, String)}, giving a dead-letter sink a last chance.
      *
+     * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
      * @throws Exception Never thrown by this implementation (an interruption while waiting is caught,
      *                    re-flagged on the current thread, and logged instead)
      */
     @Override
-    public void close() throws Exception {
-        batcher.close(closeTimeout());
+    public void close(@Nullable Duration timeout) throws Exception {
+        batcher.close(timeout);
     }
 
     /**

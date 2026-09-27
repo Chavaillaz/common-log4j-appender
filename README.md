@@ -160,8 +160,8 @@ them were rejected (e.g. one malformed document in an otherwise-successful bulk 
 against the ones you were given by reference identity, not `equals()`) are retried or eventually
 discarded, while the rest are reported delivered.
 
-To release resources (e.g. an HTTP client), override `close()`, calling `super.close()` first so the
-current batch is flushed before they're released.
+To release resources (e.g. an HTTP client), override `close(Duration)`, calling `super.close(timeout)`
+first so the current batch is flushed before they're released.
 
 ### 3. Appender
 
@@ -297,7 +297,7 @@ its documentation):
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; oldest discarded past that to make room for a new one, mirroring `MaxPendingDocuments`. Defaults to `10'000`. |
 | `RetryBackoff` | Base delay before retrying a failed transmission, doubling per consecutive failure with full jitter, and holding off newly accumulated documents too while in effect. Defaults to `1s`; `0` retries at the next opportunity. |
 | `MaxRetryBackoff` | Cap the delay above never grows past. Defaults to `30s`. |
-| `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. Also bounds the wait for already-accepted events while Log4j2's `shutdownTimeout` is left at `0`. Defaults to `30s`; `null` waits indefinitely. |
+| `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. While Log4j2's `shutdownTimeout` is left at `0`, also the budget of the whole appender stop, already-accepted events included (see [Shutdown](#shutdown-and-failure-handling)). Defaults to `30s`; `null` waits indefinitely. |
 
 `Application`, `Host` and `Environment` come from `LogConfiguration` itself; everything else is a component
 of the `DeliveryOptions` it returns, all with usable defaults. An appender implementation typically exposes
@@ -326,16 +326,16 @@ to split it further.
 
 ## Shutdown and failure handling
 
-- **Shutdown:** stopping the appender stops accepting new logs, waits (up to the given timeout) for
-  already-accepted ones to be processed, then flushes and closes the delivery handler, waiting for that
-  final transmission too, so logs emitted just before shutdown aren't lost. The first wait is bounded by
-  the `shutdownTimeout` attribute (in milliseconds) of the root `<Configuration>` element of your Log4j2
-  configuration or, while it is left at its default of `0` (also what a reconfiguration passes), by
-  `CloseTimeout`. The final wait is bounded by `CloseTimeout` too, so a downstream system that accepts a
-  connection and then never answers can't hold up the JVM indefinitely. Anything still pending once that
-  wait is over — a failing final transmission's documents, or documents a stuck transmission never gave
-  back — is reported through `onDocumentsDropped` rather than discarded along with the appender, so a
-  dead-letter sink still gets its last chance at them.
+- **Shutdown:** stopping the appender stops accepting new logs, waits for already-accepted ones to be
+  processed, then flushes and closes the delivery handler, waiting for that final transmission too, so logs
+  emitted just before shutdown aren't lost. Both waits share one budget: the `shutdownTimeout` attribute (in
+  milliseconds) of the root `<Configuration>` element of your Log4j2 configuration or, while it is left at
+  its default of `0` (also what a reconfiguration passes), `CloseTimeout`. The delivery is closed within
+  what the accepted logs left of it, so a downstream system that accepts a connection and then never
+  answers can't hold up the JVM past that budget. Anything still pending once it is spent — a failing final
+  transmission's documents, or documents a stuck transmission never gave back — is reported through
+  `onDocumentsDropped` rather than discarded along with the appender, so a dead-letter sink still gets its
+  last chance at them.
 - **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
   the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected

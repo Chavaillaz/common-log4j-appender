@@ -1,5 +1,6 @@
 package com.chavaillaz.appender;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +53,18 @@ public interface LogDelivery extends AutoCloseable {
      */
     default boolean isHealthy() {
         return true;
+    }
+
+    /**
+     * Closes this delivery, waiting at most the given time for what it still has to send, so that an appender
+     * stopping can hand it what is left of its own budget. Defaults to {@link #close()}, for an implementation
+     * with nothing to wait for.
+     *
+     * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
+     * @throws Exception If closing fails
+     */
+    default void close(@Nullable Duration timeout) throws Exception {
+        close();
     }
 
 }
