@@ -10,9 +10,9 @@ import org.jspecify.annotations.Nullable;
  * delivery pipeline (throughput, latency, failures, data loss) can be monitored, e.g. by forwarding these
  * events to a metrics library. Every method has a no-op default; override only the ones you need.
  * <p>
- * Methods are called concurrently, from the threads transmitting, the background thread of the appender and,
- * for an event discarded by a full queue, the application thread logging it: an implementation must be
- * thread-safe, and should return quickly.
+ * Methods are called concurrently, from the threads transmitting and the background threads of the appender,
+ * never from the application thread logging: an implementation must be thread-safe, and should return
+ * quickly.
  */
 public interface LogDeliveryListener {
 

@@ -9,6 +9,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.RejectedExecutionHandler;
@@ -16,6 +19,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
@@ -45,8 +49,8 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * The queue holds at most {@link DeliveryOptions#maxQueuedEvents()} events, so that events arriving faster than
  * they are processed, while every transmission slot is stuck on an unresponsive downstream system for
  * instance, cannot grow memory without bound. Once full, the oldest event is discarded to make room, and
- * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}: the one thing here running on
- * the application thread, which a slow listener therefore slows down.
+ * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} on a virtual thread, so that a
+ * slow listener never holds up the application: past as many discards waiting for it, one is only logged.
  * <p>
  * An event at least as severe as {@link DeliveryOptions#flushLevel()} flushes the batch right after it, so
  * that it is not held back by settings favoring throughput.
@@ -110,18 +114,26 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             Runnable evicted = executor.getQueue().poll();
             boolean queued = executor.getQueue().offer(newTask);
 
-            // Reported once the freed slot is claimed, which a slow listener would otherwise leave for another
-            // thread to take, discarding two events instead of one
             if (evicted instanceof EventTask evictedTask) {
                 error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
-                reportDropped(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
+                discard(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
             }
             if (!queued) {
                 // Another event took the freed slot first, so this one is discarded instead
                 error("Log delivery task rejected: the internal queue is full, or the appender is stopping");
-                reportDropped(newTask.event(), "internal queue capacity exceeded, or the appender is stopping");
+                discard(newTask.event(), "internal queue capacity exceeded, or the appender is stopping");
             }
         }
+
+    }
+
+    /**
+     * A logging event discarded on the application thread, waiting in {@link #pendingDiscards} to be reported.
+     *
+     * @param event  The logging event discarded
+     * @param reason A short, human-readable explanation of why it was discarded
+     */
+    private record Discard(LogEvent event, String reason) {
 
     }
 
@@ -156,6 +168,25 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final DefaultLogConverter fallbackConverter = new DefaultLogConverter();
 
     /**
+     * The events discarded on the application thread, waiting for {@link #discardReporter} to report them, so
+     * that converting them and calling the listener never holds up the thread logging. Bounded like the queue,
+     * a discard past it being logged rather than waited for.
+     */
+    private final BlockingQueue<Discard> pendingDiscards;
+
+    /**
+     * Reports {@link #pendingDiscards} on a virtual thread, one notification per reason.
+     */
+    private final ExecutorService discardReporter = Executors.newSingleThreadExecutor(
+            Thread.ofVirtual().name("log-delivery-discard-reporter").inheritInheritableThreadLocals(false).factory());
+
+    /**
+     * Whether a report of {@link #pendingDiscards} is queued on {@link #discardReporter} and yet to start, so
+     * that a burst of discards queues a single report.
+     */
+    private final AtomicBoolean discardReportQueued = new AtomicBoolean();
+
+    /**
      * The close timeout this appender was built with, used by {@link #stop(long, TimeUnit)} when the current
      * one cannot be read.
      */
@@ -175,6 +206,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         DeliveryOptions options = configuration.getDeliveryOptions();
         this.initialCloseTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents());
+        this.pendingDiscards = new LinkedBlockingQueue<>(Math.max(1, options.maxQueuedEvents()));
         this.fallbackConverter.configure(configuration);
     }
 
@@ -385,12 +417,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         } catch (RejectedExecutionException e) {
             // A full queue evicts rather than rejects, so this is the appender stopping
             error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
-            reportDropped(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
+            discard(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
         } catch (Throwable e) {
             // Either createLogDeliveryTask() failed, losing the event, or the severity check once it was queued
             error("Log delivery task creation error", e);
             if (!handedOff) {
-                reportDropped(immutableEvent, "log delivery task creation error");
+                discard(immutableEvent, "log delivery task creation error");
             }
         }
     }
@@ -416,19 +448,59 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Reports a logging event discarded before reaching {@link #workerExecutor}, converted by
-     * {@link #fallbackConverter}.
+     * Hands a logging event discarded on the application thread to {@link #discardReporter}, so that
+     * converting it and calling the listener never holds up that thread. Reported right away only once the
+     * appender stopped, nothing being left to report it later.
      *
      * @param event  The logging event being discarded
      * @param reason A short, human-readable explanation of why it was discarded
      */
-    private void reportDropped(LogEvent event, String reason) {
-        reportDropped(List.of(event), reason);
+    private void discard(LogEvent event, String reason) {
+        if (!pendingDiscards.offer(new Discard(event, reason))) {
+            // The listener cannot keep up with the discards, which waiting for it would pass on to the application
+            error("Unable to report a discarded logging event, " + pendingDiscards.size()
+                    + " are already waiting for the delivery listener");
+            return;
+        }
+        if (discardReportQueued.compareAndSet(false, true)) {
+            try {
+                discardReporter.execute(this::reportPendingDiscards);
+            } catch (Throwable e) {
+                // Throwable: a report never queued would leave the flag raised, and every later discard waiting
+                discardReportQueued.set(false);
+                reportPendingDiscards();
+            }
+        }
+    }
+
+    /**
+     * Reports the events waiting in {@link #pendingDiscards}, in one notification per run of events discarded
+     * for the same reason.
+     */
+    private void reportPendingDiscards() {
+        // Lowered first, so that a discard waiting from now on queues a report of its own
+        discardReportQueued.set(false);
+        List<Discard> discards = new ArrayList<>();
+        pendingDiscards.drainTo(discards);
+        List<LogEvent> events = new ArrayList<>(discards.size());
+        String reason = null;
+        for (Discard discard : discards) {
+            if (reason != null && !reason.equals(discard.reason())) {
+                reportDropped(events, reason);
+                events = new ArrayList<>();
+            }
+            reason = discard.reason();
+            events.add(discard.event());
+        }
+        if (reason != null) {
+            reportDropped(events, reason);
+        }
     }
 
     /**
      * Reports several discarded events in one notification rather than one per event, a listener saving them
-     * usually paying per call, and a stop timing out abandoning up to a full queue at once.
+     * usually paying per call, and a stop timing out abandoning up to a full queue at once. Converted by
+     * {@link #fallbackConverter}, and only for a listener reading them.
      *
      * @param events The logging events being discarded
      * @param reason A short, human-readable explanation of why they were discarded
@@ -441,7 +513,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         try {
             LogDeliveryListener listener = handler.getListener();
             if (listener == LogDeliveryListener.NOOP) {
-                // Nothing would read the documents, whose conversion costs the thread logging, stack traces included
+                // Nothing would read the documents, not worth converting, stack traces included
                 return;
             }
             List<Map<String, Object>> documents = new ArrayList<>(events.size());
@@ -450,7 +522,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             }
             listener.onDocumentsDropped(List.copyOf(documents), reason);
         } catch (Throwable e) {
-            // Throwable: this runs on the application thread when a full queue evicts an event
+            // Throwable: a listener failing must not end the thread reporting, nor escape a stop
             error("Failed to report a discarded logging event to the delivery listener", e);
         }
     }
@@ -512,9 +584,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Stops accepting new logging events, waits for already-accepted ones to be processed, then flushes and
-     * closes the delivery handler, so logs accepted just before shutdown are not lost. Both waits share one
-     * budget, the close getting what the events left of it.
+     * Stops accepting new logging events, waits for already-accepted ones to be processed and for discarded ones
+     * to be reported, then flushes and closes the delivery handler, so logs accepted just before shutdown are
+     * not lost. Each step shares one budget, getting what the steps before it left.
      *
      * @param timeout  The maximum time the whole stop may take, or {@code 0} or less for
      *                 {@link DeliveryOptions#closeTimeout()} instead: Log4j2 passes {@code 0} when its
@@ -551,6 +623,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             error("Thread interrupted during termination", e);
             currentThread().interrupt();
         } finally {
+            stopDiscardReporter(remainingBudget(startNanos, budgetNanos));
             stopLogDeliveryHandler(remainingBudget(startNanos, budgetNanos));
             super.stop(timeout, timeUnit);
         }
@@ -558,7 +631,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * What is left of the budget of {@link #stop(long, TimeUnit)} for closing the delivery handler.
+     * What is left of the budget of {@link #stop(long, TimeUnit)} for its next step.
      *
      * @param startNanos  The {@link System#nanoTime()} reading the stop started at
      * @param budgetNanos The budget of the whole stop in nanoseconds, {@link Long#MAX_VALUE} for none
@@ -587,6 +660,24 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         }
         // Saturates rather than overflows, and a negative timeout waits no more than a zero one does
         return closeTimeout == null ? Long.MAX_VALUE : Math.max(0, NANOSECONDS.convert(closeTimeout));
+    }
+
+    /**
+     * Stops the reporter of the events discarded on the application thread once it reported those still
+     * waiting, a report running past the given time finishing on its own.
+     *
+     * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
+     */
+    private void stopDiscardReporter(@Nullable Duration timeout) {
+        discardReporter.shutdown();
+        try {
+            long timeoutNanos = timeout == null ? Long.MAX_VALUE : timeout.toNanos();
+            if (!discardReporter.awaitTermination(timeoutNanos, NANOSECONDS)) {
+                error("Discarded logging events were still being reported to the delivery listener as the appender stopped");
+            }
+        } catch (InterruptedException e) {
+            currentThread().interrupt();
+        }
     }
 
     /**

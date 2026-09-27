@@ -455,8 +455,8 @@ class FileDeadLetterListenerTest {
     @DisplayName("Leaves other virtual threads a carrier while writers wait for their turn at the file")
     void testWritersWaitingForTheFileDoNotHoldCarriers(@TempDir Path tempDir) throws Exception {
         // given: a write in progress, held here the way a slow disk would hold it, and as many virtual
-        // threads waiting behind it as the scheduler has carriers. A full queue reports each evicted event
-        // from the application thread logging it, so an application on virtual threads gets there quickly
+        // threads waiting behind it as the scheduler has carriers, the transmissions giving up on documents
+        // and the reports of the discarded events all running on virtual threads
         var file = tempDir.resolve("dead-letters.ndjson");
         var listener = new FileDeadLetterListener(file);
         int carriers = Integer.getInteger("jdk.virtualThreadScheduler.parallelism", Runtime.getRuntime().availableProcessors());

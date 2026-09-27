@@ -248,8 +248,10 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 }
 ```
 
-All three have a no-op default; override only what you need. They are called concurrently, from several
-threads, and must be thread-safe. `onDocumentsDropped` deserves the most attention in production — it
+All three have a no-op default; override only what you need. They are called concurrently, from threads of
+the library rather than the application thread logging, and must be thread-safe. A slow listener therefore
+never holds up the application: at most `MaxQueuedEvents` events discarded by a full queue wait for it, the
+next ones only being logged. `onDocumentsDropped` deserves the most attention in production — it
 fires only when documents are irrecoverably discarded (see the safety nets above), which should normally
 never happen and is worth alerting on. It receives the actual documents (an unmodifiable list), not just a
 count, as a last chance to save them.

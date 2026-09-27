@@ -123,6 +123,20 @@ class AbstractLogDeliveryAppenderTest {
         }
     }
 
+    /**
+     * Waits until the given list holds the given number of elements at least, an event discarded on the
+     * application thread being reported on another one.
+     */
+    private static void awaitSize(List<?> list, int expected) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        while (list.size() < expected) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new AssertionError("Timed out waiting for " + expected + " element(s), got " + list);
+            }
+            sleep(1);
+        }
+    }
+
     private ErrorHandler recordingErrorHandler(List<Throwable> errors) {
         return new ErrorHandler() {
             @Override
@@ -609,6 +623,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // then
             assertTrue(elapsedMillis < 200, "append() should not block even when the queue is full, took " + elapsedMillis + "ms");
+            awaitSize(dropped, 1);
             assertEquals(1, dropped.size());
             assertEquals("would have been dropped", dropped.get(0).get("logmessage"));
             assertTrue(droppedReasons.get(0).contains("queue"), "Reason should mention the queue: " + droppedReasons.get(0));
@@ -709,11 +724,11 @@ class AbstractLogDeliveryAppenderTest {
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
             var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
-            var queuedWhileReporting = new AtomicInteger(-1);
+            var queuedWhileReporting = new CompletableFuture<Integer>();
             LogDeliveryListener listener = new LogDeliveryListener() {
                 @Override
                 public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
-                    queuedWhileReporting.set(appender.getQueuedEventCount());
+                    queuedWhileReporting.complete(appender.getQueuedEventCount());
                 }
             };
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
@@ -726,7 +741,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(realLogEvent("C")); // evicts B and takes its place
 
             // then: C was already back in the queue while B's discard was being reported
-            assertEquals(1, queuedWhileReporting.get());
+            assertEquals(1, queuedWhileReporting.get(5, SECONDS));
 
             // cleanup
             releaseTask.countDown();
@@ -766,14 +781,106 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
             awaitEmptyQueue(appender);
             appender.append(failing); // fills the one-slot queue
-            appender.append(realLogEvent("C")); // evicts B, on this application thread
+            appender.append(realLogEvent("C")); // evicts B
+            releaseTask.countDown();
+            appender.stop(2, SECONDS); // waits for the discard to be reported
 
             // then: B was not turned into a document, stack trace included, for a listener ignoring it
             assertEquals(0, printed.get());
+        }
+
+        @Test
+        @DisplayName("Reports a discard on another thread than the one logging, however slow the listener")
+        void testDiscardIsReportedOffTheLoggingThread() throws Exception {
+            // given: the same full-queue setup, with a listener slow to return, as one writing every discarded
+            // document to a file is while the downstream system is down and the queue stays full
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var releaseListener = new CountDownLatch(1);
+            var listenerThread = new CompletableFuture<Thread>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    listenerThread.complete(Thread.currentThread());
+                    try {
+                        releaseListener.await(5, SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+            long start = System.nanoTime();
+            appender.append(realLogEvent("C")); // evicts B
+            appender.append(realLogEvent("D")); // evicts C
+            long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then: the application went on logging while the listener was still busy with the first discard
+            assertNotSame(Thread.currentThread(), listenerThread.get(5, SECONDS));
+            assertTrue(elapsedMillis < 1_000, "append() should not wait for the listener, took " + elapsedMillis + "ms");
 
             // cleanup
+            releaseListener.countDown();
             releaseTask.countDown();
             appender.stop(2, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Logs a discard instead of waiting once as many as the queue holds wait for the listener")
+        void testDiscardsTheListenerCannotTakeAreLogged() throws Exception {
+            // given: a one-slot queue, and a listener blocked on the first discard it is told about
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var releaseListener = new CountDownLatch(1);
+            var listenerCalled = new CountDownLatch(1);
+            var reported = new CopyOnWriteArrayList<Object>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    documents.forEach(document -> reported.add(document.get("logmessage")));
+                    listenerCalled.countDown();
+                    try {
+                        releaseListener.await(5, SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when: B is reported, the listener then holding on to it
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+            appender.append(realLogEvent("C")); // evicts B, reported
+            assertTrue(listenerCalled.await(5, SECONDS), "The listener should have been told about B");
+            appender.append(realLogEvent("D")); // evicts C, waiting for the listener
+            appender.append(realLogEvent("E")); // evicts D, with nowhere left to wait
+
+            // then: D is only logged, rather than kept on its way to a listener already that far behind
+            assertTrue(errors.stream().anyMatch(error -> error.getMessage().contains("Unable to report")),
+                    "The discard that could not be reported should have been logged, got: " + errors);
+            releaseListener.countDown();
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+            assertEquals(List.of("B", "C"), reported);
         }
 
         @Test
