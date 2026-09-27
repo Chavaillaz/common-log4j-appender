@@ -4,10 +4,12 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -121,9 +123,11 @@ public class Batcher<T> {
     private final BatcherListener<T> listener;
 
     /**
-     * The elements to be sent with the next transmission
+     * The elements to be sent with the next transmission, oldest first. A ring buffer, both trims discarding
+     * from its front and {@link #requeue(List, int)} putting elements back there, in constant time per element
+     * where a list shifts every element it keeps: once at its cap, the batch is trimmed on every addition.
      */
-    private List<T> batch;
+    private ArrayDeque<T> batch;
 
     /**
      * Number of consecutive failed attempts of the {@link #pendingFailureCount} leading elements of
@@ -450,19 +454,24 @@ public class Batcher<T> {
 
     }
 
-    private List<T> newBatch() {
+    private ArrayDeque<T> newBatch() {
         long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
         int capacity = threshold > 0 ? (int) Math.min(threshold, MAX_INITIAL_BATCH_CAPACITY) : 16;
-        return new ArrayList<>(capacity);
+        return new ArrayDeque<>(capacity);
     }
 
     /**
      * Accumulates the given elements, triggering a transmission if this reaches {@code flushThreshold}.
      * Never blocks the caller on the network: a transmission this triggers runs on its own virtual thread.
      *
-     * @param elements The elements to accumulate, must not be empty
+     * @param elements The elements to accumulate
+     * @throws NullPointerException If one of the elements is {@code null}
      */
     public void add(List<T> elements) {
+        for (T element : elements) {
+            // Checked before anything changes, the batch refusing a null halfway through the others
+            Objects.requireNonNull(element, "elements must not contain null");
+        }
         PendingBatch<T> snapshot = null;
         List<T> discarded = null;
         List<T> oversized = null;
@@ -511,7 +520,7 @@ public class Batcher<T> {
             notifyDropped(oversized, "maximum pending bytes exceeded");
         }
         if (snapshot != null) {
-            dispatch(snapshot.elements(), snapshot.failureStreak());
+            dispatch(List.copyOf(snapshot.elements()), snapshot.failureStreak());
         }
     }
 
@@ -566,18 +575,19 @@ public class Batcher<T> {
             log.debug("Sending partial batch of {}/{}", batch.size(), readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold"));
             snapshot = swapBatch();
         }
-        dispatch(snapshot.elements(), snapshot.failureStreak());
+        dispatch(List.copyOf(snapshot.elements()), snapshot.failureStreak());
     }
 
     /**
      * The content of {@link #batch} at the time it was swapped out, together with the number of times that
-     * same content had already failed to be transmitted (see {@link #pendingFailureStreak}).
+     * same content had already failed to be transmitted (see {@link #pendingFailureStreak}), copied into a
+     * list once the monitor is released.
      *
      * @param elements      The content of the batch prior to the swap
      * @param failureStreak The failure streak inherited from {@link #pendingFailureStreak} at the time of
      *                      the swap
      */
-    private record PendingBatch<T>(List<T> elements, int failureStreak) {
+    private record PendingBatch<T>(ArrayDeque<T> elements, int failureStreak) {
 
     }
 
@@ -716,14 +726,12 @@ public class Batcher<T> {
             return null;
         }
 
-        int index = 0;
-        while (index < batch.size() && pendingBytes > maxBytes) {
-            pendingBytes -= sizeOf(batch.get(index++));
+        List<T> discarded = new ArrayList<>();
+        while (!batch.isEmpty() && pendingBytes > maxBytes) {
+            T oldest = batch.pollFirst();
+            pendingBytes -= sizeOf(oldest);
+            discarded.add(oldest);
         }
-        List<T> excess = batch.subList(0, index);
-        // Copied before clearing, a sublist being a view of the range it covers
-        List<T> discarded = List.copyOf(excess);
-        excess.clear();
         if (batch.isEmpty()) {
             // Re-anchored, so that a measurement not perfectly stable cannot drift for the whole lifetime
             pendingBytes = 0;
@@ -735,7 +743,7 @@ public class Batcher<T> {
 
         log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending size of {} bytes",
                 discarded.size(), elementNoun, maxBytes);
-        return discarded;
+        return Collections.unmodifiableList(discarded);
     }
 
     /**
@@ -759,15 +767,15 @@ public class Batcher<T> {
                 // within the close budget, handing its elements back once close() drained the batch
                 abandoned = List.copyOf(elements);
             } else {
-                List<T> merged = new ArrayList<>(elements.size() + batch.size());
-                merged.addAll(elements);
-                merged.addAll(batch);
+                // Back at the front in their order, ahead of every newer element
+                for (ListIterator<T> iterator = elements.listIterator(elements.size()); iterator.hasPrevious(); ) {
+                    batch.addFirst(iterator.previous());
+                }
                 // Measured again, having left the running total when swapped out
                 pendingBytes += sizeOf(elements);
 
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
-                discarded = BoundedTrim.trim(merged, maxPending);
-                batch = merged;
+                discarded = BoundedTrim.trim(batch, maxPending);
                 pendingBytes -= sizeOf(discarded);
                 oversized = trimToPendingBytes();
 
@@ -1259,7 +1267,7 @@ public class Batcher<T> {
                 return;
             }
             remaining = List.copyOf(batch);
-            batch = new ArrayList<>(0);
+            batch.clear();
             pendingBytes = 0;
             pendingFailureStreak = 0;
             pendingFailureCount = 0;

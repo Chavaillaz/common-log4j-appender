@@ -4,8 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.List;
+import java.util.Queue;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,53 +16,53 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("BoundedTrim")
 class BoundedTrimTest {
 
-    private static List<String> mutable(String... elements) {
-        return new ArrayList<>(List.of(elements));
+    private static Queue<String> mutable(String... elements) {
+        return new ArrayDeque<>(List.of(elements));
     }
 
     @Test
     @DisplayName("Keeps everything and discards nothing when under the cap")
     void testUnderCapKeepsEverything() {
-        List<String> elements = mutable("a", "b");
+        Queue<String> elements = mutable("a", "b");
 
         assertNull(BoundedTrim.trim(elements, 5));
-        assertEquals(List.of("a", "b"), elements);
+        assertEquals(List.of("a", "b"), List.copyOf(elements));
     }
 
     @Test
     @DisplayName("Keeps everything and discards nothing when exactly at the cap")
     void testExactlyAtCapKeepsEverything() {
-        List<String> elements = mutable("a", "b", "c");
+        Queue<String> elements = mutable("a", "b", "c");
 
         assertNull(BoundedTrim.trim(elements, 3));
-        assertEquals(List.of("a", "b", "c"), elements);
+        assertEquals(List.of("a", "b", "c"), List.copyOf(elements));
     }
 
     @Test
     @DisplayName("Discards the single oldest element when one over the cap")
     void testSingleOverflowDiscardsOldest() {
-        List<String> elements = mutable("a", "b", "c");
+        Queue<String> elements = mutable("a", "b", "c");
 
         assertEquals(List.of("a"), BoundedTrim.trim(elements, 2));
-        assertEquals(List.of("b", "c"), elements);
+        assertEquals(List.of("b", "c"), List.copyOf(elements));
     }
 
     @Test
     @DisplayName("Discards every oldest element in excess, keeping the most recently added ones")
     void testBulkOverflowDiscardsOldestElements() {
-        List<String> elements = mutable("a", "b", "c", "d", "e");
+        Queue<String> elements = mutable("a", "b", "c", "d", "e");
 
         assertEquals(List.of("a", "b", "c"), BoundedTrim.trim(elements, 2));
-        assertEquals(List.of("d", "e"), elements);
+        assertEquals(List.of("d", "e"), List.copyOf(elements));
     }
 
     @Test
     @DisplayName("Discards everything when the cap is zero")
     void testZeroCapDiscardsEverything() {
-        List<String> elements = mutable("a", "b");
+        Queue<String> elements = mutable("a", "b");
 
         assertEquals(List.of("a", "b"), BoundedTrim.trim(elements, 0));
-        assertEquals(List.of(), elements);
+        assertEquals(List.of(), List.copyOf(elements));
     }
 
     // Integer.MIN_VALUE is not just a bigger negative: it used to make size - maxSize overflow back into a
@@ -70,28 +71,28 @@ class BoundedTrimTest {
     @ValueSource(ints = {-1, -100, Integer.MIN_VALUE + 1, Integer.MIN_VALUE})
     @DisplayName("Treats a negative cap the same as zero, discarding everything, instead of throwing")
     void testNegativeCapDiscardsEverythingWithoutThrowing(int maxSize) {
-        List<String> elements = mutable("a", "b");
+        Queue<String> elements = mutable("a", "b");
 
         assertEquals(List.of("a", "b"), BoundedTrim.trim(elements, maxSize));
-        assertEquals(List.of(), elements);
+        assertEquals(List.of(), List.copyOf(elements));
     }
 
     @Test
-    @DisplayName("Does not discard anything, or throw, for an empty list")
-    void testEmptyListDoesNotThrow() {
-        List<String> elements = mutable();
+    @DisplayName("Does not discard anything, or throw, for an empty queue")
+    void testEmptyQueueDoesNotThrow() {
+        Queue<String> elements = mutable();
 
         assertNull(BoundedTrim.trim(elements, 3));
-        assertEquals(List.of(), elements);
+        assertEquals(List.of(), List.copyOf(elements));
     }
 
     @Test
-    @DisplayName("Does not throw when the cap is larger than the list itself")
-    void testCapLargerThanListDoesNotThrow() {
-        List<String> elements = mutable("a");
+    @DisplayName("Does not throw when the cap is larger than the queue itself")
+    void testCapLargerThanQueueDoesNotThrow() {
+        Queue<String> elements = mutable("a");
 
         assertNull(BoundedTrim.trim(elements, 1_000_000));
-        assertEquals(List.of("a"), elements);
+        assertEquals(List.of("a"), List.copyOf(elements));
     }
 
     @Test

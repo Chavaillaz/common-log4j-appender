@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -51,6 +52,25 @@ class BatcherTest {
     @DisplayName("Rejects a missing transport function at construction")
     void testRejectsMissingTransport() {
         assertThrows(NullPointerException.class, () -> Batcher.builder().build());
+    }
+
+    @Test
+    @DisplayName("Rejects a null element before accumulating any of the elements given with it")
+    void testRejectsNullElements() throws Exception {
+        // given
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = batcher(2, elements -> {
+            transmitted.add(elements);
+            return completedFuture(TransmissionResult.success());
+        }, BatcherListener.noop());
+
+        // when
+        assertThrows(NullPointerException.class, () -> batcher.add(Arrays.asList("a", null)));
+        batcher.add(List.of("b", "c"));
+        batcher.awaitPendingTransmissions();
+
+        // then: nothing of the rejected call was kept, the batch stacking none of the elements before the null
+        assertEquals(List.of(List.of("b", "c")), transmitted);
     }
 
     @Test

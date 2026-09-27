@@ -1,6 +1,9 @@
 package com.chavaillaz.appender;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Queue;
 
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
@@ -15,32 +18,31 @@ import org.jspecify.annotations.Nullable;
 public class BoundedTrim {
 
     /**
-     * Trims the given list (oldest first) down to at most {@code maxSize} elements, discarding the oldest
-     * ones in excess.
+     * Trims the given queue (oldest at its head) down to at most {@code maxSize} elements, discarding the
+     * oldest ones in excess.
      * <p>
-     * Trims in place, with one array copy within the list, rather than building a new list: once the cap is
-     * reached, this runs for every addition against a list already holding {@code maxSize} elements, which is
-     * precisely the sustained overload the cap exists for.
+     * Polls them from the head, in constant time per element discarded for a queue such as an
+     * {@link java.util.ArrayDeque}: once the cap is reached, this runs for every addition against a queue
+     * already holding {@code maxSize} elements, which is precisely the sustained overload the cap exists for.
      *
      * @param elements The elements to trim, oldest first, modified in place and so necessarily mutable
      * @param maxSize  The maximum to keep, clamped to {@code [0, elements.size()]}, so that zero, a negative
-     *                 value or one larger than the list is tolerated
+     *                 value or one larger than the queue is tolerated
      * @param <T>      The type of element
-     * @return The elements discarded, as an unmodifiable list, or {@code null} if none were
+     * @return The elements discarded, oldest first, as an unmodifiable list, or {@code null} if none were
      */
-    public static <T> @Nullable List<T> trim(List<T> elements, int maxSize) {
+    public static <T> @Nullable List<T> trim(Queue<T> elements, int maxSize) {
         // Clamped before the subtraction: a cap far enough below zero overflows size - maxSize into a negative
         // value, which would keep every element instead of discarding them all
-        int cap = Math.max(0, maxSize);
-        int overflow = Math.min(elements.size(), Math.max(0, elements.size() - cap));
-        if (overflow == 0) {
+        int overflow = elements.size() - Math.max(0, maxSize);
+        if (overflow <= 0) {
             return null;
         }
-        List<T> excess = elements.subList(0, overflow);
-        // Copied before clearing, a sublist being a view of the range it covers
-        List<T> discarded = List.copyOf(excess);
-        excess.clear();
-        return discarded;
+        List<T> discarded = new ArrayList<>(overflow);
+        for (int i = 0; i < overflow; i++) {
+            discarded.add(elements.poll());
+        }
+        return Collections.unmodifiableList(discarded);
     }
 
 }
