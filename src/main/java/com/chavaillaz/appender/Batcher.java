@@ -1053,14 +1053,14 @@ public class Batcher<T> {
      * leaving the caller blocked for good on a transport whose future never completes — the very case
      * {@link #close(Duration)} takes a timeout for.
      *
-     * @return {@code true} if a permit was acquired, {@code false} if the close deadline elapsed first
+     * @return {@code true} if a permit was acquired, {@code false} if none was free by the close deadline
      */
     private boolean acquireTransmissionPermit() throws InterruptedException {
         while (true) {
             long deadline = closeDeadlineNanos;
             if (deadline != NO_DEADLINE) {
-                long remainingNanos = deadline - System.nanoTime();
-                return remainingNanos > 0 && transmissionPermits.tryAcquire(remainingNanos, NANOSECONDS);
+                // Still tried once the budget is spent: a zero wait does not wait, but takes a free permit
+                return transmissionPermits.tryAcquire(Math.max(0, deadline - System.nanoTime()), NANOSECONDS);
             }
             if (transmissionPermits.tryAcquire(PERMIT_WAIT_SLICE_NANOS, NANOSECONDS)) {
                 return true;

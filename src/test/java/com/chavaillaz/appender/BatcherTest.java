@@ -546,6 +546,33 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Still transmits the final flush when closed with no time to wait, a free permit needing none")
+    void testCloseWithoutTimeToWaitStillTransmitsTheFinalFlush() throws Exception {
+        // given: a pending batch and every transmission permit free
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = batcher(10, elements -> {
+            transmitted.add(elements);
+            return completedFuture(TransmissionResult.success());
+        }, new BatcherListener<>() {
+            @Override
+            public void onDropped(List<String> elements, String reason) {
+                dropped.addAll(elements);
+            }
+        });
+        batcher.add(List.of("a", "b"));
+
+        // when: closed without waiting for anything
+        batcher.close(Duration.ZERO);
+        batcher.awaitPendingTransmissions();
+
+        // then: a zero budget only means not waiting, the batch still going out on a permit already free
+        // instead of being reported dropped without an attempt
+        assertEquals(List.of(List.of("a", "b")), transmitted);
+        assertEquals(List.of(), dropped);
+    }
+
+    @Test
     @DisplayName("Releases a caller blocked waiting for a permit once a bounded close begins")
     void testBlockedDispatchIsReleasedByALaterClose() throws Exception {
         // given: the single transmission permit held for good by a transport whose future never completes,
