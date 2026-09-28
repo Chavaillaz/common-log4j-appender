@@ -5,8 +5,8 @@ import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
 import org.jspecify.annotations.Nullable;
@@ -41,42 +41,69 @@ public final class CommonUtils {
     }
 
     /**
-     * Gets the current host name of the machine, or {@code localhost} if it cannot be determined within
-     * {@link #HOSTNAME_LOOKUP_TIMEOUT}: the reverse DNS lookup of {@link InetAddress#getCanonicalHostName()}
-     * has no bound of its own, and this typically runs while the application starts.
+     * Gets the name of the host the application runs on, looked up once and shared by every later call: the
+     * reverse DNS lookup of {@link InetAddress#getCanonicalHostName()} can take seconds, and the name does not
+     * change while the application runs. Once per class loader holding this library, so once per JVM for an
+     * application on its own.
+     * <p>
+     * A call waits at most {@link #HOSTNAME_LOOKUP_TIMEOUT} for the lookup, which has no bound of its own and
+     * typically runs while the application starts, returning {@code localhost} past it: the lookup goes on, and
+     * a later call gets its result.
      *
      * @return The host name, or {@code localhost} if it cannot be determined within a reasonable time
      */
     public static String getInitialHostname() {
-        return withTimeout(HOSTNAME_LOOKUP_TIMEOUT, () -> {
+        return await(HostName.LOOKUP, HOSTNAME_LOOKUP_TIMEOUT);
+    }
+
+    /**
+     * Holds the lookup of the host name, started the first time {@link #getInitialHostname()} is called.
+     */
+    private static final class HostName {
+
+        private static final Future<String> LOOKUP = start(() -> {
             try {
                 return InetAddress.getLocalHost().getCanonicalHostName();
             } catch (UnknownHostException e) {
                 return "localhost";
             }
         });
+
     }
 
     /**
-     * Runs the given lookup on a separate thread, waiting at most the given timeout before falling back to
-     * {@code localhost}. A lookup ignoring interruption, as the native calls behind DNS resolution do, keeps
-     * running on its own thread past the timeout: this bounds the wait of the caller, not the lookup.
+     * Starts the given lookup on a virtual thread of its own, which does not take the thread-locals nor the
+     * context class loader of the calling thread, the lookup possibly outliving it.
      *
-     * @param timeout The maximum time to wait for the lookup to complete
-     * @param lookup  The lookup to run, expected to already have a fallback for its own failures
-     * @return The result of the lookup, or {@code localhost} if it timed out or was interrupted
+     * @param lookup The lookup to run, expected to already have a fallback for its own failures
+     * @return The lookup, running
      */
-    static String withTimeout(Duration timeout, Callable<String> lookup) {
-        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    static Future<String> start(Callable<String> lookup) {
+        FutureTask<String> task = new FutureTask<>(lookup);
+        Thread.ofVirtual()
+                .name("log-delivery-host-name-lookup")
+                .inheritInheritableThreadLocals(false)
+                .start(task);
+        return task;
+    }
+
+    /**
+     * Waits at most the given timeout for the given lookup before falling back to {@code localhost}. A lookup
+     * ignoring interruption, as the native calls behind DNS resolution do, keeps running past the timeout:
+     * this bounds the wait of the caller, not the lookup.
+     *
+     * @param lookup  The lookup to wait for
+     * @param timeout The maximum time to wait for it to complete
+     * @return The result of the lookup, or {@code localhost} if it failed, timed out or was interrupted
+     */
+    static String await(Future<String> lookup, Duration timeout) {
         try {
-            return executor.submit(lookup).get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            return lookup.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return "localhost";
         } catch (Exception e) {
             return "localhost";
-        } finally {
-            executor.shutdown();
         }
     }
 
