@@ -80,8 +80,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * A task queued on {@link #workerExecutor}, carrying the {@link LogEvent} it was created for, so that
-     * {@link DiscardOldestEventPolicy} can report it when evicting it. A requested flush is not one, not being
-     * an event to discard.
+     * {@link AbstractLogDeliveryAppender.DiscardOldestEventPolicy} can report it when evicting it. A requested
+     * flush is not one, not being an event to discard.
      *
      * @param event    The logging event this task was created for
      * @param delegate The actual work to run
