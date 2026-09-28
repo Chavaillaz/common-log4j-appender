@@ -581,7 +581,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param loggingEvent The logging event to send, an immutable snapshot
      * @return The task to run
      */
-    public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+    protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
         return () -> {
             LogDelivery handler = logDeliveryHandler;
             if (handler != null) {

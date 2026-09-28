@@ -1252,7 +1252,7 @@ class AbstractLogDeliveryAppenderTest {
             var workerIsDaemon = new CompletableFuture<Boolean>();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration) {
                 @Override
-                public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
                     return () -> workerIsDaemon.complete(Thread.currentThread().isDaemon());
                 }
             };
@@ -1290,7 +1290,7 @@ class AbstractLogDeliveryAppenderTest {
             var workerContext = new CompletableFuture<List<Object>>();
             var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration) {
                 @Override
-                public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
                     return () -> workerContext.complete(Arrays.asList(
                             requestContext.get(), Thread.currentThread().getContextClassLoader()));
                 }
@@ -1756,7 +1756,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> countTaskExecuted.incrementAndGet();
         }
 
@@ -1780,7 +1780,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
                 try {
                     new CountDownLatch(1).await(); // Blocks forever unless interrupted
@@ -1810,7 +1810,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
                 try {
                     releaseTask.await();
@@ -1841,7 +1841,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             // The message is read here, on the calling (application) thread, matching how a real
             // implementation would capture whatever it needs from the event before deferring to the
             // returned Runnable (see this method's own javadoc)
@@ -1886,7 +1886,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
                 try {
                     releaseFirstTask.await();
@@ -1945,7 +1945,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
                 try {
                     sleep(taskDelayMillis);
@@ -2015,7 +2015,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> countTaskExecuted.incrementAndGet();
         }
 
@@ -2057,7 +2057,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
             };
         }
@@ -2081,7 +2081,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
             };
         }
@@ -2104,7 +2104,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
             };
         }
@@ -2126,7 +2126,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             countTaskCreated.incrementAndGet();
             return () -> {
             };
@@ -2151,7 +2151,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
                 if (firstTask.compareAndSet(true, false)) {
                     throw new RuntimeException("Simulated failure");
@@ -2179,7 +2179,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             if (firstCall.compareAndSet(true, false)) {
                 throw new RuntimeException("Simulated failure creating the task");
             }
