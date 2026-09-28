@@ -358,8 +358,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Runs a delivery task on the background thread, then flushes the batch if the event it delivered is
-     * urgent (see {@link #isUrgent(LogEvent)}), or if a periodic flush is waiting (see {@link #flushRequested}),
+     * Runs a delivery task on the background thread, then flushes the batch if a periodic flush is waiting
+     * (see {@link #flushRequested}), or if the event it delivered is urgent (see {@link #isUrgent(LogEvent)}),
      * each part failing on its own.
      *
      * @param task  The delivery task to run
@@ -367,9 +367,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private void deliver(Runnable task, LogEvent event) {
         executeLogDeliveryTask(task);
+        // The waiting flush first, which a severity failing to be checked would otherwise hold up for good, a
+        // flush being requested again only once the one waiting ran
         executeLogDeliveryTask(() -> {
-            boolean urgent = isUrgent(event);
-            if ((flushRequested.get() && flushRequested.compareAndSet(true, false)) || urgent) {
+            if ((flushRequested.get() && flushRequested.compareAndSet(true, false)) || isUrgent(event)) {
                 flushLogDeliveryHandler();
             }
         });

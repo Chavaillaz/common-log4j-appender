@@ -350,7 +350,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofMillis(100))
                     .maxQueuedEvents(1).build();
             var releaseFirstTask = new CountDownLatch(1);
-            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, configuration, releaseFirstTask);
+            var appender = new RecordingBlockingLogDeliveryAppender<>("appender-name", null, configuration, releaseFirstTask);
             doAnswer(invocation -> {
                 appender.getProcessedMessages().add("flush");
                 return null;
@@ -370,6 +370,45 @@ class AbstractLogDeliveryAppenderTest {
             assertEquals(List.of("first", "flush", "second"), appender.getProcessedMessages().subList(0, 3));
 
             // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Runs a periodic flush the full queue had no room for even while the options cannot be read")
+        void testPeriodicFlushIsNotLostToUnreadableOptions() throws Exception {
+            // given: the test above, with delivery options that stop resolving once the flush is requested,
+            // which the check of the severity of each event reads
+            var configuration = new FlakyOptionsConfiguration(DeliveryOptions.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(100))
+                    .flushLevel(Level.ERROR)
+                    .maxQueuedEvents(1)
+                    .closeTimeout(Duration.ofSeconds(1))
+                    .build());
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new RecordingBlockingLogDeliveryAppender<>("appender-name", null, configuration, releaseFirstTask);
+            appender.setHandler(recordingErrorHandler(new CopyOnWriteArrayList<>()));
+            doAnswer(invocation -> {
+                appender.getProcessedMessages().add("flush");
+                return null;
+            }).when(appender.getLogDeliveryHandler()).flush();
+            appender.start();
+            appender.append(realLogEvent("first"));
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("second"));
+            sleep(350);
+            configuration.broken.set(true);
+
+            // when
+            releaseFirstTask.countDown();
+
+            // then: the flush still ran right after the first event, rather than waiting behind a check of its
+            // severity that fails, and every later request with it, for as long as the options cannot be read
+            awaitSize(appender.getProcessedMessages(), 3);
+            assertEquals(List.of("first", "flush", "second"), appender.getProcessedMessages().subList(0, 3));
+
+            // cleanup
+            configuration.broken.set(false);
             appender.stop(1, SECONDS);
         }
 
@@ -467,7 +506,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushLevel(Level.WARN)
                     .maxQueuedEvents(1).build();
             var releaseFirstTask = new CountDownLatch(1);
-            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, configuration, releaseFirstTask);
+            var appender = new RecordingBlockingLogDeliveryAppender<>("appender-name", null, configuration, releaseFirstTask);
             doAnswer(invocation -> {
                 appender.getProcessedMessages().add("flush");
                 return null;
@@ -961,7 +1000,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseFirstTask = new CountDownLatch(1);
-            var appender = new RecordingBlockingLogDeliveryAppender(
+            var appender = new RecordingBlockingLogDeliveryAppender<>(
                     "appender-name", null, configuration, releaseFirstTask);
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
             var droppedReasons = new CopyOnWriteArrayList<String>();
@@ -1978,13 +2017,13 @@ class AbstractLogDeliveryAppenderTest {
     }
 
     @Getter
-    static class RecordingBlockingLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+    static class RecordingBlockingLogDeliveryAppender<C extends LogConfiguration> extends AbstractLogDeliveryAppender<C> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
         CountDownLatch releaseFirstTask;
         List<String> processedMessages = new CopyOnWriteArrayList<>();
 
-        protected RecordingBlockingLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration,
+        protected RecordingBlockingLogDeliveryAppender(String name, Filter filter, C configuration,
                                                          CountDownLatch releaseFirstTask) {
             super(name, filter, configuration);
             this.releaseFirstTask = releaseFirstTask;
@@ -2122,12 +2161,20 @@ class AbstractLogDeliveryAppenderTest {
 
         final AtomicBoolean broken = new AtomicBoolean();
 
-        private final DeliveryOptions options = DeliveryOptions.builder()
-                .flushThreshold(10)
-                .flushInterval(Duration.ofSeconds(10))
-                .flushLevel(Level.ERROR)
-                .closeTimeout(Duration.ofSeconds(1))
-                .build();
+        private final DeliveryOptions options;
+
+        FlakyOptionsConfiguration() {
+            this(DeliveryOptions.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .flushLevel(Level.ERROR)
+                    .closeTimeout(Duration.ofSeconds(1))
+                    .build());
+        }
+
+        FlakyOptionsConfiguration(DeliveryOptions options) {
+            this.options = options;
+        }
 
         @Override
         public String getApplication() {
