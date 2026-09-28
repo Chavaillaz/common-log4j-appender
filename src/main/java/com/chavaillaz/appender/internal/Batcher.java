@@ -4,15 +4,10 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.Iterator;
 import java.util.List;
-import java.util.ListIterator;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -58,6 +53,10 @@ import com.chavaillaz.appender.TransmissionResult;
  * failures alone. Every discard is reported through {@link BatcherListener#onDropped(List, String)}. A batch
  * bigger than {@code maxRequestElements}, or {@code maxRequestBytes}, is split into chunks transmitted and
  * retried independently.
+ * <p>
+ * The pending batch itself, with the failure streaks of its elements and the trims bounding it, is a
+ * {@link PendingBatch} guarded by the monitor of this instance, which decides when a batch is due and handles
+ * its transmissions, their results and the close.
  * <p>
  * Instances are created through {@link #builder()}, every setting but the transport function having a usable
  * default.
@@ -119,8 +118,8 @@ public class Batcher<T> {
 
     /**
      * Measures one element, or {@code null} not to track sizes, leaving both byte limits inert. Fixed at
-     * construction, unlike the limits: turning it on midway would leave {@link #pendingBytes} describing part
-     * of the batch.
+     * construction, unlike the limits: turning it on midway would leave the estimated size of the pending
+     * batch describing part of it.
      */
     private final @Nullable ToLongFunction<T> elementSize;
 
@@ -130,28 +129,10 @@ public class Batcher<T> {
     private final BatcherListener<T> listener;
 
     /**
-     * The elements to be sent with the next transmission, oldest first. A ring buffer, both trims discarding
-     * from its front and {@link #requeue(List, List)} putting elements back there, in constant time per
-     * element where a list shifts every element it keeps: once at its cap, the batch is trimmed on every
-     * addition.
+     * The elements to be sent with the next transmission, swapped for an empty batch once due. Guarded by the
+     * monitor of this instance.
      */
-    private ArrayDeque<T> batch;
-
-    /**
-     * The failure streaks of the leading elements of {@link #batch}, which {@link #requeue(List, List)} put
-     * back there, front first, the elements past them having never failed. A streak belongs to the elements
-     * that failed, not to the batch holding them: an element joining them starts from its own first attempt,
-     * and both trims cut from the front, where they sit. Guarded by the monitor of this instance, like the
-     * batch.
-     */
-    private final ArrayDeque<Run> failedRuns = new ArrayDeque<>();
-
-    /**
-     * Estimated total size of {@link #batch}, kept up to date rather than summed on demand, which would make
-     * every {@link #add(List)} walk the whole batch. Always {@code 0} without {@link #elementSize}. Guarded by
-     * the monitor of this instance.
-     */
-    private long pendingBytes;
+    private PendingBatch<T> pending;
 
     /**
      * Executor transmitting batches on virtual threads, so that transmission never blocks the thread
@@ -197,7 +178,7 @@ public class Batcher<T> {
      * its wait is over. Whoever removes one first handles its elements: its result, a dispatch failing to
      * start it, or the close, after which its result is ignored.
      */
-    private final Set<InFlight<T>> inFlight = ConcurrentHashMap.newKeySet();
+    private final Set<Chunk<T>> inFlight = ConcurrentHashMap.newKeySet();
 
     /**
      * Whether the last completed transmission attempt failed, so that a failing transport is not retried on
@@ -220,15 +201,15 @@ public class Batcher<T> {
     private volatile boolean closed;
 
     /**
-     * Whether {@link #reportRemainingAsDropped()} emptied {@link #batch} for good, past which
-     * {@link #requeue(List, List)} reports its elements rather than merging them into a batch nobody looks at.
+     * Whether {@link #reportRemainingAsDropped()} emptied {@link #pending} for good, past which
+     * {@link #requeue(Chunk)} reports its elements rather than merging them into a batch nobody looks at.
      * Guarded by the monitor of this instance.
      */
     private boolean drained;
 
     /**
      * The {@link System#nanoTime()} reading past which {@link #close(Duration)} stops waiting, or
-     * {@link #NO_DEADLINE}. Also bounds the wait of {@link #dispatchChunk(List, List)} for a permit, which would
+     * {@link #NO_DEADLINE}. Also bounds the wait of {@link #dispatchChunk(Chunk)} for a permit, which would
      * otherwise block the close forever while every permit is held by a transmission that never completes.
      */
     private volatile long closeDeadlineNanos = NO_DEADLINE;
@@ -256,7 +237,7 @@ public class Batcher<T> {
         this.elementNoun = builder.elementNoun;
         this.transport = Objects.requireNonNull(builder.transport, "transport must not be null");
         this.listener = builder.listener;
-        this.batch = newBatch();
+        this.pending = newPendingBatch();
         this.transmissionPermits = new Semaphore(builder.maxConcurrentTransmissions);
         this.transmissionExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).factory());
@@ -479,10 +460,15 @@ public class Batcher<T> {
 
     }
 
-    private ArrayDeque<T> newBatch() {
+    /**
+     * Creates an empty batch to accumulate the next elements into, sized for the current flush threshold.
+     *
+     * @return The new batch
+     */
+    private PendingBatch<T> newPendingBatch() {
         long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
         int capacity = threshold > 0 ? (int) Math.min(threshold, MAX_INITIAL_BATCH_CAPACITY) : 16;
-        return new ArrayDeque<>(capacity);
+        return new PendingBatch<>(elementSize != null ? this::sizeOf : null, capacity);
     }
 
     /**
@@ -497,34 +483,32 @@ public class Batcher<T> {
             // Checked before anything changes, the batch refusing a null halfway through the others
             Objects.requireNonNull(element, "elements must not contain null");
         }
-        PendingBatch<T> snapshot = null;
+        PendingBatch<T> due = null;
         List<T> discarded = null;
         List<T> oversized = null;
         boolean rejected;
         int maxPending = 0;
+        long maxBytes = 0;
         synchronized (this) {
             // Read under the monitor, which close() only takes after raising it (see closed)
             rejected = closed;
             if (!rejected) {
-                batch.addAll(elements);
-                pendingBytes += sizeOf(elements);
+                pending.append(elements);
                 // Read once and reused below, so the two readings cannot disagree.
                 long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
-                log.trace("Stacking batch {}/{}", batch.size(), threshold);
+                log.trace("Stacking batch {}/{}", pending.size(), threshold);
 
                 // Capped here too, and not only when requeuing, since nothing may be failing
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
-                discarded = BoundedTrim.trim(batch, maxPending);
-                pendingBytes -= sizeOf(discarded);
-                oversized = trimToPendingBytes();
-                // Both trims cut from the front, where the elements that earned a streak sit
-                dropFailedPrefix(size(discarded) + size(oversized));
+                discarded = pending.trimToCount(maxPending);
+                maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
+                oversized = pending.trimToBytes(maxBytes);
 
                 boolean batchingEnabled = threshold > 1;
                 // Never an empty batch, which a threshold of 0 or less would otherwise send
-                boolean thresholdReached = !batch.isEmpty() && batch.size() >= threshold;
+                boolean thresholdReached = !pending.isEmpty() && pending.size() >= threshold;
                 if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
-                    snapshot = swapBatch();
+                    due = swapBatch();
                 }
             }
         }
@@ -542,10 +526,11 @@ public class Batcher<T> {
             notifyDropped(discarded, "maximum pending " + elementNoun + "s exceeded");
         }
         if (oversized != null) {
+            logOversized(oversized, maxBytes);
             notifyDropped(oversized, "maximum pending bytes exceeded");
         }
-        if (snapshot != null) {
-            dispatch(snapshot);
+        if (due != null) {
+            dispatch(due);
         }
     }
 
@@ -596,8 +581,8 @@ public class Batcher<T> {
         int pendingElements;
         long pendingSize;
         synchronized (this) {
-            pendingElements = batch.size();
-            pendingSize = pendingBytes;
+            pendingElements = pending.size();
+            pendingSize = pending.bytes();
         }
         int inFlight = Math.max(0, maxConcurrentTransmissions - transmissionPermits.availablePermits());
         return new Metrics(pendingElements, pendingSize, inFlight,
@@ -619,187 +604,34 @@ public class Batcher<T> {
      *              {@link #close(Duration)} since it is the last chance for those elements to be sent at all
      */
     private void flush(boolean force) {
-        PendingBatch<T> snapshot;
+        PendingBatch<T> due;
         synchronized (this) {
-            if (batch.isEmpty()) {
+            if (pending.isEmpty()) {
                 return;
             }
             if (!force && isBackingOff()) {
                 log.debug("Holding off the transmission of {} pending {}(s) while backing off after a failure",
-                        batch.size(), elementNoun);
+                        pending.size(), elementNoun);
                 return;
             }
-            log.debug("Sending partial batch of {}/{}", batch.size(), readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold"));
-            snapshot = swapBatch();
+            log.debug("Sending partial batch of {}/{}", pending.size(), readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold"));
+            due = swapBatch();
         }
-        dispatch(snapshot);
+        dispatch(due);
     }
 
     /**
-     * The content of {@link #batch} at the time it was swapped out, together with the failure streaks of its
-     * leading elements (see {@link #failedRuns}), split into chunks once the monitor is released.
-     *
-     * @param elements   The content of the batch prior to the swap
-     * @param failedRuns The failure streaks of its leading elements, the others having never failed
-     */
-    private record PendingBatch<T>(ArrayDeque<T> elements, List<Run> failedRuns) {
-
-    }
-
-    /**
-     * Consecutive elements sharing the same failure streak, the unit streaks are tracked by: a whole chunk
-     * failing together shares one, where a streak per element would cost as many.
-     *
-     * @param streak The number of consecutive failed attempts of each of these elements
-     * @param count  The number of elements sharing it, at least one
-     */
-    private record Run(int streak, int count) {
-
-    }
-
-    /**
-     * The elements of a transmission dispatched and not handled yet (see {@link #inFlight}), compared by
-     * identity, two requests being free to carry equal elements.
-     *
-     * @param <T> The type of element transmitted
-     */
-    private static final class InFlight<T> {
-
-        private final List<T> elements;
-
-        private InFlight(List<T> elements) {
-            this.elements = elements;
-        }
-
-    }
-
-    /**
-     * Reads the failure streak of each element in turn out of the runs covering them, the elements past the
-     * last run counting none, so that runs not covering every element exactly cannot lose any of them.
-     */
-    private static final class Streaks {
-
-        private final Iterator<Run> runs;
-        private int streak;
-        private int left;
-
-        private Streaks(List<Run> runs) {
-            this.runs = runs.iterator();
-        }
-
-        private int next() {
-            while (left == 0 && runs.hasNext()) {
-                Run run = runs.next();
-                streak = run.streak();
-                left = run.count();
-            }
-            if (left == 0) {
-                return 0;
-            }
-            left--;
-            return streak;
-        }
-
-    }
-
-    /**
-     * Appends the given number of elements with the given streak to a list of runs, extending its last run
-     * when they share it.
-     *
-     * @param runs   The runs to append to
-     * @param streak The failure streak of the elements
-     * @param count  The number of elements, at least one
-     */
-    private static void appendRun(List<Run> runs, int streak, int count) {
-        int last = runs.size() - 1;
-        if (last >= 0 && runs.get(last).streak() == streak) {
-            runs.set(last, new Run(streak, runs.get(last).count() + count));
-        } else {
-            runs.add(new Run(streak, count));
-        }
-    }
-
-    /**
-     * The runs covering the elements of a swapped batch from index {@code from} to index {@code to}, cut out
-     * of the runs of its leading elements, those past them counting a streak of zero.
-     *
-     * @param failedRuns The failure streaks of the leading elements of the batch
-     * @param from       The index of the first element covered, inclusive
-     * @param to         The index of the last element covered, exclusive
-     * @return The runs covering exactly these elements
-     */
-    private static List<Run> runsOf(List<Run> failedRuns, int from, int to) {
-        List<Run> runs = new ArrayList<>();
-        int start = 0;
-        for (Run run : failedRuns) {
-            int overlap = Math.min(start + run.count(), to) - Math.max(start, from);
-            if (overlap > 0) {
-                appendRun(runs, run.streak(), overlap);
-            }
-            start += run.count();
-            if (start >= to) {
-                break;
-            }
-        }
-        int neverFailed = to - Math.max(start, from);
-        if (neverFailed > 0) {
-            appendRun(runs, 0, neverFailed);
-        }
-        return runs;
-    }
-
-    /**
-     * Replaces the current batch with an empty one and returns its content with the failure streaks it
-     * carried, so that accumulating the next batch resumes while this one is transmitted.
+     * Replaces the pending batch with an empty one and returns it, so that accumulating the next batch
+     * resumes while this one is transmitted.
      * <p>
      * Must be called while holding the monitor of this instance.
      *
-     * @return The content of the batch prior to the swap, and its failure streaks
+     * @return The batch swapped out, no one else's from then on
      */
     private PendingBatch<T> swapBatch() {
-        PendingBatch<T> previous = new PendingBatch<>(batch, List.copyOf(failedRuns));
-        batch = newBatch();
-        failedRuns.clear();
-        pendingBytes = 0;
-        return previous;
-    }
-
-    /**
-     * Accounts for elements discarded from the front of {@link #batch}, forgetting the failure streaks of
-     * those among them that had failed (see {@link #failedRuns}).
-     * <p>
-     * Must be called while holding the monitor of this instance.
-     *
-     * @param discardedFromFront How many elements were just discarded from the front of the batch
-     */
-    private void dropFailedPrefix(int discardedFromFront) {
-        int remaining = discardedFromFront;
-        while (remaining > 0 && !failedRuns.isEmpty()) {
-            Run first = failedRuns.pollFirst();
-            if (first.count() > remaining) {
-                failedRuns.addFirst(new Run(first.streak(), first.count() - remaining));
-                return;
-            }
-            remaining -= first.count();
-        }
-    }
-
-    /**
-     * Puts the given run at the front of {@link #failedRuns}, merged into its first run when they share a
-     * streak.
-     * <p>
-     * Must be called while holding the monitor of this instance.
-     *
-     * @param run The run to put at the front
-     */
-    private void prependFailedRun(Run run) {
-        Run first = failedRuns.peekFirst();
-        if (first != null && first.streak() == run.streak()) {
-            failedRuns.pollFirst();
-            failedRuns.addFirst(new Run(run.streak(), first.count() + run.count()));
-        } else {
-            failedRuns.addFirst(run);
-        }
+        PendingBatch<T> due = pending;
+        pending = newPendingBatch();
+        return due;
     }
 
     /**
@@ -864,64 +696,14 @@ public class Batcher<T> {
     }
 
     /**
-     * The size of a list of discarded elements, {@code null} standing for none of them.
+     * Logs the oldest elements a trim discarded to keep the pending batch within {@code maxPendingBytes}.
      *
-     * @param elements The elements to count, or {@code null} for none
-     * @return The number of elements
+     * @param oversized The elements discarded
+     * @param maxBytes  The maximum pending size they exceeded
      */
-    private static int size(@Nullable List<?> elements) {
-        return elements == null ? 0 : elements.size();
-    }
-
-    /**
-     * Measures a whole list of elements (see {@link #sizeOf(Object)}).
-     *
-     * @param elements The elements to measure, or {@code null} for none
-     * @return The estimated total size in bytes
-     */
-    private long sizeOf(@Nullable List<T> elements) {
-        if (elementSize == null || elements == null) {
-            return 0;
-        }
-        long total = 0;
-        for (T element : elements) {
-            total += sizeOf(element);
-        }
-        return total;
-    }
-
-    /**
-     * Discards the oldest elements of {@link #batch} until its estimated size fits within
-     * {@code maxPendingBytes}, the counterpart by size of the cap {@link BoundedTrim} applies by count.
-     * <p>
-     * Must be called while holding the monitor of this instance.
-     *
-     * @return The elements discarded, or {@code null} if none were
-     */
-    private @Nullable List<T> trimToPendingBytes() {
-        long maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
-        if (elementSize == null || maxBytes <= 0 || pendingBytes <= maxBytes) {
-            return null;
-        }
-
-        List<T> discarded = new ArrayList<>();
-        while (!batch.isEmpty() && pendingBytes > maxBytes) {
-            T oldest = batch.pollFirst();
-            pendingBytes -= sizeOf(oldest);
-            discarded.add(oldest);
-        }
-        if (batch.isEmpty()) {
-            // Re-anchored, so that a measurement not perfectly stable cannot drift for the whole lifetime
-            pendingBytes = 0;
-        }
-        if (discarded.isEmpty()) {
-            // A total drifting above the limit on an empty batch, which the re-anchoring just healed
-            return null;
-        }
-
+    private void logOversized(List<T> oversized, long maxBytes) {
         log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending size of {} bytes",
-                discarded.size(), elementNoun, maxBytes);
-        return Collections.unmodifiableList(discarded);
+                oversized.size(), elementNoun, maxBytes);
     }
 
     /**
@@ -929,36 +711,26 @@ public class Batcher<T> {
      * so they are retried before any newer element, discarding the oldest elements in excess if this would
      * grow the batch past {@code maxPendingElements}.
      *
-     * @param elements The elements to put back
-     * @param runs     The failure streaks of these elements, run by run: unchanged if they were never
-     *                 actually attempted, because acquiring a transmission permit was interrupted for instance
+     * @param chunk The elements to put back, with their failure streaks: unchanged if they were never
+     *              actually attempted, because acquiring a transmission permit was interrupted for instance
      */
-    private void requeue(List<T> elements, List<Run> runs) {
+    private void requeue(Chunk<T> chunk) {
         List<T> discarded = null;
         List<T> oversized = null;
         List<T> abandoned = null;
         int maxPending = 0;
+        long maxBytes = 0;
         synchronized (this) {
             if (drained) {
                 // Nothing would ever transmit or report them: a transmission, or a dispatch that got no permit
                 // within the close budget, handing its elements back once close() drained the batch
-                abandoned = List.copyOf(elements);
+                abandoned = chunk.elements();
             } else {
-                // Back at the front in their order, ahead of every newer element, and their streaks with them
-                for (ListIterator<T> iterator = elements.listIterator(elements.size()); iterator.hasPrevious(); ) {
-                    batch.addFirst(iterator.previous());
-                }
-                for (ListIterator<Run> iterator = runs.listIterator(runs.size()); iterator.hasPrevious(); ) {
-                    prependFailedRun(iterator.previous());
-                }
-                // Measured again, having left the running total when swapped out
-                pendingBytes += sizeOf(elements);
-
+                pending.prepend(chunk);
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
-                discarded = BoundedTrim.trim(batch, maxPending);
-                pendingBytes -= sizeOf(discarded);
-                oversized = trimToPendingBytes();
-                dropFailedPrefix(size(discarded) + size(oversized));
+                discarded = pending.trimToCount(maxPending);
+                maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
+                oversized = pending.trimToBytes(maxBytes);
             }
         }
         // Outside the monitor, which accumulating the next batch needs, and directly: this runs where a
@@ -975,6 +747,7 @@ public class Batcher<T> {
             drop(discarded, "maximum pending " + elementNoun + "s exceeded");
         }
         if (oversized != null) {
+            logOversized(oversized, maxBytes);
             drop(oversized, "maximum pending bytes exceeded");
         }
     }
@@ -1026,113 +799,48 @@ public class Batcher<T> {
 
     /**
      * Dispatches the elements of a swapped batch for transmission, split first into chunks within the request
-     * limits if needed, each chunk being handed to {@link #dispatchChunk(List, List)} independently.
-     * <p>
-     * Each element is copied once, from the batch into the chunk holding it: the batch is no one else's once
-     * swapped out, and a chunk of its own lets the elements of a completed transmission go while another is
-     * still in flight.
+     * limits if needed (see {@link PendingBatch#split(int, long)}), each chunk being handed to
+     * {@link #dispatchChunk(Chunk)} independently.
      *
-     * @param pending The batch swapped out, with the failure streaks of its leading elements
+     * @param due The batch swapped out, no one else's by then
      */
-    private void dispatch(PendingBatch<T> pending) {
-        ArrayDeque<T> elements = pending.elements();
+    private void dispatch(PendingBatch<T> due) {
         int maxCount = readLimit(maxRequestElements, Integer.MAX_VALUE, "the maximum request elements");
         long maxBytes = readLimit(maxRequestBytes, Long.MAX_VALUE, "the maximum request bytes");
-        boolean countLimited = maxCount > 0 && elements.size() > maxCount;
-        // A single element goes out on its own whatever it weighs, so it is not measured
-        boolean byteLimited = elementSize != null && maxBytes > 0 && maxBytes < Long.MAX_VALUE && elements.size() > 1;
-        List<Integer> chunkSizes = countLimited || byteLimited
-                ? chunkSizes(elements, maxCount, byteLimited ? maxBytes : 0)
-                : List.of(elements.size());
-
-        int offset = 0;
-        for (int size : chunkSizes) {
-            dispatchChunk(take(elements, size), runsOf(pending.failedRuns(), offset, offset + size));
-            offset += size;
+        for (Chunk<T> chunk : due.split(maxCount, maxBytes)) {
+            dispatchChunk(chunk);
         }
-    }
-
-    /**
-     * Where to cut the given elements into consecutive chunks preserving their order: before whichever element
-     * would push the current chunk past {@code maxCount} elements or {@code maxBytes} bytes.
-     *
-     * @param elements The elements to split, left untouched
-     * @param maxCount The maximum number of elements per chunk, or a non-positive value for no such limit
-     * @param maxBytes The maximum estimated size per chunk, or a non-positive value for no such limit
-     * @return The number of elements of each chunk, in order
-     */
-    private List<Integer> chunkSizes(Collection<T> elements, int maxCount, long maxBytes) {
-        List<Integer> sizes = new ArrayList<>();
-        int count = 0;
-        long bytes = 0;
-        for (T element : elements) {
-            long size = maxBytes > 0 ? sizeOf(element) : 0;
-            boolean countReached = maxCount > 0 && count >= maxCount;
-            // Never cut before the first element of a chunk, so that one heavier than the limit goes out alone
-            boolean bytesReached = maxBytes > 0 && count > 0 && bytes + size > maxBytes;
-            if (countReached || bytesReached) {
-                sizes.add(count);
-                count = 0;
-                bytes = 0;
-            }
-            count++;
-            bytes += size;
-        }
-        if (count > 0) {
-            sizes.add(count);
-        }
-        return sizes;
-    }
-
-    /**
-     * Moves the given number of elements from the front of a swapped batch into a chunk of their own, as an
-     * unmodifiable list: what the transport is handed is what gets retried or reported if it fails.
-     *
-     * @param elements The swapped batch, which loses them
-     * @param count    How many elements to take, at most as many as it holds
-     * @param <T>      The type of element
-     * @return The chunk, holding exactly these elements in their order
-     */
-    @SuppressWarnings("unchecked")
-    private static <T> List<T> take(ArrayDeque<T> elements, int count) {
-        Object[] chunk = new Object[count];
-        for (int i = 0; i < count; i++) {
-            chunk[i] = elements.pollFirst();
-        }
-        return (List<T>) Collections.unmodifiableList(Arrays.asList(chunk));
     }
 
     /**
      * Dispatches a single chunk for transmission on a virtual thread of its own, once a transmission permit
      * is acquired, which may block the caller where the transmission itself never does.
      *
-     * @param elements The chunk to dispatch
-     * @param runs     The failure streaks of its elements, run by run
+     * @param chunk The chunk to dispatch
      */
-    private void dispatchChunk(List<T> elements, List<Run> runs) {
+    private void dispatchChunk(Chunk<T> chunk) {
         try {
             if (!acquireTransmissionPermit()) {
                 log.warn("Unable to transmit {} {}(s) within the remaining close budget, they will be reported as dropped",
-                        elements.size(), elementNoun);
-                requeue(elements, runs);
+                        chunk.size(), elementNoun);
+                requeue(chunk);
                 return;
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            requeue(elements, runs);
+            requeue(chunk);
             return;
         }
 
-        InFlight<T> transmission = new InFlight<>(elements);
         // Before it starts, so that a close looking for what is in flight cannot miss it
-        inFlight.add(transmission);
+        inFlight.add(chunk);
         try {
-            transmissionExecutor.execute(() -> transmit(transmission, runs));
+            transmissionExecutor.execute(() -> transmit(chunk));
         } catch (RejectedExecutionException e) {
             transmissionPermits.release();
             // Unless the close shutting the executor down reported them already
-            if (inFlight.remove(transmission)) {
-                requeue(elements, runs);
+            if (inFlight.remove(chunk)) {
+                requeue(chunk);
             }
         }
     }
@@ -1162,16 +870,14 @@ public class Batcher<T> {
      * if the transport completed it before returning, or on a virtual thread of its own otherwise, never on
      * the thread of the client completing it.
      *
-     * @param transmission The chunk to transmit, registered as in flight
-     * @param runs         The failure streaks of its elements, run by run
+     * @param chunk The chunk to transmit, registered as in flight
      */
-    private void transmit(InFlight<T> transmission, List<Run> runs) {
-        List<T> elements = transmission.elements;
+    private void transmit(Chunk<T> chunk) {
         long start = System.nanoTime();
         CompletableFuture<TransmissionResult<T>> future;
         try {
-            // The chunk itself, unmodifiable already (see take())
-            CompletableFuture<TransmissionResult<T>> applied = transport.apply(elements);
+            // Unmodifiable (see Chunk), what the transport is handed being what gets retried or reported
+            CompletableFuture<TransmissionResult<T>> applied = transport.apply(chunk.elements());
             future = applied != null ? applied : CompletableFuture.completedFuture(null);
         } catch (Throwable e) {
             // Throwable: an Error, from a class of the transport missing say, would otherwise skip the release
@@ -1180,20 +886,20 @@ public class Batcher<T> {
         }
         BiConsumer<TransmissionResult<T>, Throwable> handler = (result, throwable) -> {
             try {
-                if (!inFlight.remove(transmission)) {
+                if (!inFlight.remove(chunk)) {
                     log.debug("Ignoring the result of a transmission of {} {}(s) that closing reported as dropped already",
-                            elements.size(), elementNoun);
+                            chunk.size(), elementNoun);
                     return;
                 }
                 long durationMillis = (System.nanoTime() - start) / 1_000_000;
-                handleResult(elements, runs, normalizeResult(elements, result, throwable), durationMillis);
+                handleResult(chunk, normalizeResult(chunk, result, throwable), durationMillis);
             } catch (Throwable e) {
                 // Defensive: a bug in handleResult(), or a result inconsistent with the chunk, degrades it to
                 // a failure rather than losing it without a trace
                 log.warn("Unhandled exception while processing the result of a transmitted batch of {} {}(s), treating it as a failure",
-                        elements.size(), elementNoun, e);
-                notifyListener(() -> listener.onFailed(elements.size(), e));
-                onTransmissionFailure(elements, runs, e);
+                        chunk.size(), elementNoun, e);
+                notifyListener(() -> listener.onFailed(chunk.size(), e));
+                onTransmissionFailure(chunk, e);
             } finally {
                 transmissionPermits.release();
             }
@@ -1228,13 +934,13 @@ public class Batcher<T> {
      * completion or a {@code null} result becoming a {@link TransmissionResult.Failure}, logged along with the
      * returned ones.
      *
-     * @param elements  The chunk that was transmitted, only used to phrase the warning logged
+     * @param chunk     The chunk that was transmitted, only used to phrase the warning logged
      * @param result    The result the future completed with, or {@code null} if it completed exceptionally
      *                  or with {@code null} itself
      * @param throwable The exception the future completed with, or {@code null} if it completed normally
      * @return A non-{@code null} result
      */
-    private TransmissionResult<T> normalizeResult(List<T> elements, @Nullable TransmissionResult<T> result, @Nullable Throwable throwable) {
+    private TransmissionResult<T> normalizeResult(Chunk<T> chunk, @Nullable TransmissionResult<T> result, @Nullable Throwable throwable) {
         if (throwable != null) {
             // A future derived by the transport, through thenApply() for instance, wraps the failure
             Throwable cause = throwable instanceof CompletionException && throwable.getCause() != null
@@ -1243,7 +949,7 @@ public class Batcher<T> {
         }
         if (result == null) {
             log.warn("Transport returned a null result for a batch of {} {}(s), treating it as a failure",
-                    elements.size(), elementNoun);
+                    chunk.size(), elementNoun);
             return TransmissionResult.failure(null);
         }
         return result;
@@ -1251,34 +957,33 @@ public class Batcher<T> {
 
     /**
      * Handles a transmission result: notifies {@link #listener} of what succeeded and failed, and retries or
-     * gives up on what failed through {@link #onTransmissionFailure(List, List, Throwable)}, which for a
+     * gives up on what failed through {@link #onTransmissionFailure(Chunk, Throwable)}, which for a
      * {@link TransmissionResult.PartialFailure} is only the elements it rejected, matched by reference.
      *
-     * @param elements       The chunk that was transmitted
-     * @param runs           The failure streaks its elements had before this attempt, run by run
+     * @param chunk          The chunk that was transmitted, with the failure streaks its elements had before
      * @param result         The (normalized) result of the attempt
      * @param durationMillis The time the transmission took, in milliseconds
      */
-    private void handleResult(List<T> elements, List<Run> runs, TransmissionResult<T> result, long durationMillis) {
+    private void handleResult(Chunk<T> chunk, TransmissionResult<T> result, long durationMillis) {
         switch (result) {
-            case TransmissionResult.Success<T> success -> onTransmissionSuccess(elements.size(), durationMillis);
+            case TransmissionResult.Success<T> success -> onTransmissionSuccess(chunk.size(), durationMillis);
             case TransmissionResult.Failure<T> failure -> {
                 transmissionFailed = true;
-                notifyListener(() -> listener.onFailed(elements.size(), failure.cause()));
-                onTransmissionFailure(elements, runs, failure.cause());
+                notifyListener(() -> listener.onFailed(chunk.size(), failure.cause()));
+                onTransmissionFailure(chunk, failure.cause());
             }
             case TransmissionResult.PartialFailure<T> partial -> {
-                Partition<T> partition = partition(elements, runs, partial.rejected());
-                List<T> rejected = partition.rejected();
+                Partition<T> partition = partition(chunk, partial.rejected());
+                Chunk<T> rejected = partition.rejected();
                 if (rejected.size() != partial.rejected().size()) {
                     // A transport breaking the contract, with duplicates or foreign elements, which would
                     // otherwise be injected into the batch: only those belonging to the chunk are kept
                     log.warn("Transport reported {} rejected {}(s) for a batch of {}, but only {} of them belong to it; "
                                     + "ignoring the rest (they must be reported by reference identity)",
-                            partial.rejected().size(), elementNoun, elements.size(), rejected.size());
+                            partial.rejected().size(), elementNoun, chunk.size(), rejected.size());
                 }
-                if (rejected.isEmpty()) {
-                    onTransmissionSuccess(elements.size(), durationMillis);
+                if (rejected.size() == 0) {
+                    onTransmissionSuccess(chunk.size(), durationMillis);
                     return;
                 }
                 transmissionFailed = true;
@@ -1288,7 +993,7 @@ public class Batcher<T> {
                     notifyListener(() -> listener.onSucceeded(accepted.size(), durationMillis));
                 }
                 notifyListener(() -> listener.onFailed(rejected.size(), partial.cause()));
-                onTransmissionFailure(rejected, partition.rejectedRuns(), partial.cause());
+                onTransmissionFailure(rejected, partial.cause());
             }
         }
     }
@@ -1311,51 +1016,50 @@ public class Batcher<T> {
      * The elements of a dispatched chunk, split into those a {@link TransmissionResult.PartialFailure}
      * reported as rejected and those it did not.
      *
-     * @param accepted     The elements not reported as rejected, in their original order
-     * @param rejected     The elements reported as rejected, in their original order
-     * @param rejectedRuns The failure streaks the rejected elements had before this attempt, run by run
-     * @param <T>          The type of element
+     * @param accepted The elements not reported as rejected, in their original order
+     * @param rejected The elements reported as rejected, in their original order, with the failure streaks
+     *                 they had before this attempt
+     * @param <T>      The type of element
      */
-    private record Partition<T>(List<T> accepted, List<T> rejected, List<Run> rejectedRuns) {
+    private record Partition<T>(List<T> accepted, Chunk<T> rejected) {
 
     }
 
     /**
-     * Splits {@code elements} according to whether each is in {@code rejected}, matched by reference rather
-     * than {@code equals()} (see {@link TransmissionResult}). Driven by {@code elements}, so that the result
+     * Splits a chunk according to whether each of its elements is in {@code rejected}, matched by reference
+     * rather than {@code equals()} (see {@link TransmissionResult}). Driven by the chunk, so that the result
      * only holds elements of the chunk, each as many times as the chunk does.
      *
-     * @param elements The dispatched chunk
-     * @param runs     The failure streaks of its elements, run by run
+     * @param chunk    The dispatched chunk
      * @param rejected The elements the transport reported as rejected
      * @param <T>      The type of element
      * @return The chunk, partitioned into accepted and rejected elements
      */
-    private static <T> Partition<T> partition(List<T> elements, List<Run> runs, List<T> rejected) {
+    private static <T> Partition<T> partition(Chunk<T> chunk, List<T> rejected) {
         if (rejected.isEmpty()) {
-            return new Partition<>(elements, List.of(), List.of());
+            return new Partition<>(chunk.elements(), new Chunk<>(List.of(), List.of()));
         }
         Set<T> rejectedIdentity = Collections.newSetFromMap(new IdentityHashMap<>(rejected.size()));
         rejectedIdentity.addAll(rejected);
-        List<T> accepted = new ArrayList<>(elements.size());
-        List<T> actuallyRejected = new ArrayList<>(Math.min(elements.size(), rejected.size()));
-        List<Run> rejectedRuns = new ArrayList<>();
-        Streaks streaks = new Streaks(runs);
-        for (T element : elements) {
+        List<T> accepted = new ArrayList<>(chunk.size());
+        List<T> actuallyRejected = new ArrayList<>(Math.min(chunk.size(), rejected.size()));
+        List<FailureRun> rejectedRuns = new ArrayList<>();
+        FailureRun.Streaks streaks = new FailureRun.Streaks(chunk.runs());
+        for (T element : chunk.elements()) {
             int streak = streaks.next();
             if (rejectedIdentity.contains(element)) {
                 actuallyRejected.add(element);
-                appendRun(rejectedRuns, streak, 1);
+                FailureRun.append(rejectedRuns, streak, 1);
             } else {
                 accepted.add(element);
             }
         }
-        return new Partition<>(accepted, actuallyRejected, rejectedRuns);
+        return new Partition<>(accepted, new Chunk<>(actuallyRejected, rejectedRuns));
     }
 
     /**
      * Invokes the given listener notification, logging whatever it throws, so that a throwing
-     * {@code onFailed} never skips the {@link #onTransmissionFailure(List, List, Throwable)} following it.
+     * {@code onFailed} never skips the {@link #onTransmissionFailure(Chunk, Throwable)} following it.
      *
      * @param notification The listener call to perform
      */
@@ -1373,25 +1077,24 @@ public class Batcher<T> {
      * reached {@code maxConsecutiveFailures}, each counting its own failures, and puts the others back for a
      * later retry, holding off the next attempt for as long as {@link #backoff} decides.
      *
-     * @param elements The elements that failed to be transmitted
-     * @param runs     The failure streaks these elements had before this attempt, run by run
-     * @param cause    The exception responsible for the failure, or {@code null} if none was reported
+     * @param chunk The elements that failed to be transmitted, with the failure streaks they had before
+     * @param cause The exception responsible for the failure, or {@code null} if none was reported
      */
-    private void onTransmissionFailure(List<T> elements, List<Run> runs, @Nullable Throwable cause) {
+    private void onTransmissionFailure(Chunk<T> chunk, @Nullable Throwable cause) {
         failedTransmissions.increment();
         int maxFailures = readLimit(maxConsecutiveFailures, 0, "the maximum consecutive failures");
         List<T> givenUp = new ArrayList<>();
-        List<T> retried = new ArrayList<>(elements.size());
-        List<Run> retriedRuns = new ArrayList<>();
+        List<T> retried = new ArrayList<>(chunk.size());
+        List<FailureRun> retriedRuns = new ArrayList<>();
         int highestStreak = 0;
-        Streaks streaks = new Streaks(runs);
-        for (T element : elements) {
+        FailureRun.Streaks streaks = new FailureRun.Streaks(chunk.runs());
+        for (T element : chunk.elements()) {
             int streak = streaks.next() + 1;
             if (maxFailures > 0 && streak >= maxFailures) {
                 givenUp.add(element);
             } else {
                 retried.add(element);
-                appendRun(retriedRuns, streak, 1);
+                FailureRun.append(retriedRuns, streak, 1);
                 highestStreak = Math.max(highestStreak, streak);
             }
         }
@@ -1409,7 +1112,7 @@ public class Batcher<T> {
             log.warn("Failed to transmit {} {}(s), {} consecutive failure(s) so far, retrying later",
                     retried.size(), elementNoun, highestStreak, cause);
             applyBackoff(highestStreak);
-            requeue(retried, retriedRuns);
+            requeue(new Chunk<>(retried, retriedRuns));
         }
     }
 
@@ -1494,10 +1197,10 @@ public class Batcher<T> {
      */
     private void reportInFlightAsDropped() {
         List<T> abandoned = new ArrayList<>();
-        for (InFlight<T> transmission : inFlight) {
+        for (Chunk<T> chunk : inFlight) {
             // Unless its result, arriving meanwhile, removed it first to handle them itself
-            if (inFlight.remove(transmission)) {
-                abandoned.addAll(transmission.elements);
+            if (inFlight.remove(chunk)) {
+                abandoned.addAll(chunk.elements());
             }
         }
         if (abandoned.isEmpty()) {
@@ -1517,13 +1220,10 @@ public class Batcher<T> {
         synchronized (this) {
             // Raised for an empty batch too, so that a later requeue reports its elements
             drained = true;
-            if (batch.isEmpty()) {
+            if (pending.isEmpty()) {
                 return;
             }
-            remaining = List.copyOf(batch);
-            batch.clear();
-            failedRuns.clear();
-            pendingBytes = 0;
+            remaining = pending.drain();
         }
         log.error("Discarding {} {}(s) still pending once closed, they were never successfully transmitted",
                 remaining.size(), elementNoun);
