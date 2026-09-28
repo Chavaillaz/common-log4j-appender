@@ -179,10 +179,13 @@
                 <version>3.6.0</version>
                 <configuration>
                     <!-- The tests run in the module, where Log4j2 builds the plugin of PluginIntegrationTest by
-                         reflection, which the module of an appender allows by opening its package. Extends the
-                         argLine the JaCoCo agent sets rather than replacing it. -->
+                         reflection, which the module of an appender allows by opening its package. Mockito is
+                         loaded as an agent from the start, rather than attaching itself once running, which the
+                         JDK warns against and a later one refuses. Extends the argLine the JaCoCo agent sets
+                         rather than replacing it. -->
                     <argLine>
                         @{argLine}
+                        -javaagent:${org.mockito:mockito-core:jar}
                         --add-opens com.chavaillaz.appender/com.chavaillaz.appender.log4j=org.apache.logging.log4j.core
                     </argLine>
                 </configuration>
@@ -224,6 +227,15 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
                 <version>3.11.0</version>
+                <executions>
+                    <execution>
+                        <!-- Sets a property to the path of each dependency, the one of Mockito being loaded as an
+                             agent by maven-surefire-plugin -->
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
 
             <plugin>
