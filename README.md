@@ -230,6 +230,10 @@ relevant `write*` method, or implement `LogConverter` from scratch for full cont
 none converts before it has it: `LogConverter.newInstance(className, configuration)` creates one a
 configuration names by its class, through its public constructor taking the configuration.
 
+A converter reading the location of the caller (`LogEvent.getSource()`) needs the appender to override
+`requiresLocation()` to return `true`. An event is otherwise handed over without it, Log4j2 finding it by
+walking the stack of the application thread, which costs twenty times all the rest `append()` does.
+
 ## Observability
 
 To monitor the health of the delivery pipeline (throughput, latency, failures, data loss), pass a

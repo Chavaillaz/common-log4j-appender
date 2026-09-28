@@ -469,15 +469,39 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Its thread is read first: the {@code Log4jLogEvent} Log4j2 creates whenever its thread-locals are off (by
      * default, whenever the Servlet API is on the classpath) resolves it from whichever thread asks first, which
      * its {@code toImmutable()} leaves to the worker before Log4j2 2.25.
+     * <p>
+     * The caller location is left out unless {@link #requiresLocation()}: a synchronous logger includes it by
+     * default, and {@code toImmutable()} finds it by walking the stack, twenty times what the rest of
+     * {@link #append(LogEvent)} costs. The event is left as it was for the appenders after this one.
      *
      * @param event The logging event
      * @return An immutable snapshot of the event
      */
-    private static LogEvent snapshot(LogEvent event) {
+    private LogEvent snapshot(LogEvent event) {
         event.getThreadId();
         event.getThreadName();
         event.getThreadPriority();
-        return event.toImmutable();
+        if (!event.isIncludeLocation() || requiresLocation()) {
+            return event.toImmutable();
+        }
+        event.setIncludeLocation(false);
+        try {
+            return event.toImmutable();
+        } finally {
+            event.setIncludeLocation(true);
+        }
+    }
+
+    /**
+     * Whether the converter reads the location of the caller ({@link LogEvent#getSource()}), which Log4j2 then
+     * finds when the event is logged, by walking the stack, if the logger includes it (a synchronous one does by
+     * default). An event is otherwise snapshotted without it. Defaults to {@code false}.
+     *
+     * @return {@code true} for a converter reading the location of the caller
+     */
+    @Override
+    public boolean requiresLocation() {
+        return false;
     }
 
     /**
@@ -617,7 +641,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * The converter turning an event into the document sent, called on the background thread by the task
      * {@link #createLogDeliveryTask(LogEvent)} creates by default. Defaults to a {@link DefaultLogConverter}
      * built with the configuration of this appender; override it to return another one (see
-     * {@link LogConverter#newInstance(String, LogConfiguration)} for one named in a configuration).
+     * {@link LogConverter#newInstance(String, LogConfiguration)} for one named in a configuration), along with
+     * {@link #requiresLocation()} for one reading the location of the caller.
      *
      * @return The converter to use
      */

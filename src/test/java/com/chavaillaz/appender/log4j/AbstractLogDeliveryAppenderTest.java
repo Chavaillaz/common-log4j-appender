@@ -42,9 +42,16 @@ import java.util.stream.Collectors;
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.AbstractLogEvent;
+import org.apache.logging.log4j.core.Appender;
 import org.apache.logging.log4j.core.ErrorHandler;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilder;
+import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFactory;
+import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.ParameterizedMessage;
@@ -724,6 +731,100 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: rather than the worker, which reads it first otherwise
             assertEquals(List.of("application-thread"), threads);
+        }
+
+        @Test
+        @DisplayName("Leaves out the caller location, found by walking the stack, for the appenders after it too")
+        void testSnapshotLeavesOutTheCallerLocation() {
+            // given: an appender not requiring the location, followed by another reading it
+            var appender = new LocationRecordingAppender(false);
+            var nextSources = new CopyOnWriteArrayList<@Nullable StackTraceElement>();
+            var next = new AbstractAppender("next", null, null, true, Property.EMPTY_ARRAY) {
+                @Override
+                public void append(LogEvent event) {
+                    nextSources.add(event.getSource());
+                }
+            };
+
+            // when
+            logThroughSynchronousLogger(appender, next);
+
+            // then: the next appender still finds it, the event being left as it was logged
+            assertEquals(Arrays.asList((StackTraceElement) null), appender.getSources());
+            assertEquals(1, nextSources.size());
+            assertEquals("logThroughSynchronousLogger", nextSources.getFirst().getMethodName());
+        }
+
+        @Test
+        @DisplayName("Keeps the caller location for an appender requiring it")
+        void testSnapshotKeepsTheCallerLocationWhenRequired() {
+            // given
+            var appender = new LocationRecordingAppender(true);
+
+            // when
+            logThroughSynchronousLogger(appender);
+
+            // then
+            assertEquals(1, appender.getSources().size());
+            assertEquals("logThroughSynchronousLogger", appender.getSources().getFirst().getMethodName());
+        }
+
+        /**
+         * Logs one event through the root logger of a context of its own, synchronous and so including the
+         * caller location by default, to the given appenders in turn, then stops the context.
+         */
+        private void logThroughSynchronousLogger(Appender... appenders) {
+            ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
+            builder.setStatusLevel(Level.ERROR);
+            builder.add(builder.newRootLogger(Level.INFO));
+            var context = new LoggerContext("EventSnapshot");
+            context.start(builder.build());
+            try {
+                var configuration = context.getConfiguration();
+                for (Appender appender : appenders) {
+                    appender.start();
+                    configuration.addAppender(appender);
+                    configuration.getRootLogger().addAppender(appender, null, null);
+                }
+                context.updateLoggers();
+                context.getLogger(getClass()).info("hello");
+            } finally {
+                context.stop();
+            }
+        }
+
+    }
+
+    /**
+     * Records the caller location of every event it converts, declaring that it requires it or not.
+     */
+    @Getter
+    static class LocationRecordingAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        List<@Nullable StackTraceElement> sources = new CopyOnWriteArrayList<>();
+        boolean locationRequired;
+
+        LocationRecordingAppender(boolean locationRequired) {
+            super("location-recording", null, TestLogConfiguration.builder().build());
+            this.locationRequired = locationRequired;
+        }
+
+        @Override
+        public LogDelivery createLogDeliveryHandler() {
+            return mock(LogDelivery.class);
+        }
+
+        @Override
+        protected LogConverter getLogConverter() {
+            return event -> {
+                sources.add(event.getSource());
+                return null;
+            };
+        }
+
+        @Override
+        public boolean requiresLocation() {
+            return locationRequired;
         }
 
     }
