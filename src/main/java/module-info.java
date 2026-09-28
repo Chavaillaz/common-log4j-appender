@@ -13,7 +13,6 @@
  */
 module com.chavaillaz.appender {
 
-    requires static lombok;
     requires transitive org.apache.logging.log4j;
     requires transitive org.apache.logging.log4j.core;
     requires transitive org.jspecify;

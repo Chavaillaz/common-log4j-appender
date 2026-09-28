@@ -6,7 +6,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -25,8 +24,7 @@ import org.jspecify.annotations.Nullable;
  * counted, and nesting is followed to a bounded depth, past which a value counts as zero, so that a document
  * containing itself cannot recurse forever.
  */
-@UtilityClass
-public class DocumentSizeEstimator {
+public final class DocumentSizeEstimator {
 
     /**
      * Bytes added by the braces surrounding a JSON object, or the brackets surrounding an array.
@@ -55,6 +53,10 @@ public class DocumentSizeEstimator {
      * itself does not recurse until the stack runs out. Far deeper than any log document has reason to be.
      */
     private static final int MAX_DEPTH = 16;
+
+    private DocumentSizeEstimator() {
+        // Static methods only
+    }
 
     /**
      * Estimates the encoded size of the given document.

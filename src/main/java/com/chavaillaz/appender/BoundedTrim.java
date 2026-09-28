@@ -5,7 +5,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Queue;
 
-import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -14,8 +13,11 @@ import org.jspecify.annotations.Nullable;
  * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender} follows the same policy one event at a
  * time, through its own constant-time {@code poll()} and {@code offer()}.
  */
-@UtilityClass
-public class BoundedTrim {
+public final class BoundedTrim {
+
+    private BoundedTrim() {
+        // Static methods only
+    }
 
     /**
      * Trims the given queue (oldest at its head) down to at most {@code maxSize} elements, discarding the

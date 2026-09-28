@@ -9,20 +9,22 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
  * Common utility methods.
  */
-@UtilityClass
-public class CommonUtils {
+public final class CommonUtils {
 
     /**
      * Maximum time {@link #getInitialHostname()} waits for the reverse DNS lookup before falling back to
      * {@code localhost}, so a slow or unresponsive DNS server cannot delay application startup indefinitely.
      */
     private static final Duration HOSTNAME_LOOKUP_TIMEOUT = Duration.ofSeconds(5);
+
+    private CommonUtils() {
+        // Static methods only
+    }
 
     /**
      * Searches an environment or system property value, giving priority to the environment variable if both

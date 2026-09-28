@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-import lombok.Getter;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
@@ -51,14 +50,12 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     private static final Logger log = StatusLogger.getLogger();
 
-    @Getter
     private final C configuration;
 
     /**
      * The listener notified of the outcome of every transmission attempt, volatile since
      * {@link #setListener(LogDeliveryListener)} may replace it from any thread while transmissions read it.
      */
-    @Getter
     private volatile LogDeliveryListener listener;
 
     private final Batcher<Map<String, Object>> batcher;
@@ -150,6 +147,25 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         return isBounded(getMaxPendingBytes()) || isBounded(getMaxRequestBytes())
                 ? estimateDocumentSize(document)
                 : 0;
+    }
+
+    /**
+     * The configuration this delivery was created with.
+     *
+     * @return The configuration
+     */
+    public C getConfiguration() {
+        return configuration;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return The listener, {@link LogDeliveryListener#NOOP} while none is set
+     */
+    @Override
+    public LogDeliveryListener getListener() {
+        return listener;
     }
 
     /**

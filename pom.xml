@@ -62,12 +62,12 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- Annotation processor -->
+        <!-- Annotation processor of the tests, the library itself exposing only what it declares -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <version>${lombok.version}</version>
-            <scope>provided</scope>
+            <scope>test</scope>
         </dependency>
 
         <dependency>

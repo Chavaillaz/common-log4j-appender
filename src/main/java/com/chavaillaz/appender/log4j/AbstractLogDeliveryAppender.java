@@ -22,7 +22,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
-import lombok.Getter;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.Layout;
@@ -161,14 +160,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private volatile @Nullable ScheduledExecutorService flushScheduler;
 
-    @Getter
     private final C logConfiguration;
 
     /**
      * The logs delivery handler, or {@code null} before {@link #start()}, or if it could not be created.
      * Volatile, being written by the thread starting the appender and read by every thread logging.
      */
-    @Getter
     private volatile @Nullable LogDelivery logDeliveryHandler;
 
     /**
@@ -406,6 +403,24 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return The logs delivery handler
      */
     public abstract LogDelivery createLogDeliveryHandler();
+
+    /**
+     * The configuration this appender was created with.
+     *
+     * @return The configuration
+     */
+    public C getLogConfiguration() {
+        return logConfiguration;
+    }
+
+    /**
+     * The delivery {@link #createLogDeliveryHandler()} created when this appender started.
+     *
+     * @return The delivery, or {@code null} before the appender is started, or if it could not be created
+     */
+    public @Nullable LogDelivery getLogDeliveryHandler() {
+        return logDeliveryHandler;
+    }
 
     /**
      * {@inheritDoc}
