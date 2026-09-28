@@ -41,6 +41,7 @@ import java.util.stream.Collectors;
 
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.AbstractLogEvent;
 import org.apache.logging.log4j.core.ErrorHandler;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.LogEvent;
@@ -689,6 +690,63 @@ class AbstractLogDeliveryAppenderTest {
             // then: left for the conversion to run into, where it only costs the message field
             assertEquals(1, appender.getCountTaskExecuted().get());
             assertEquals(List.of(), errors);
+        }
+
+        @Test
+        @DisplayName("Records the thread that logged an event, even one resolving its thread lazily")
+        void testEventRecordsTheThreadThatLoggedIt() throws Exception {
+            // given: an event reading its thread from whichever thread asks first, and whose snapshot is the
+            // event itself, as the Log4jLogEvent of Log4j2 before 2.25 does, which Log4j2 creates whenever its
+            // thread locals are off (by default, whenever the Servlet API is on the classpath)
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var threads = new CopyOnWriteArrayList<String>();
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                public LogDelivery createLogDeliveryHandler() {
+                    return mock(LogDelivery.class);
+                }
+
+                @Override
+                protected LogConverter getLogConverter() {
+                    return event -> {
+                        threads.add(event.getThreadName());
+                        return null;
+                    };
+                }
+            };
+
+            // when
+            appender.start();
+            Thread.ofPlatform().name("application-thread").start(() -> appender.append(new LazyThreadLogEvent())).join();
+            appender.stop(2, SECONDS);
+
+            // then: rather than the worker, which reads it first otherwise
+            assertEquals(List.of("application-thread"), threads);
+        }
+
+    }
+
+    /**
+     * A logging event reading its thread from whichever thread asks first, and whose snapshot is the event
+     * itself, as the {@code Log4jLogEvent} of Log4j2 before 2.25 does.
+     */
+    static class LazyThreadLogEvent extends AbstractLogEvent {
+
+        private @Nullable String threadName;
+
+        @Override
+        public String getThreadName() {
+            if (threadName == null) {
+                threadName = Thread.currentThread().getName();
+            }
+            return threadName;
+        }
+
+        @Override
+        public Message getMessage() {
+            return new SimpleMessage("hello");
         }
 
     }
