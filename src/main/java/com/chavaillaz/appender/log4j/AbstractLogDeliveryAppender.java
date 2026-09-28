@@ -46,8 +46,9 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * {@link #append(LogEvent)} never blocks the application thread: it snapshots the event and queues it for a
  * single background thread, which converts the events (see {@link #getLogConverter()}) and batches them (see
  * {@link AbstractBatchLogDelivery}), transmissions running on virtual threads of their own. A scheduler thread
- * periodically queues a flush, so that batching only ever happens on the background thread. A subclass only
- * creates its delivery (see {@link #createLogDeliveryHandler()}).
+ * periodically requests a flush, which the background thread runs as soon as it is done with its current
+ * event, so that batching only ever happens there. A subclass only creates its delivery (see
+ * {@link #createLogDeliveryHandler()}).
  * <p>
  * The queue holds at most {@link DeliveryOptions#maxQueuedEvents()} events, so that events arriving faster than
  * they are processed, while every transmission slot is stuck on an unresponsive downstream system for
@@ -79,7 +80,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * A task queued on {@link #workerExecutor}, carrying the {@link LogEvent} it was created for, so that
-     * {@link DiscardOldestEventPolicy} can report it when evicting it. The flush trigger is not one, not being
+     * {@link DiscardOldestEventPolicy} can report it when evicting it. A requested flush is not one, not being
      * an event to discard.
      *
      * @param event    The logging event this task was created for
@@ -97,7 +98,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Makes a full queue discard its oldest event to make room for the new one, rather than rejecting the new
      * one as the default {@code AbortPolicy} does, through the constant-time {@code poll()} and {@code offer()}
-     * of the queue. Anything else than an {@link EventTask}, such as the flush trigger, which must never evict
+     * of the queue. Anything else than an {@link EventTask}, such as a requested flush, which must never evict
      * an event, and any task once the executor is shutting down, are still rejected.
      */
     private final class DiscardOldestEventPolicy implements RejectedExecutionHandler {
@@ -191,6 +192,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final AtomicBoolean discardReportQueued = new AtomicBoolean();
 
     /**
+     * Whether a periodic flush is waiting for the background thread, which runs it after the event it is
+     * processing, or on its own when idle: a flush needing a slot of its own in a full queue would wait for as
+     * long as the application keeps logging faster than the delivery keeps up.
+     */
+    private final AtomicBoolean flushRequested = new AtomicBoolean();
+
+    /**
      * Events discarded before reaching the delivery, reported or not, for {@link #getMetrics()}.
      */
     private final LongAdder discardedEvents = new LongAdder();
@@ -278,7 +286,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         // At least a millisecond, as the delivery options require
         long intervalMillis = options.flushInterval().toMillis();
         flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
-        flushScheduler.scheduleWithFixedDelay(this::triggerFlush, intervalMillis, intervalMillis, MILLISECONDS);
+        flushScheduler.scheduleWithFixedDelay(this::requestFlush, intervalMillis, intervalMillis, MILLISECONDS);
     }
 
     /**
@@ -308,24 +316,61 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Queues a flush on {@link #workerExecutor}, so that it runs on the background thread like everything else,
-     * whether triggered by {@link #flushScheduler} or by {@link #append(LogEvent)} for an urgent event, which
-     * is then already in the batch by the time the flush runs.
+     * Requests a flush from {@link #flushScheduler}, queued on {@link #workerExecutor} so that it runs on the
+     * background thread like everything else. A full queue leaves it to the next event processed (see
+     * {@link #flushRequested}).
      */
-    private void triggerFlush() {
+    private void requestFlush() {
+        if (!flushRequested.compareAndSet(false, true)) {
+            // Still waiting for the background thread, which runs one flush for both
+            return;
+        }
         try {
-            workerExecutor.execute(() -> {
-                // Read on the worker, a method reference on a null handler throwing outside the guard below
-                LogDelivery handler = logDeliveryHandler;
-                if (handler != null) {
-                    executeLogDeliveryTask(handler::flush);
-                }
-            });
+            workerExecutor.execute(this::flushIfRequested);
         } catch (RejectedExecutionException e) {
-            // A full queue, or a worker shutting down: this flush is skipped, the next one sending what is pending
+            // A full queue, whose next event runs it, or a worker shutting down, whose stop flushes anyway
         } catch (Throwable e) {
-            // Throwable: an Error escaping the periodic flush, the heap running out say, cancels all its later runs
+            // Throwable: an Error escaping the periodic flush, the heap running out say, cancels all its later
+            // runs. Withdrawn, the next run requesting it again rather than waiting for an event that may not come
+            flushRequested.set(false);
             error("Unable to queue a flush, the next one will send what is pending", e);
+        }
+    }
+
+    /**
+     * Runs the flush {@link #requestFlush()} requested, unless the background thread ran it already.
+     */
+    private void flushIfRequested() {
+        if (flushRequested.compareAndSet(true, false)) {
+            executeLogDeliveryTask(this::flushLogDeliveryHandler);
+        }
+    }
+
+    /**
+     * Runs a delivery task on the background thread, then flushes the batch if the event it delivered is
+     * urgent (see {@link #isUrgent(LogEvent)}), or if a periodic flush is waiting (see {@link #flushRequested}),
+     * each part failing on its own.
+     *
+     * @param task  The delivery task to run
+     * @param event The logging event it delivers
+     */
+    private void deliver(Runnable task, LogEvent event) {
+        executeLogDeliveryTask(task);
+        executeLogDeliveryTask(() -> {
+            boolean urgent = isUrgent(event);
+            if ((flushRequested.get() && flushRequested.compareAndSet(true, false)) || urgent) {
+                flushLogDeliveryHandler();
+            }
+        });
+    }
+
+    /**
+     * Flushes the delivery handler, read on the background thread since it may not be created yet.
+     */
+    private void flushLogDeliveryHandler() {
+        LogDelivery handler = logDeliveryHandler;
+        if (handler != null) {
+            handler.flush();
         }
     }
 
@@ -373,25 +418,18 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         // Snapshots the event on the calling thread: log4j2 may reuse (mutate) it once this method returns.
         LogEvent immutableEvent = loggingEvent.toImmutable();
         freezeMessage(immutableEvent);
-        // Once queued, the event is on its way, and must not be reported dropped whatever fails next
-        boolean handedOff = false;
         try {
             Runnable task = createLogDeliveryTask(immutableEvent);
-            workerExecutor.execute(new EventTask(immutableEvent, () -> executeLogDeliveryTask(task)));
-            handedOff = true;
-            if (isUrgent(immutableEvent)) {
-                triggerFlush();
-            }
+            // Everything else, the check of its severity included, runs once it is queued, on the worker
+            workerExecutor.execute(new EventTask(immutableEvent, () -> deliver(task, immutableEvent)));
         } catch (RejectedExecutionException e) {
             // A full queue evicts rather than rejects, so this is the appender stopping
             error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
             discard(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
         } catch (Throwable e) {
-            // Either createLogDeliveryTask() failed, losing the event, or the severity check once it was queued
+            // createLogDeliveryTask() failed, losing the event
             error("Log delivery task creation error", e);
-            if (!handedOff) {
-                discard(immutableEvent, "log delivery task creation error");
-            }
+            discard(immutableEvent, "log delivery task creation error");
         }
     }
 

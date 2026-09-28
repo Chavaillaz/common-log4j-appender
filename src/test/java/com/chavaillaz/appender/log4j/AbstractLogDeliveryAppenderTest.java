@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -312,6 +313,39 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(1, SECONDS);
         }
 
+        @Test
+        @DisplayName("Runs a periodic flush the full queue had no room for right after the event in progress")
+        void testPeriodicFlushIsNotLostToAFullQueue() throws Exception {
+            // given: a queue of a single event, a first event holding up the worker, and a second one filling
+            // the queue, so that the periodic flushes firing meanwhile find no room in it
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(100))
+                    .maxQueuedEvents(1).build();
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+            doAnswer(invocation -> {
+                appender.getProcessedMessages().add("flush");
+                return null;
+            }).when(appender.getLogDeliveryHandler()).flush();
+            appender.start();
+            appender.append(realLogEvent("first"));
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("second"));
+            sleep(350);
+
+            // when
+            releaseFirstTask.countDown();
+
+            // then: the flush requested meanwhile ran as soon as the worker was done with the first event. It
+            // used to be skipped for as long as the queue stayed full, which a steady load keeps it
+            awaitSize(appender.getProcessedMessages(), 3);
+            assertEquals(List.of("first", "flush", "second"), appender.getProcessedMessages().subList(0, 3));
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
         /**
          * Replaces the executor of the worker of an appender not started yet, which is then started instead.
          */
@@ -403,6 +437,39 @@ class AbstractLogDeliveryAppenderTest {
 
             // cleanup
             appender.stop();
+        }
+
+        @Test
+        @DisplayName("Flushes right after an urgent event even when the queue has no room for anything else")
+        void testUrgentEventFlushesDespiteAFullQueue() throws Exception {
+            // given: a queue of a single event, which an urgent one fills while a first event holds up the
+            // worker, and no periodic flush due for a long time
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .flushLevel(Level.WARN)
+                    .maxQueuedEvents(1).build();
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+            doAnswer(invocation -> {
+                appender.getProcessedMessages().add("flush");
+                return null;
+            }).when(appender.getLogDeliveryHandler()).flush();
+            appender.start();
+            appender.append(realLogEvent("first"));
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("urgent", Level.ERROR));
+
+            // when
+            releaseFirstTask.countDown();
+
+            // then: the flush follows the urgent event, where it used to need a slot of its own in the queue,
+            // and was dropped for the lack of one
+            awaitSize(appender.getProcessedMessages(), 3);
+            assertEquals(List.of("first", "urgent", "flush"), appender.getProcessedMessages());
+
+            // cleanup
+            appender.stop(1, SECONDS);
         }
 
         @Test
@@ -1510,8 +1577,8 @@ class AbstractLogDeliveryAppenderTest {
         @DisplayName("Never reports an event as dropped once it has already been handed to the worker")
         void testEventAlreadyHandedOffIsNotReportedDropped() throws Exception {
             // given: a configuration that fails to resolve, which the interface documents as legitimate for
-            // an implementation varying its settings at runtime. It is read again by the severity check
-            // append() runs *after* handing the event over, so that check is what fails here
+            // an implementation varying its settings at runtime. It is read again by the severity check run
+            // *after* the event is delivered, so that check is what fails here
             var configuration = new FlakyOptionsConfiguration();
             var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
@@ -1529,6 +1596,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.start();
             configuration.broken.set(true);
             assertDoesNotThrow(() -> appender.append(realLogEvent("delivered once")));
+            awaitSize(errors, 1);
             configuration.broken.set(false);
             appender.stop(2, SECONDS);
 
