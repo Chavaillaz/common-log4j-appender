@@ -39,6 +39,17 @@ The dependency is available in maven central (see badge for version):
 You usually don't depend on it directly as an application: instead, use (or create) an appender built on
 top of it, such as the two implementations linked above.
 
+On the module path, the library is the module `com.chavaillaz.appender`, which requires the Log4j2 and
+JSpecify APIs transitively. The module of an appender requires it, and opens the package of its plugin to
+Log4j2, which builds the plugin by reflection:
+
+```java
+module com.example.appender {
+    requires com.chavaillaz.appender;
+    opens com.example.appender to org.apache.logging.log4j.core;
+}
+```
+
 ## How it works
 
 Four types are involved, each to extend or implement, the conversion only to customize the documents:
