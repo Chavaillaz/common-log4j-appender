@@ -3,7 +3,6 @@ package com.chavaillaz.appender.log4j;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 
+import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
@@ -546,14 +546,14 @@ class AbstractBatchLogDeliveryTest {
     class HealthSignal {
 
         @Test
-        @DisplayName("Reports healthy before any transmission, unhealthy after a failure, healthy again once retried successfully")
-        void testIsHealthyReflectsLastTransmissionAttempt() throws Exception {
+        @DisplayName("Reports up before any transmission, retrying after a failure, up once retried, and down once closed")
+        void testHealthReflectsLastTransmissionAttempt() throws Exception {
             // given
             var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // then: nothing attempted yet
-            assertTrue(logDelivery.isHealthy());
+            assertEquals(DeliveryHealth.Status.UP, logDelivery.getHealth().status());
 
             // when: the only attempt so far fails
             logDelivery.bulkResult = false;
@@ -561,8 +561,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(Map.of());
             logDelivery.awaitPendingTransmissions();
 
-            // then
-            assertFalse(logDelivery.isHealthy());
+            // then: retried at the next flush, the configuration having no retry backoff
+            assertEquals(DeliveryHealth.Status.RETRYING, logDelivery.getHealth().status());
 
             // when: retried (via the next flush, since the documents are kept pending after the failure)
             // and this time succeeds
@@ -571,7 +571,13 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertTrue(logDelivery.isHealthy());
+            assertEquals(DeliveryHealth.Status.UP, logDelivery.getHealth().status());
+
+            // when
+            logDelivery.close();
+
+            // then
+            assertEquals(DeliveryHealth.Status.DOWN, logDelivery.getHealth().status());
         }
 
         @Test

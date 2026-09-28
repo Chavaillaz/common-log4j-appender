@@ -28,6 +28,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.TransmissionResult;
 
 /**
@@ -182,7 +183,7 @@ public class Batcher<T> {
 
     /**
      * Whether the last completed transmission attempt failed, so that a failing transport is not retried on
-     * every new element while batching (see {@link #isTransmissionFailing()}).
+     * every new element while batching, and for {@link #health()}.
      */
     private volatile boolean transmissionFailed;
 
@@ -191,6 +192,12 @@ public class Batcher<T> {
      * {@link #backoff} after the last failure, or {@link #NO_BACKOFF} if none is in effect.
      */
     private volatile long retryNotBeforeNanos = NO_BACKOFF;
+
+    /**
+     * The {@link System#nanoTime()} reading when the transport last accepted elements, or when this engine was
+     * built while it accepted none yet, for {@link #health()}.
+     */
+    private volatile long lastSuccessNanos = System.nanoTime();
 
     /**
      * Whether {@link #close(Duration)} was called, after which no element is accepted, since nothing would
@@ -535,14 +542,23 @@ public class Batcher<T> {
     }
 
     /**
-     * Whether the most recently completed transmission attempt failed, a health signal a caller can poll,
-     * from a readiness endpoint for instance.
+     * Takes the health of this engine, a signal a caller can poll, from a readiness endpoint for instance:
+     * {@link DeliveryHealth.Status#DOWN} once closed, {@link DeliveryHealth.Status#UP} while the last completed
+     * transmission attempt succeeded, and otherwise {@link DeliveryHealth.Status#BACKING_OFF} or
+     * {@link DeliveryHealth.Status#RETRYING}, whether a backoff delay holds the retry off or not.
      *
-     * @return {@code true} if the last completed transmission attempt failed and its elements are currently
-     *         being retried, {@code false} if it succeeded or none was attempted yet
+     * @return The current health, with the time since the transport last accepted elements
      */
-    public boolean isTransmissionFailing() {
-        return transmissionFailed;
+    public DeliveryHealth health() {
+        DeliveryHealth.Status status;
+        if (closed) {
+            status = DeliveryHealth.Status.DOWN;
+        } else if (!transmissionFailed) {
+            status = DeliveryHealth.Status.UP;
+        } else {
+            status = isBackingOff() ? DeliveryHealth.Status.BACKING_OFF : DeliveryHealth.Status.RETRYING;
+        }
+        return new DeliveryHealth(status, Duration.ofNanos(Math.max(0, System.nanoTime() - lastSuccessNanos)));
     }
 
     /**
@@ -551,7 +567,7 @@ public class Batcher<T> {
      *
      * @return {@code true} if a backoff delay is currently in effect
      */
-    public boolean isBackingOff() {
+    private boolean isBackingOff() {
         long notBefore = retryNotBeforeNanos;
         // The difference, not the readings, being the only way to order two System.nanoTime() values
         return notBefore != NO_BACKOFF && System.nanoTime() - notBefore < 0;
@@ -591,7 +607,7 @@ public class Batcher<T> {
 
     /**
      * Sends the pending elements (a partially filled batch). Intended to be called periodically to clean
-     * out pending elements. Does nothing while a backoff delay is in effect (see {@link #isBackingOff()}).
+     * out pending elements. Does nothing while a backoff delay is in effect (see {@link #health()}).
      */
     public void flush() {
         flush(false);
@@ -990,6 +1006,7 @@ public class Batcher<T> {
                 List<T> accepted = partition.accepted();
                 if (!accepted.isEmpty()) {
                     transmittedElements.add(accepted.size());
+                    lastSuccessNanos = System.nanoTime();
                     notifyListener(() -> listener.onSucceeded(accepted.size(), durationMillis));
                 }
                 notifyListener(() -> listener.onFailed(rejected.size(), partial.cause()));
@@ -1007,6 +1024,7 @@ public class Batcher<T> {
      */
     private void onTransmissionSuccess(int count, long durationMillis) {
         transmittedElements.add(count);
+        lastSuccessNanos = System.nanoTime();
         transmissionFailed = false;
         retryNotBeforeNanos = NO_BACKOFF;
         notifyListener(() -> listener.onSucceeded(count, durationMillis));

@@ -53,6 +53,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
@@ -1436,7 +1437,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: an appender discarding every event says so, where it used to report itself healthy with
             // nothing dropped, the failure showing in the status logger at startup alone
-            assertFalse(appender.isHealthy());
+            assertEquals(DeliveryHealth.Status.DOWN, appender.getHealth().status());
             assertEquals(5, appender.getMetrics().droppedDocuments());
             appender.stop(2, SECONDS);
 
@@ -1501,26 +1502,30 @@ class AbstractLogDeliveryAppenderTest {
     class HealthAndBackpressure {
 
         @Test
-        @DisplayName("isHealthy() is true before the handler is created, then delegates to it")
-        void testIsHealthyDelegatesToHandler() throws Exception {
+        @DisplayName("getHealth() is down until started, the one of its delivery while started, and down once stopped")
+        void testHealthDelegatesToHandlerWhileStarted() throws Exception {
             // given
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
-            // then: nothing created yet, nothing to be unhealthy about
-            assertTrue(appender.isHealthy());
+            // then: nothing created yet, so nothing delivered
+            assertEquals(DeliveryHealth.Status.DOWN, appender.getHealth().status());
 
             // when
             appender.start();
-            when(appender.getLogDeliveryHandler().isHealthy()).thenReturn(false);
+            var backingOff = new DeliveryHealth(DeliveryHealth.Status.BACKING_OFF, Duration.ofMinutes(2));
+            when(appender.getLogDeliveryHandler().getHealth()).thenReturn(backingOff);
 
             // then
-            assertFalse(appender.isHealthy());
+            assertEquals(backingOff, appender.getHealth());
 
-            // cleanup
+            // when
             appender.stop();
+
+            // then: down, since its last success still
+            assertEquals(new DeliveryHealth(DeliveryHealth.Status.DOWN, Duration.ofMinutes(2)), appender.getHealth());
         }
 
         @Test

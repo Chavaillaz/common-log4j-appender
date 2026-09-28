@@ -290,9 +290,12 @@ passed as second argument.
 Four methods also let you poll the current state of the pipeline directly, e.g. from a readiness
 endpoint or a metrics library, instead of only reacting to listener callbacks:
 
-- `AbstractLogDeliveryAppender#isHealthy()` — `false` once the most recent transmission attempt failed
-  (documents are not necessarily lost yet, just being retried), and for good once the appender started
-  without a delivery, its creation having failed, every event then being discarded.
+- `AbstractLogDeliveryAppender#getHealth()` — a `DeliveryHealth` telling what the pipeline does about its
+  last transmission attempt: `UP` once it succeeded, `RETRYING` or `BACKING_OFF` after a failure (documents
+  are not necessarily lost yet, just being retried, at once or when the retry backoff elapses), and `DOWN`
+  while the appender is not started, and for good once it started without a delivery, its creation having
+  failed, every event then being discarded. It also tells how long ago documents were last accepted, so that
+  an outage lasting too long is told apart from a single failed attempt.
 - `AbstractLogDeliveryAppender#isBackpressured()` — `true` once the internal queue feeding the background
   thread (bounded by `MaxQueuedEvents`) is full, meaning the very next logging event would evict the oldest
   queued one — an early warning before `onDocumentsDropped` actually fires.
@@ -307,6 +310,17 @@ endpoint or a metrics library, instead of only reacting to listener callbacks:
 ```java
 Gauge.builder("logs.pending", appender, a -> a.getMetrics().pendingDocuments()).register(registry);
 FunctionCounter.builder("logs.dropped", appender, a -> a.getMetrics().droppedDocuments()).register(registry);
+```
+
+A readiness check can tolerate a short outage that retries absorb, and report one lasting longer:
+
+```java
+DeliveryHealth health = appender.getHealth();
+boolean ready = switch (health.status()) {
+    case UP -> true;
+    case RETRYING, BACKING_OFF -> health.sinceLastSuccess().compareTo(Duration.ofMinutes(5)) < 0;
+    case DOWN -> false;
+};
 ```
 
 ## Configuration reference

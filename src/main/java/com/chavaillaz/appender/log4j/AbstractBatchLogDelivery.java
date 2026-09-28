@@ -12,6 +12,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.DocumentSizeEstimator;
@@ -309,10 +310,18 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * {@inheritDoc}
+     * <p>
+     * {@link DeliveryHealth.Status#DOWN} once closed, and otherwise what the last completed transmission attempt
+     * left: {@link DeliveryHealth.Status#UP} if it succeeded or none was made yet, and if it failed,
+     * {@link DeliveryHealth.Status#BACKING_OFF} while the retry backoff holds transmissions off,
+     * {@link DeliveryHealth.Status#RETRYING} once it no longer does.
+     *
+     * @return The current health, with the time since documents were last accepted, or since this delivery was
+     *         created while none were yet
      */
     @Override
-    public boolean isHealthy() {
-        return !batcher.isTransmissionFailing();
+    public DeliveryHealth getHealth() {
+        return batcher.health();
     }
 
     /**

@@ -1,0 +1,62 @@
+package com.chavaillaz.appender;
+
+import java.time.Duration;
+import java.util.Objects;
+
+/**
+ * The health of a delivery pipeline, for a readiness endpoint or an alert to poll: what it does about its last
+ * transmission attempt, and for how long it delivered nothing. Taken by
+ * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender#getHealth()} for a whole appender, or by
+ * {@link LogDelivery#getHealth()} for its delivery alone.
+ * <p>
+ * A failed attempt is retried: documents are only lost once reported through
+ * {@link LogDeliveryListener#onDocumentsDropped(java.util.List, String)}. An outage shows as a status other than
+ * {@link Status#UP} along with a time since the last success growing past what the application tolerates.
+ *
+ * @param status           What the pipeline does about its last transmission attempt
+ * @param sinceLastSuccess The time elapsed since documents were last accepted, or since the pipeline was created
+ *                         while none were yet: it grows while there is nothing to send too, which is why it is
+ *                         read along with the status
+ */
+public record DeliveryHealth(Status status, Duration sinceLastSuccess) {
+
+    /**
+     * Validates both components.
+     *
+     * @throws NullPointerException If one of them is {@code null}
+     */
+    public DeliveryHealth {
+        Objects.requireNonNull(status, "status must not be null");
+        Objects.requireNonNull(sinceLastSuccess, "sinceLastSuccess must not be null");
+    }
+
+    /**
+     * What a delivery pipeline does about its last transmission attempt.
+     */
+    public enum Status {
+
+        /**
+         * The last transmission attempt succeeded, or none was made yet.
+         */
+        UP,
+
+        /**
+         * The last transmission attempt failed, in whole or in part, and what failed is retried at the next
+         * opportunity: the next flush while batching, the next document otherwise.
+         */
+        RETRYING,
+
+        /**
+         * The last transmission attempt failed, and transmissions are held off until the retry backoff elapses
+         * (see {@link DeliveryOptions#retryBackoff()}).
+         */
+        BACKING_OFF,
+
+        /**
+         * Nothing is delivered: the pipeline is not started, could not be created, or is stopped.
+         */
+        DOWN
+
+    }
+
+}

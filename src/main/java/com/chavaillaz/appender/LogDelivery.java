@@ -44,15 +44,14 @@ public interface LogDelivery extends AutoCloseable {
     }
 
     /**
-     * Whether the most recently completed transmission attempt succeeded, a health signal a caller can poll,
-     * from a readiness endpoint for instance. A failed attempt is retried: documents are only lost once
-     * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}. Defaults to {@code true}
-     * for an implementation that does not track it.
+     * Takes the health of this delivery, for a readiness endpoint or an alert to poll (see
+     * {@link DeliveryHealth}). Defaults to {@link DeliveryHealth.Status#UP} for an implementation that does not
+     * track its transmissions, as if its last one had just succeeded.
      *
-     * @return {@code true} if the last completed transmission attempt succeeded, or none was attempted yet
+     * @return The current health
      */
-    default boolean isHealthy() {
-        return true;
+    default DeliveryHealth getHealth() {
+        return new DeliveryHealth(DeliveryHealth.Status.UP, Duration.ZERO);
     }
 
     /**

@@ -28,6 +28,7 @@ import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.TransmissionResult;
 
 /**
@@ -132,31 +133,44 @@ class BatcherTest {
     }
 
     @Test
-    @DisplayName("Reports itself as failing after a failed transmission, and healthy again once one succeeds")
-    void testIsTransmissionFailingReflectsLastAttempt() throws Exception {
+    @DisplayName("Reports itself retrying after a failed transmission, up once one succeeds, and down once closed")
+    void testHealthReflectsTheLastAttempt() throws Exception {
         // given: fails until told to succeed
         var succeeding = new AtomicBoolean(false);
         Batcher<String> batcher = batcher(1,
                 elements -> completedFuture(succeeding.get() ? TransmissionResult.success() : TransmissionResult.failure(null)),
                 BatcherListener.noop());
+        long builtBy = System.nanoTime();
 
         // then: nothing attempted yet
-        assertFalse(batcher.isTransmissionFailing());
+        assertEquals(DeliveryHealth.Status.UP, batcher.health().status());
 
         // when: the only attempt so far fails
         batcher.add(List.of("poison"));
         batcher.awaitPendingTransmissions();
 
-        // then
-        assertTrue(batcher.isTransmissionFailing());
+        // then: retried at the next opportunity, without a success since the engine was built
+        long checkedAfter = System.nanoTime();
+        DeliveryHealth failing = batcher.health();
+        assertEquals(DeliveryHealth.Status.RETRYING, failing.status());
+        assertTrue(failing.sinceLastSuccess().toNanos() >= checkedAfter - builtBy);
 
         // when: retried and this time succeeds
         succeeding.set(true);
+        long retriedAfter = System.nanoTime();
         batcher.flush();
         batcher.awaitPendingTransmissions();
 
+        // then: counted from that success
+        DeliveryHealth recovered = batcher.health();
+        assertEquals(DeliveryHealth.Status.UP, recovered.status());
+        assertTrue(recovered.sinceLastSuccess().toNanos() <= System.nanoTime() - retriedAfter);
+
+        // when
+        batcher.close();
+
         // then
-        assertFalse(batcher.isTransmissionFailing());
+        assertEquals(DeliveryHealth.Status.DOWN, batcher.health().status());
     }
 
     @Test
@@ -561,7 +575,7 @@ class BatcherTest {
         // and: what is left is exactly what the cap allows to be kept
         batcher.flush();
         batcher.awaitPendingTransmissions();
-        assertFalse(batcher.isTransmissionFailing());
+        assertEquals(DeliveryHealth.Status.UP, batcher.health().status());
     }
 
     @Test
@@ -889,7 +903,7 @@ class BatcherTest {
 
         // then: the next flush is held off rather than immediately hammering the failing transport again
         assertEquals(1, attempts.get());
-        assertTrue(batcher.isBackingOff());
+        assertEquals(DeliveryHealth.Status.BACKING_OFF, batcher.health().status());
         batcher.flush();
         batcher.awaitPendingTransmissions();
         assertEquals(1, attempts.get(), "The retry should have been held off by the backoff");
@@ -919,19 +933,19 @@ class BatcherTest {
         batcher.add(List.of("a"));
         batcher.flush();
         batcher.awaitPendingTransmissions();
-        assertTrue(batcher.isBackingOff());
+        assertEquals(DeliveryHealth.Status.BACKING_OFF, batcher.health().status());
 
         // when
         batcher.close();
 
         // then: the second attempt happened despite the backoff, and succeeded
         assertEquals(2, attempts.get());
-        assertFalse(batcher.isTransmissionFailing());
+        assertEquals(1, batcher.metrics().transmittedElements());
     }
 
     private static void awaitBackoffElapsed(Batcher<String> batcher) throws InterruptedException {
         long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
-        while (batcher.isBackingOff()) {
+        while (batcher.health().status() == DeliveryHealth.Status.BACKING_OFF) {
             if (System.nanoTime() > deadlineNanos) {
                 throw new AssertionError("Timed out waiting for the backoff to elapse");
             }
@@ -1338,7 +1352,7 @@ class BatcherTest {
         awaitDropped(dropped, 1);
         assertEquals(List.of("a"), dropped);
         assertEquals(List.of(), transmitted);
-        assertFalse(batcher.isTransmissionFailing());
+        assertEquals(DeliveryHealth.Status.UP, batcher.health().status());
     }
 
     @Test

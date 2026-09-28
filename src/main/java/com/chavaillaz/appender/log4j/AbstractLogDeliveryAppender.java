@@ -32,6 +32,7 @@ import org.apache.logging.log4j.message.AsynchronouslyFormattable;
 import org.apache.logging.log4j.message.Message;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
@@ -212,6 +213,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * one cannot be read.
      */
     private final @Nullable Duration initialCloseTimeout;
+
+    /**
+     * The {@link System#nanoTime()} reading when this appender was created, which {@link #getHealth()} counts
+     * the time without a success from until a delivery exists.
+     */
+    private final long createdNanos = System.nanoTime();
 
     /**
      * Creates a new appender transmitting logs, without a layout: each event is sent as the document its
@@ -602,15 +609,21 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Whether the most recent transmission attempt of the delivery succeeded (see
-     * {@link LogDelivery#isHealthy()}): {@code false} once started without a delivery, its creation having
-     * failed and every event being discarded, and {@code true} before the appender is started.
+     * Takes the health of this appender, the one of its delivery while it runs (see
+     * {@link LogDelivery#getHealth()}), and {@link DeliveryHealth.Status#DOWN} otherwise: before it starts,
+     * once stopped, and for good once started without a delivery, its creation having failed and every event
+     * being discarded.
      *
-     * @return The current health of the log delivery pipeline
+     * @return The current health of the log delivery pipeline, with the time since documents were last
+     *         accepted, or since this appender was created while none were yet
      */
-    public boolean isHealthy() {
+    public DeliveryHealth getHealth() {
         LogDelivery handler = logDeliveryHandler;
-        return handler != null ? handler.isHealthy() : !isStarted();
+        if (handler == null) {
+            return new DeliveryHealth(DeliveryHealth.Status.DOWN, Duration.ofNanos(System.nanoTime() - createdNanos));
+        }
+        DeliveryHealth health = handler.getHealth();
+        return isStarted() ? health : new DeliveryHealth(DeliveryHealth.Status.DOWN, health.sinceLastSuccess());
     }
 
     /**
