@@ -132,7 +132,9 @@ DeliveryOptions options = DeliveryOptions.builder()
 `getDeliveryOptions()` is read on the path taken by every document, not once at construction, so an
 implementation can vary a limit at runtime by returning a different instance — return a stored one rather
 than building a new one on every call. Use `options.with().maxPendingDocuments(50_000).build()` to derive
-one instance from another without restating the rest.
+one instance from another without restating the rest. A few settings are read once all the same, when the
+appender or its delivery is created: `FlushInterval`, `MaxConcurrentTransmissions`, `MaxQueuedEvents`,
+`RetryBackoff` and `MaxRetryBackoff`, along with whether a periodic flush is scheduled at all.
 
 ### 2. Delivery
 

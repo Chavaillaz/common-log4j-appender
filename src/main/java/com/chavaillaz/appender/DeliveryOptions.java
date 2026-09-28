@@ -13,8 +13,14 @@ import org.jspecify.annotations.Nullable;
  * {@link LogConfiguration}, which keeps what identifies the application producing the logs.
  * <p>
  * Instances are created through {@link #builder()}, or derived from another one through {@link #with()}, every
- * setting having a usable default (see {@link #defaults()}). {@link LogConfiguration#getDeliveryOptions()} is
- * read for every document, so that a limit can vary at runtime: return a stored instance, not a new one.
+ * setting having a usable default (see {@link #defaults()}).
+ * <p>
+ * {@link LogConfiguration#getDeliveryOptions()} is read again each time a setting is used, so that a
+ * configuration can vary one at runtime by returning another instance, stored rather than built on every call.
+ * A few are read once all the same: {@code flushInterval}, {@code maxConcurrentTransmissions},
+ * {@code maxQueuedEvents}, {@code retryBackoff} and {@code maxRetryBackoff}, when the appender or its delivery
+ * is created, along with whether a periodic flush is scheduled at all, which {@code flushThreshold} and
+ * {@code retryBackoff} decide when the appender starts.
  * <p>
  * Every setting is validated when built, a value out of its range throwing an {@link IllegalArgumentException}
  * and a missing one a {@link NullPointerException}, so that a misconfiguration fails the configuration rather

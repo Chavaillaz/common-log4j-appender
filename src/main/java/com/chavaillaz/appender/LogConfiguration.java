@@ -39,8 +39,9 @@ public interface LogConfiguration {
      * Gets the settings governing how logs are batched, retried and shipped, defaulting to
      * {@link DeliveryOptions#defaults()}.
      * <p>
-     * Read for every document rather than once, so that an implementation can vary a limit at runtime by
-     * returning another instance: return a stored instance rather than building one on every call.
+     * Read again each time a setting is used rather than once, so that an implementation can vary most of them
+     * at runtime by returning another instance (see {@link DeliveryOptions}): return a stored instance rather
+     * than building one on every call.
      *
      * @return The delivery options
      */
