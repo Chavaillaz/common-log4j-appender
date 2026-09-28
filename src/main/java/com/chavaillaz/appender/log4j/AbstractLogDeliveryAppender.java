@@ -68,8 +68,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * <p>
      * Daemon threads, like the background threads of Log4j2: neither ends before
      * {@link #stop(long, TimeUnit)}, which only the shutdown hook of Log4j2 calls, once the JVM starts shutting
-     * down, which a live non-daemon thread prevents. Nor do they inherit the inheritable thread-locals of the
-     * thread creating them, which they would keep reachable until the appender stops.
+     * down, which a live non-daemon thread prevents. Nor do they inherit the inheritable thread-locals and the
+     * context class loader of the thread creating them, which they would keep reachable until the appender
+     * stops, the system class loader being theirs instead.
      *
      * @param name The thread name prefix
      * @return The thread factory to use
@@ -185,7 +186,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final BlockingQueue<Discard> pendingDiscards;
 
     /**
-     * Reports {@link #pendingDiscards} on a virtual thread, one notification per reason.
+     * Reports {@link #pendingDiscards} on a virtual thread, one notification per reason, which inherits
+     * neither the inheritable thread-locals nor the context class loader of the thread discarding the first
+     * event (see {@link #namedThreadFactory(String)}).
      */
     private final ExecutorService discardReporter = Executors.newSingleThreadExecutor(
             Thread.ofVirtual().name("log-delivery-discard-reporter").inheritInheritableThreadLocals(false).factory());
@@ -262,7 +265,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         if (logDeliveryHandler != null) {
             // Created here, by the thread applying the configuration, rather than by the first thread to log,
-            // whose context class loader it would keep until the appender stops
+            // whose thread group and priority it would take
             workerExecutor.prestartCoreThread();
             startPeriodicFlush();
         }

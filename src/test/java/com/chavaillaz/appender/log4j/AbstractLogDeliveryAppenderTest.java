@@ -1013,6 +1013,51 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Reports discards on a thread that does not take after the first thread to have one")
+        void testDiscardReporterDoesNotTakeAfterTheFirstThreadToHaveADiscard() throws Exception {
+            // given: the same full-queue setup, with a listener reporting the context it runs with
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var requestContext = new InheritableThreadLocal<String>();
+            var requestClassLoader = new ClassLoader() {
+            };
+            var reporterContext = new CompletableFuture<List<Object>>();
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    reporterContext.complete(Arrays.asList(
+                            requestContext.get(), Thread.currentThread().getContextClassLoader()));
+                }
+            });
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+
+            // when: the first discard happens on a thread carrying a context of its own, as a request thread of
+            // a web application does, with an inheritable thread-local and the class loader of the application
+            Thread.ofPlatform().start(() -> {
+                requestContext.set("request-1");
+                Thread.currentThread().setContextClassLoader(requestClassLoader);
+                appender.append(realLogEvent("C")); // evicts B
+            }).join();
+
+            // then: the reporter runs until the appender stops, so a context it took from that thread would be
+            // kept alive as long, the class loader of an undeployed application included
+            var context = reporterContext.get(5, SECONDS);
+            assertNull(context.get(0), "The reporter should not see the inheritable thread-locals of that thread");
+            assertNotSame(requestClassLoader, context.get(1), "The reporter should not use the class loader of that thread");
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+        }
+
+        @Test
         @DisplayName("Reports an event the worker shut down under while it was being queued, rather than stranding it")
         void testEventQueuedAsTheWorkerShutsDownIsReported() throws Exception {
             // given: a worker queue claiming to be full, which leaves the event to the policy discarding the
