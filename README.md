@@ -271,8 +271,8 @@ September 2026 go to `dead-letters-2026-09-28.ndjson`, so that each day can be r
 on its own. A day starts at midnight in the default time zone of the system, or in the one of the `Clock`
 passed as second argument.
 
-Three methods also let you poll the current state of the pipeline directly, e.g. from a readiness
-endpoint, instead of only reacting to listener callbacks:
+Four methods also let you poll the current state of the pipeline directly, e.g. from a readiness
+endpoint or a metrics library, instead of only reacting to listener callbacks:
 
 - `AbstractLogDeliveryAppender#isHealthy()` — `false` once the most recent transmission attempt failed
   (documents are not necessarily lost yet, just being retried).
@@ -282,6 +282,15 @@ endpoint, instead of only reacting to listener callbacks:
 - `AbstractLogDeliveryAppender#getQueuedEventCount()` — how many events are currently in that queue, out of
   `MaxQueuedEvents`. The graduated version of the above: exported as a gauge, it shows the queue trending
   towards full while there is still time to react.
+- `AbstractLogDeliveryAppender#getMetrics()` — a `DeliveryMetrics` snapshot of the whole pipeline: the events
+  queued, the documents pending and their estimated size (under a byte limit), the requests in flight, as
+  gauges, and the documents transmitted, the failed attempts and the documents dropped for whatever reason,
+  those the queue discarded included, as counters that only ever grow.
+
+```java
+Gauge.builder("logs.pending", appender, a -> a.getMetrics().pendingDocuments()).register(registry);
+FunctionCounter.builder("logs.dropped", appender, a -> a.getMetrics().droppedDocuments()).register(registry);
+```
 
 ## Configuration reference
 

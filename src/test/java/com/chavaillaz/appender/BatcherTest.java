@@ -1232,6 +1232,46 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Takes a snapshot of what it holds right now, and of what it did so far")
+    void testMetricsTrackWhatItHoldsAndDid() throws Exception {
+        // given: a first request left unanswered until the test answers it, and a failing next one
+        var unanswered = new CompletableFuture<TransmissionResult<String>>();
+        var requests = new AtomicInteger();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .maxPendingElements(() -> 3)
+                .elementSize(element -> 10)
+                .maxPendingBytes(() -> 1_000L)
+                .transport(elements -> requests.incrementAndGet() == 1
+                        ? unanswered
+                        : completedFuture(TransmissionResult.failure(null)))
+                .build();
+
+        // when: two elements are pending
+        batcher.add(List.of("a", "b"));
+
+        // then
+        assertEquals(new Batcher.Metrics(2, 20, 0, 0, 0, 0), batcher.metrics());
+
+        // when: they are sent, the request left unanswered, then answered
+        batcher.flush();
+        assertEquals(new Batcher.Metrics(0, 0, 1, 0, 0, 0), batcher.metrics());
+        unanswered.complete(TransmissionResult.success());
+        batcher.awaitPendingTransmissions();
+
+        // then
+        assertEquals(new Batcher.Metrics(0, 0, 0, 2, 0, 0), batcher.metrics());
+
+        // when: four more push the oldest past the pending cap of three, and the other three fail once
+        batcher.add(List.of("c", "d", "e", "f"));
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: the three are pending again, counted with the failed attempt and the element discarded
+        assertEquals(new Batcher.Metrics(3, 30, 0, 2, 1, 1), batcher.metrics());
+    }
+
+    @Test
     @DisplayName("Logs the cause of every failure the transport returns, before any element is given up on")
     void testReturnedFailureIsLoggedWithItsCause() throws Exception {
         // given: a transport reporting its failure rather than throwing it, the way the README tells one to,

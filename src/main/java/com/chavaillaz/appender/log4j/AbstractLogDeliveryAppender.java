@@ -20,6 +20,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.LongAdder;
 
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
@@ -33,6 +34,7 @@ import org.apache.logging.log4j.message.AsynchronouslyFormattable;
 import org.apache.logging.log4j.message.Message;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
@@ -187,6 +189,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * that a burst of discards queues a single report.
      */
     private final AtomicBoolean discardReportQueued = new AtomicBoolean();
+
+    /**
+     * Events discarded before reaching the delivery, reported or not, for {@link #getMetrics()}.
+     */
+    private final LongAdder discardedEvents = new LongAdder();
 
     /**
      * The close timeout this appender was built with, used by {@link #stop(long, TimeUnit)} when the current
@@ -417,6 +424,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param reason A short, human-readable explanation of why it was discarded
      */
     private void discard(LogEvent event, String reason) {
+        discardedEvents.increment();
         if (!pendingDiscards.offer(new Discard(event, reason))) {
             // The listener cannot keep up with the discards, which waiting for it would pass on to the application
             error("Unable to report a discarded logging event, " + pendingDiscards.size()
@@ -565,6 +573,21 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
+     * Takes a snapshot of this appender and of its delivery, for a metrics library to poll (see
+     * {@link DeliveryMetrics}): the dropped documents count the events this appender discarded as well.
+     *
+     * @return The current metrics, those of the delivery being {@code 0} before it is created, or if it could
+     *         not be
+     */
+    public DeliveryMetrics getMetrics() {
+        LogDelivery handler = logDeliveryHandler;
+        DeliveryMetrics delivery = handler != null ? handler.getMetrics() : DeliveryMetrics.NONE;
+        return new DeliveryMetrics(getQueuedEventCount(), delivery.pendingDocuments(), delivery.pendingBytes(),
+                delivery.transmissionsInFlight(), delivery.transmittedDocuments(), delivery.failedTransmissions(),
+                delivery.droppedDocuments() + discardedEvents.sum());
+    }
+
+    /**
      * Stops accepting new logging events, waits for already-accepted ones to be processed and for discarded ones
      * to be reported, then flushes and closes the delivery handler, so logs accepted just before shutdown are
      * not lost. Each step shares one budget, getting what the steps before it left.
@@ -598,6 +621,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                         abandonedEvents.add(task.event());
                     }
                 }
+                discardedEvents.add(abandonedEvents.size());
                 reportDropped(abandonedEvents, "appender stopped before the event could be processed");
             }
         } catch (InterruptedException e) {

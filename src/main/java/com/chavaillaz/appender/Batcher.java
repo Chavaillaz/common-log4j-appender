@@ -18,6 +18,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
@@ -173,6 +174,21 @@ public class Batcher<T> {
      * {@link #awaitPendingTransmissions()} wait for a listener.
      */
     private final Semaphore dropNotificationPermits = new Semaphore(MAX_CONCURRENT_DROP_NOTIFICATIONS);
+
+    /**
+     * Elements the transport accepted, for {@link #metrics()}.
+     */
+    private final LongAdder transmittedElements = new LongAdder();
+
+    /**
+     * Transmission attempts that failed, in whole or in part, for {@link #metrics()}.
+     */
+    private final LongAdder failedTransmissions = new LongAdder();
+
+    /**
+     * Elements discarded for good, whatever the reason, for {@link #metrics()}.
+     */
+    private final LongAdder droppedElements = new LongAdder();
 
     /**
      * Whether the last completed transmission attempt failed, so that a failing transport is not retried on
@@ -507,7 +523,7 @@ public class Batcher<T> {
             log.warn("Discarding {} {}(s) submitted after this engine was closed", elements.size(), elementNoun);
             List<T> copy = List.copyOf(elements);
             // On the calling thread, the executor being shut down by then
-            notifyListener(() -> listener.onDropped(copy, "submitted after close"));
+            drop(copy, "submitted after close");
             return;
         }
         // Off the calling thread where possible (see notifyDropped())
@@ -545,6 +561,38 @@ public class Batcher<T> {
         long notBefore = retryNotBeforeNanos;
         // The difference, not the readings, being the only way to order two System.nanoTime() values
         return notBefore != NO_BACKOFF && System.nanoTime() - notBefore < 0;
+    }
+
+    /**
+     * A snapshot of this engine, for a metrics library to poll.
+     *
+     * @param pendingElements       Elements in the pending batch, waiting to be transmitted or retried
+     * @param pendingBytes          Estimated size of the pending batch, {@code 0} without an {@code elementSize}
+     * @param transmissionsInFlight Transmissions dispatched and not completed yet
+     * @param transmittedElements   Elements the transport accepted since this engine was built
+     * @param failedTransmissions   Transmission attempts that failed, in whole or in part, since then
+     * @param droppedElements       Elements discarded for good since then, whatever the reason
+     */
+    public record Metrics(int pendingElements, long pendingBytes, int transmissionsInFlight,
+                          long transmittedElements, long failedTransmissions, long droppedElements) {
+
+    }
+
+    /**
+     * Takes a snapshot of this engine: what it holds right now, and what it did since it was built.
+     *
+     * @return The current metrics
+     */
+    public Metrics metrics() {
+        int pendingElements;
+        long pendingSize;
+        synchronized (this) {
+            pendingElements = batch.size();
+            pendingSize = pendingBytes;
+        }
+        int inFlight = Math.max(0, maxConcurrentTransmissions - transmissionPermits.availablePermits());
+        return new Metrics(pendingElements, pendingSize, inFlight,
+                transmittedElements.sum(), failedTransmissions.sum(), droppedElements.sum());
     }
 
     /**
@@ -796,35 +844,44 @@ public class Batcher<T> {
         // Outside the monitor, which accumulating the next batch needs, and directly: this runs where a
         // transmission completed, or where a dispatch failed while closing
         if (abandoned != null) {
-            List<T> lost = abandoned;
             log.error("Discarding {} {}(s) put back after this engine was closed, they were never successfully transmitted",
-                    lost.size(), elementNoun);
-            notifyListener(() -> listener.onDropped(lost, "still pending when closed"));
+                    abandoned.size(), elementNoun);
+            drop(abandoned, "still pending when closed");
             return;
         }
         if (discarded != null) {
-            List<T> trimmedOut = discarded;
             log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while retrying",
-                    trimmedOut.size(), elementNoun, elementNoun, maxPending);
-            notifyListener(() -> listener.onDropped(trimmedOut, "maximum pending " + elementNoun + "s exceeded"));
+                    discarded.size(), elementNoun, elementNoun, maxPending);
+            drop(discarded, "maximum pending " + elementNoun + "s exceeded");
         }
         if (oversized != null) {
-            List<T> tooHeavy = oversized;
-            notifyListener(() -> listener.onDropped(tooHeavy, "maximum pending bytes exceeded"));
+            drop(oversized, "maximum pending bytes exceeded");
         }
     }
 
     /**
-     * Notifies {@link #listener} of dropped elements on a virtual thread, so that a slow listener does not
-     * stall {@link #add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS} run at once:
-     * past that, or once the executor is shut down, the notification runs on the calling thread, so that a
-     * slow listener cannot pile notifications, and the elements they hold, up without bound under the very
-     * overload causing them. Not tracked by {@link #transmissionPermits}, so closing does not wait for it.
+     * Counts dropped elements, and notifies {@link #listener} of them on the calling thread.
+     *
+     * @param elements The elements being discarded
+     * @param reason   A short, human-readable explanation of why they were discarded
+     */
+    private void drop(List<T> elements, String reason) {
+        droppedElements.add(elements.size());
+        notifyListener(() -> listener.onDropped(elements, reason));
+    }
+
+    /**
+     * Counts dropped elements, and notifies {@link #listener} of them on a virtual thread, so that a slow
+     * listener does not stall {@link #add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS}
+     * run at once: past that, or once the executor is shut down, the notification runs on the calling thread, so
+     * that a slow listener cannot pile notifications, and the elements they hold, up without bound under the
+     * very overload causing them. Not tracked by {@link #transmissionPermits}, so closing does not wait for it.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded
      */
     private void notifyDropped(List<T> elements, String reason) {
+        droppedElements.add(elements.size());
         if (!dropNotificationPermits.tryAcquire()) {
             // Every slot is held by a listener yet to return: backpressure rather than one more thread
             notifyListener(() -> listener.onDropped(elements, reason));
@@ -1076,6 +1133,7 @@ public class Batcher<T> {
                 transmissionFailed = true;
                 List<T> accepted = partition.accepted();
                 if (!accepted.isEmpty()) {
+                    transmittedElements.add(accepted.size());
                     notifyListener(() -> listener.onSucceeded(accepted.size(), durationMillis));
                 }
                 notifyListener(() -> listener.onFailed(rejected.size(), partial.cause()));
@@ -1092,6 +1150,7 @@ public class Batcher<T> {
      * @param durationMillis The time the transmission took, in milliseconds
      */
     private void onTransmissionSuccess(int count, long durationMillis) {
+        transmittedElements.add(count);
         transmissionFailed = false;
         retryNotBeforeNanos = NO_BACKOFF;
         notifyListener(() -> listener.onSucceeded(count, durationMillis));
@@ -1163,6 +1222,7 @@ public class Batcher<T> {
      * @param cause         The exception responsible for the failure, or {@code null} if none was reported
      */
     private void onTransmissionFailure(List<T> elements, int failureStreak, @Nullable Throwable cause) {
+        failedTransmissions.increment();
         int maxFailures = readLimit(maxConsecutiveFailures, 0, "the maximum consecutive failures");
         int newFailureStreak = failureStreak + 1;
         if (maxFailures > 0 && newFailureStreak >= maxFailures) {
@@ -1170,7 +1230,7 @@ public class Batcher<T> {
                     elements.size(), elementNoun, newFailureStreak, cause);
             // Directly, under the permit the transmission still holds, so that awaitPendingTransmissions()
             // waits for it too
-            notifyListener(() -> listener.onDropped(List.copyOf(elements), "maximum consecutive transmission failures exceeded"));
+            drop(List.copyOf(elements), "maximum consecutive transmission failures exceeded");
             return;
         }
 
@@ -1274,7 +1334,7 @@ public class Batcher<T> {
         }
         log.error("Discarding {} {}(s) still pending once closed, they were never successfully transmitted",
                 remaining.size(), elementNoun);
-        notifyListener(() -> listener.onDropped(remaining, "still pending when closed"));
+        drop(remaining, "still pending when closed");
     }
 
     /**

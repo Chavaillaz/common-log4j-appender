@@ -56,6 +56,16 @@ public interface LogDelivery extends AutoCloseable {
     }
 
     /**
+     * Takes a snapshot of this delivery, for a metrics library to poll (see {@link DeliveryMetrics}). Defaults to
+     * {@link DeliveryMetrics#NONE} for an implementation that does not track them.
+     *
+     * @return The current metrics, {@link DeliveryMetrics#queuedEvents()} being left to the appender
+     */
+    default DeliveryMetrics getMetrics() {
+        return DeliveryMetrics.NONE;
+    }
+
+    /**
      * Closes this delivery, waiting at most the given time for what it still has to send, so that an appender
      * stopping can hand it what is left of its own budget. Defaults to {@link #close()}, for an implementation
      * with nothing to wait for.

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 
+import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -564,6 +565,30 @@ class AbstractBatchLogDeliveryTest {
 
             // then
             assertTrue(logDelivery.isHealthy());
+        }
+
+        @Test
+        @DisplayName("Reports its pending documents, their estimated size under a byte limit, and what it sent")
+        void testMetricsReportTheDocumentsItHoldsAndSent() throws Exception {
+            // given
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .maxPendingBytes(1_000).build();
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 100);
+
+            // when
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.send(Map.of("id", 2));
+
+            // then
+            assertEquals(new DeliveryMetrics(0, 2, 200, 0, 0, 0, 0), logDelivery.getMetrics());
+
+            // when
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertEquals(new DeliveryMetrics(0, 0, 0, 0, 2, 0, 0), logDelivery.getMetrics());
         }
 
     }

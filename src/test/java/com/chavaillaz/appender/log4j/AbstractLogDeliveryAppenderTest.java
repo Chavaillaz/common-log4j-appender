@@ -54,6 +54,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
@@ -1332,6 +1333,37 @@ class AbstractLogDeliveryAppenderTest {
 
             // cleanup
             appender.stop();
+        }
+
+        @Test
+        @DisplayName("Adds what its queue holds and discarded to the metrics of its delivery")
+        void testMetricsCombineTheQueueWithTheDelivery() throws Exception {
+            // given: a one-slot queue behind a blocked worker, and a delivery with metrics of its own
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            when(appender.getLogDeliveryHandler().getMetrics()).thenReturn(new DeliveryMetrics(0, 5, 500, 2, 40, 3, 7));
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(LogDeliveryListener.NOOP);
+
+            // then: nothing to report before the delivery exists
+            assertEquals(DeliveryMetrics.NONE, appender.getMetrics());
+
+            // when: A occupies the worker, B fills the queue, and C evicts B
+            appender.start();
+            appender.append(mockLogEvent());
+            awaitEmptyQueue(appender);
+            appender.append(mockLogEvent());
+            appender.append(mockLogEvent());
+
+            // then: the queue and the event it discarded come on top of what the delivery reports
+            assertEquals(new DeliveryMetrics(1, 5, 500, 2, 40, 3, 8), appender.getMetrics());
+
+            // cleanup
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
         }
 
         @Test

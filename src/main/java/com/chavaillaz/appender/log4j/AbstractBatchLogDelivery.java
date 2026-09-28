@@ -16,6 +16,7 @@ import org.jspecify.annotations.Nullable;
 import com.chavaillaz.appender.BackoffPolicy;
 import com.chavaillaz.appender.Batcher;
 import com.chavaillaz.appender.BatcherListener;
+import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.DocumentSizeEstimator;
 import com.chavaillaz.appender.LogConfiguration;
@@ -296,6 +297,21 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     @Override
     public boolean isHealthy() {
         return !batcher.isTransmissionFailing();
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * The pending size is only estimated while a byte limit is in effect (see {@link #getMaxPendingBytes()}),
+     * and {@code 0} otherwise.
+     *
+     * @return The current metrics
+     */
+    @Override
+    public DeliveryMetrics getMetrics() {
+        Batcher.Metrics metrics = batcher.metrics();
+        return new DeliveryMetrics(0, metrics.pendingElements(), metrics.pendingBytes(), metrics.transmissionsInFlight(),
+                metrics.transmittedElements(), metrics.failedTransmissions(), metrics.droppedElements());
     }
 
     /**
