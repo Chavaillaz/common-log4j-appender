@@ -369,7 +369,8 @@ to split it further.
   answers can't hold up the JVM past that budget. Anything still pending once it is spent — a failing final
   transmission's documents, or documents a stuck transmission never gave back — is reported through
   `onDocumentsDropped` rather than discarded along with the appender, so a dead-letter sink still gets its
-  last chance at them.
+  last chance at them. A transmission answering after that may still deliver its documents, which a
+  dead-letter sink then holds as well.
 - **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
   the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected

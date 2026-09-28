@@ -15,6 +15,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -186,6 +187,13 @@ public class Batcher<T> {
      * Elements discarded for good, whatever the reason, for {@link #metrics()}.
      */
     private final LongAdder droppedElements = new LongAdder();
+
+    /**
+     * The transmissions dispatched and not handled yet, so that closing can report those still in flight once
+     * its wait is over. Whoever removes one first handles its elements: its result, a dispatch failing to
+     * start it, or the close, after which its result is ignored.
+     */
+    private final Set<InFlight<T>> inFlight = ConcurrentHashMap.newKeySet();
 
     /**
      * Whether the last completed transmission attempt failed, so that a failing transport is not retried on
@@ -646,6 +654,22 @@ public class Batcher<T> {
     }
 
     /**
+     * The elements of a transmission dispatched and not handled yet (see {@link #inFlight}), compared by
+     * identity, two requests being free to carry equal elements.
+     *
+     * @param <T> The type of element transmitted
+     */
+    private static final class InFlight<T> {
+
+        private final List<T> elements;
+
+        private InFlight(List<T> elements) {
+            this.elements = elements;
+        }
+
+    }
+
+    /**
      * Reads the failure streak of each element in turn out of the runs covering them, the elements past the
      * last run counting none, so that runs not covering every element exactly cannot lose any of them.
      */
@@ -1074,11 +1098,17 @@ public class Batcher<T> {
             return;
         }
 
+        InFlight<T> transmission = new InFlight<>(elements);
+        // Before it starts, so that a close looking for what is in flight cannot miss it
+        inFlight.add(transmission);
         try {
-            transmissionExecutor.execute(() -> transmit(elements, runs));
+            transmissionExecutor.execute(() -> transmit(transmission, runs));
         } catch (RejectedExecutionException e) {
             transmissionPermits.release();
-            requeue(elements, runs);
+            // Unless the close shutting the executor down reported them already
+            if (inFlight.remove(transmission)) {
+                requeue(elements, runs);
+            }
         }
     }
 
@@ -1107,10 +1137,11 @@ public class Batcher<T> {
      * if the transport completed it before returning, or on a virtual thread of its own otherwise, never on
      * the thread of the client completing it.
      *
-     * @param elements The chunk to transmit
-     * @param runs     The failure streaks of its elements, run by run
+     * @param transmission The chunk to transmit, registered as in flight
+     * @param runs         The failure streaks of its elements, run by run
      */
-    private void transmit(List<T> elements, List<Run> runs) {
+    private void transmit(InFlight<T> transmission, List<Run> runs) {
+        List<T> elements = transmission.elements;
         long start = System.nanoTime();
         CompletableFuture<TransmissionResult<T>> future;
         try {
@@ -1124,6 +1155,11 @@ public class Batcher<T> {
         }
         BiConsumer<TransmissionResult<T>, Throwable> handler = (result, throwable) -> {
             try {
+                if (!inFlight.remove(transmission)) {
+                    log.debug("Ignoring the result of a transmission of {} {}(s) that closing reported as dropped already",
+                            elements.size(), elementNoun);
+                    return;
+                }
                 long durationMillis = (System.nanoTime() - start) / 1_000_000;
                 handleResult(elements, runs, normalizeResult(elements, result, throwable), durationMillis);
             } catch (Throwable e) {
@@ -1399,7 +1435,8 @@ public class Batcher<T> {
      * <p>
      * What is still pending once that wait is over, put back by a failing final transmission or held by one
      * not completed in time, is reported through {@link BatcherListener#onDropped(List, String)}, giving a
-     * dead-letter sink a last chance to save it.
+     * dead-letter sink a last chance to save it. A transmission completing later has its result ignored, its
+     * elements being possibly delivered as well as reported.
      *
      * @param timeout The maximum time to wait for pending transmissions to complete, or {@code null} to wait
      *                indefinitely, which is only safe for a transport always completing its future
@@ -1422,7 +1459,28 @@ public class Batcher<T> {
         } finally {
             transmissionExecutor.shutdown();
             reportRemainingAsDropped();
+            reportInFlightAsDropped();
         }
+    }
+
+    /**
+     * Reports the elements of the transmissions still in flight once closed as dropped, on the calling thread,
+     * rather than losing them along with a transport that never answers.
+     */
+    private void reportInFlightAsDropped() {
+        List<T> abandoned = new ArrayList<>();
+        for (InFlight<T> transmission : inFlight) {
+            // Unless its result, arriving meanwhile, removed it first to handle them itself
+            if (inFlight.remove(transmission)) {
+                abandoned.addAll(transmission.elements);
+            }
+        }
+        if (abandoned.isEmpty()) {
+            return;
+        }
+        log.error("Discarding {} {}(s) whose transmission was still in flight once closed, they may still be delivered",
+                abandoned.size(), elementNoun);
+        drop(Collections.unmodifiableList(abandoned), "still in flight when closed");
     }
 
     /**

@@ -347,8 +347,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * one included: a subclass overriding it calls it first, and releases the resources of
      * {@link #sendBulk(List)} once it returns.
      * <p>
-     * What is still pending once that wait is over is reported through
-     * {@link LogDeliveryListener#onDocumentsDropped(List, String)}, giving a dead-letter sink a last chance.
+     * What is still pending once that wait is over, the documents of a transmission still in flight included,
+     * is reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}, giving a dead-letter sink
+     * a last chance: a transmission answering after that may still deliver them.
      *
      * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
      * @throws Exception Never thrown by this implementation (an interruption while waiting is caught,

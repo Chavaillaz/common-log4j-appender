@@ -387,7 +387,8 @@ class AbstractBatchLogDeliveryTest {
                     .build();
             var listener = new RecordingListener();
             var logDelivery = new StuckTestLogDelivery(configuration, listener);
-            logDelivery.send(Map.<String, Object>of("logmessage", "in flight"));
+            var inFlight = Map.<String, Object>of("logmessage", "in flight");
+            logDelivery.send(inFlight);
             logDelivery.flush();
             var pending = Map.<String, Object>of("logmessage", "never dispatched");
             logDelivery.send(pending);
@@ -397,10 +398,14 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.close();
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-            // then: an application's shutdown is not held hostage by a downstream system that never answers
+            // then: an application's shutdown is not held hostage by a downstream system that never answers,
+            // and both the document never dispatched and the one the stuck transmission holds get their last
+            // chance, rather than the latter vanishing with it
             assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
-            assertEquals(1, listener.dropped.size());
+            assertEquals(2, listener.dropped.size());
             assertEquals(List.of(pending), listener.dropped.get(0).documents());
+            assertEquals(List.of(inFlight), listener.dropped.get(1).documents());
+            assertEquals("still in flight when closed", listener.dropped.get(1).reason());
         }
 
         @Test
@@ -415,7 +420,8 @@ class AbstractBatchLogDeliveryTest {
                     .build();
             var listener = new RecordingListener();
             var logDelivery = new StuckTestLogDelivery(configuration, listener);
-            logDelivery.send(Map.<String, Object>of("logmessage", "in flight"));
+            var inFlight = Map.<String, Object>of("logmessage", "in flight");
+            logDelivery.send(inFlight);
             logDelivery.flush();
             var pending = Map.<String, Object>of("logmessage", "never dispatched");
             logDelivery.send(pending);
@@ -427,8 +433,9 @@ class AbstractBatchLogDeliveryTest {
 
             // then
             assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
-            assertEquals(1, listener.dropped.size());
+            assertEquals(2, listener.dropped.size());
             assertEquals(List.of(pending), listener.dropped.get(0).documents());
+            assertEquals(List.of(inFlight), listener.dropped.get(1).documents());
         }
 
         @Test

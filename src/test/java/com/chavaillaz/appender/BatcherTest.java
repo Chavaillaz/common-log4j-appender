@@ -638,20 +638,21 @@ class BatcherTest {
         batcher.close(Duration.ofMillis(200));
         long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-        // then
+        // then: both the element never handed to the stuck transport and the one it holds are reported
         assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
-        assertEquals(List.of("pending"), dropped, "The element never handed to the stuck transport should be reported");
+        assertEquals(List.of("pending", "stuck"), dropped);
     }
 
     @Test
-    @DisplayName("Still transmits the final flush when closed with no time to wait, a free permit needing none")
+    @DisplayName("Still transmits the final flush when closed with no time to wait, and reports it, nothing waiting for it")
     void testCloseWithoutTimeToWaitStillTransmitsTheFinalFlush() throws Exception {
-        // given: a pending batch and every transmission permit free
+        // given: a pending batch, every transmission permit free, and a transport answering once told to
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         var dropped = new CopyOnWriteArrayList<String>();
+        var answer = new CompletableFuture<TransmissionResult<String>>();
         Batcher<String> batcher = batcher(10, elements -> {
             transmitted.add(elements);
-            return completedFuture(TransmissionResult.success());
+            return answer;
         }, new BatcherListener<>() {
             @Override
             public void onDropped(List<String> elements, String reason) {
@@ -662,12 +663,18 @@ class BatcherTest {
 
         // when: closed without waiting for anything
         batcher.close(Duration.ZERO);
+
+        // then: the batch is reported, nothing being left to wait for the outcome of its transmission
+        assertEquals(List.of("a", "b"), dropped);
+
+        // when: that transmission succeeds after all
+        answer.complete(TransmissionResult.success());
         batcher.awaitPendingTransmissions();
 
-        // then: a zero budget only means not waiting, the batch still going out on a permit already free
-        // instead of being reported dropped without an attempt
+        // then: a zero budget only meant not waiting, the batch still going out on a permit already free
+        // instead of being reported without an attempt, and its late success is not reported a second time
         assertEquals(List.of(List.of("a", "b")), transmitted);
-        assertEquals(List.of(), dropped);
+        assertEquals(List.of("a", "b"), dropped);
     }
 
     @Test
@@ -711,11 +718,10 @@ class BatcherTest {
     }
 
     @Test
-    @DisplayName("Reports elements a transmission hands back after closing drained the batch")
-    void testElementsRequeuedAfterCloseDrainedAreReported() throws Exception {
-        // given: a transport holding its future open, so closing gives up on it and drains the batch while
-        // that transmission is still in flight. Completing it afterwards puts its elements back into a batch
-        // nothing is left to transmit or report, which used to lose them without a trace.
+    @DisplayName("Reports the elements of a transmission still in flight once closing gives up on it, and only once")
+    void testElementsInFlightWhenClosedAreReportedOnce() throws Exception {
+        // given: a transport holding its future open, so closing gives up on it while that transmission is
+        // still in flight, which used to lose its elements for good unless it failed later on
         var dropped = new CopyOnWriteArrayList<String>();
         var reasons = new CopyOnWriteArrayList<String>();
         var inFlight = new CopyOnWriteArrayList<CompletableFuture<TransmissionResult<String>>>();
@@ -743,14 +749,63 @@ class BatcherTest {
         }
         assertEquals(1, inFlight.size(), "The element should have been dispatched");
 
-        // when: closing gives up on the transmission, then it finally fails and hands its element back
+        // when: closing gives up on the transmission
         batcher.close(Duration.ofMillis(200));
-        assertTrue(dropped.isEmpty(), "The element is still held by the transport, not dropped yet");
+
+        // then: its element gets its last chance right away, rather than with a transport that may never answer
+        assertEquals(List.of("stuck"), dropped);
+        assertEquals(List.of("still in flight when closed"), reasons);
+
+        // when: the transmission finally fails and hands its element back
         inFlight.get(0).complete(TransmissionResult.failure(null));
+        batcher.awaitPendingTransmissions();
+
+        // then: it is not reported a second time
+        assertEquals(List.of("stuck"), dropped);
+    }
+
+    @Test
+    @DisplayName("Reports elements a failed transmission hands back after closing drained the batch")
+    void testElementsRequeuedAfterCloseDrainedAreReported() throws Exception {
+        // given: a transport failing at once, and a listener holding up the handling of that failure until
+        // closing drained the batch, which the element is only put back into afterwards
+        var dropped = new CopyOnWriteArrayList<String>();
+        var reasons = new CopyOnWriteArrayList<String>();
+        var failing = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1L)
+                .maxConsecutiveFailures(() -> 0)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onFailed(int count, Throwable cause) {
+                        failing.countDown();
+                        try {
+                            resume.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                        reasons.add(reason);
+                    }
+                })
+                .build();
+        batcher.add(List.of("late"));
+        assertTrue(failing.await(2, SECONDS), "The transmission should have failed");
+
+        // when: closing gives up waiting for the handling of that failure, which then puts the element back
+        batcher.close(Duration.ofMillis(200));
+        assertTrue(dropped.isEmpty(), "The element is still held by the handling of its failure");
+        resume.countDown();
         awaitDropped(dropped, 1);
 
         // then: it is reported rather than merged back into a batch nobody will ever look at again
-        assertEquals(List.of("stuck"), dropped);
+        assertEquals(List.of("late"), dropped);
         assertEquals(List.of("still pending when closed"), reasons);
     }
 
