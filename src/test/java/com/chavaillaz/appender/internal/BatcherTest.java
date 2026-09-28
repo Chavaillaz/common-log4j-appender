@@ -211,35 +211,33 @@ class BatcherTest {
         // given: a maxPendingElements supplier whose return value changes after construction, exactly how
         // AbstractBatchLogDelivery.getMaxPendingDocuments() can be overridden by a subclass to vary at
         // runtime rather than being fixed once from LogConfiguration
-        var dropped = new CopyOnWriteArrayList<String>();
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
         var maxPending = new AtomicInteger(10);
-        BatcherListener<String> listener = new BatcherListener<>() {
-            @Override
-            public void onDropped(List<String> elements, String reason) {
-                dropped.addAll(elements);
-            }
-        };
         Batcher<String> batcher = Batcher.<String>builder()
                 .flushThreshold(() -> 100L)
                 .maxPendingElements(maxPending::get)
-                .transport(elements -> completedFuture(TransmissionResult.success()))
-                .listener(listener)
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
                 .build();
 
         // when: accumulating under the initial generous limit
         batcher.add(List.of("a", "b", "c"));
+        batcher.awaitPendingTransmissions();
 
-        // then: nothing discarded yet
-        assertTrue(dropped.isEmpty());
+        // then: nothing sent yet
+        assertEquals(List.of(), transmitted);
 
         // when: the limit is lowered (as if the overriding method started returning a smaller value) and
         // another element is accumulated
-        maxPending.set(1);
+        maxPending.set(4);
         batcher.add(List.of("d"));
-        awaitDropped(dropped, 3);
+        batcher.awaitPendingTransmissions();
 
-        // then: the newly-lowered limit was honored immediately, without reconstructing the Batcher
-        assertEquals(3, dropped.size());
+        // then: the newly-lowered limit was honored immediately, without reconstructing the Batcher, the batch
+        // filling up to it being sent
+        assertEquals(List.of(List.of("a", "b", "c", "d")), transmitted);
     }
 
     @Test
@@ -534,17 +532,21 @@ class BatcherTest {
     }
 
     @Test
-    @DisplayName("Discards the oldest elements once the pending batch weighs more than allowed")
+    @DisplayName("Discards the oldest elements once the pending batch weighs more than allowed while held off")
     void testPendingBytesCapDiscardsOldestElements() throws Exception {
-        // given: a batch that never transmits on its own, capped at 25 bytes with elements of 10
+        // given: a batch capped at 25 bytes with elements of 10, whose first element fails, which holds
+        // transmissions off until the next flush retries it
         var dropped = new CopyOnWriteArrayList<String>();
         var reasons = new CopyOnWriteArrayList<String>();
         var mutableLists = new CopyOnWriteArrayList<List<String>>();
+        var failing = new AtomicBoolean(true);
         Batcher<String> batcher = Batcher.<String>builder()
                 .flushThreshold(() -> 100L)
                 .elementSize(element -> 10)
                 .maxPendingBytes(() -> 25L)
-                .transport(elements -> completedFuture(TransmissionResult.success()))
+                .transport(elements -> completedFuture(failing.get()
+                        ? TransmissionResult.failure(null)
+                        : TransmissionResult.success()))
                 .listener(new BatcherListener<>() {
                     @Override
                     public void onDropped(List<String> elements, String reason) {
@@ -557,8 +559,12 @@ class BatcherTest {
                 })
                 .build();
 
-        // when: four elements weigh 40 bytes, 15 over the cap
-        batcher.add(List.of("a", "b"));
+        batcher.add(List.of("a"));
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // when: three more elements weigh 40 bytes with it, 15 over the cap
+        batcher.add(List.of("b"));
         batcher.add(List.of("c"));
         batcher.add(List.of("d"));
         awaitDropped(dropped, 2);
@@ -573,6 +579,7 @@ class BatcherTest {
         assertEquals(List.of(), mutableLists);
 
         // and: what is left is exactly what the cap allows to be kept
+        failing.set(false);
         batcher.flush();
         batcher.awaitPendingTransmissions();
         assertEquals(DeliveryHealth.Status.UP, batcher.health().status());
@@ -963,10 +970,11 @@ class BatcherTest {
         var inFlight = new AtomicInteger();
         var peak = new AtomicInteger();
         Batcher<String> batcher = Batcher.<String>builder()
-                // Never reached, so nothing ever drains the batch and every add() trips the pending cap
+                // Never reached, the transport failing so that transmissions are held off until a flush, which
+                // never comes: nothing ever drains the batch and every add() trips the pending cap
                 .flushThreshold(() -> Long.MAX_VALUE)
                 .maxPendingElements(() -> 1)
-                .transport(elements -> new CompletableFuture<>())
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                 .listener(new BatcherListener<String>() {
                     @Override
                     public void onDropped(List<String> dropped, String reason) {
@@ -980,6 +988,9 @@ class BatcherTest {
                     }
                 })
                 .build();
+        // A first element filling the batch is sent and fails, which holds the next ones off
+        batcher.add(List.of("first"));
+        batcher.awaitPendingTransmissions();
 
         // when: adding from a thread of its own, since saturating the bound makes add() notify inline and
         // therefore block on the listener above, which is the backpressure being asserted
@@ -1220,12 +1231,13 @@ class BatcherTest {
                 })
                 .build();
 
-        // when: three elements fail once and are put back, carrying a streak of one
+        // when: three elements fill the batch, which sends them, fail once and are put back, carrying a
+        // streak of one
         batcher.add(List.of("old-1", "old-2", "old-3"));
-        batcher.flush();
         batcher.awaitPendingTransmissions();
 
-        // and: three newer ones push every one of them out of the batch, then fail once themselves
+        // and: three newer ones, held off until the next flush, push every one of them out of the batch, then
+        // fail once themselves
         batcher.add(List.of("new-1", "new-2", "new-3"));
         awaitDropped(dropped, 3);
         batcher.flush();
@@ -1325,16 +1337,17 @@ class BatcherTest {
     @Test
     @DisplayName("Never hands the transport an empty request, however low the flush threshold")
     void testNeverTransmitsAnEmptyBatch() throws Exception {
-        // given: a non-positive threshold (allowed, meaning "no batching") and a pending cap that discards
-        // every element on the way in, so nothing is ever left to send
+        // given: a non-positive threshold (allowed, meaning "no batching"), a pending cap keeping nothing
+        // waiting, and a first attempt failing, which holds the next ones off for a minute
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
                 .flushThreshold(() -> 0L)
                 .maxPendingElements(() -> 0)
+                .backoff(consecutiveFailures -> 60_000L)
                 .transport(elements -> {
                     transmitted.add(elements);
-                    return completedFuture(TransmissionResult.success());
+                    return completedFuture(TransmissionResult.failure(null));
                 })
                 .listener(new BatcherListener<>() {
                     @Override
@@ -1343,16 +1356,17 @@ class BatcherTest {
                     }
                 })
                 .build();
-
-        // when
         batcher.add(List.of("a"));
         batcher.awaitPendingTransmissions();
 
-        // then: the element was reported as discarded, and nothing was sent on its behalf
-        awaitDropped(dropped, 1);
-        assertEquals(List.of("a"), dropped);
-        assertEquals(List.of(), transmitted);
-        assertEquals(DeliveryHealth.Status.UP, batcher.health().status());
+        // when: the next element is discarded on the way in, leaving nothing to send
+        batcher.add(List.of("b"));
+        batcher.awaitPendingTransmissions();
+
+        // then: both were reported as discarded, and nothing was sent on behalf of the emptied batch
+        awaitDropped(dropped, 2);
+        assertEquals(List.of("a", "b"), dropped);
+        assertEquals(List.of(List.of("a")), transmitted);
     }
 
     @Test
@@ -1400,14 +1414,16 @@ class BatcherTest {
         };
         StatusLogger.getLogger().registerListener(statusListener);
 
-        // when: a pending cap of 1 makes the second element discard the first, which is logged
+        // when: a pending cap of 1 makes the second element discard the first, which failed and waits for the
+        // next flush, the discard being logged
         try {
             Batcher<String> batcher = Batcher.<String>builder()
                     .flushThreshold(() -> 10L)
                     .maxPendingElements(() -> 1)
-                    .transport(elements -> completedFuture(TransmissionResult.success()))
+                    .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                     .build();
             batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
             batcher.add(List.of("b"));
             batcher.close();
         } finally {
@@ -1450,12 +1466,12 @@ class BatcherTest {
         // then
         assertEquals(new Batcher.Metrics(0, 0, 0, 2, 0, 0), batcher.metrics());
 
-        // when: four more push the oldest past the pending cap of three, and the other three fail once
+        // when: four more fill the batch past its pending cap of three, which sends them, and fail once
         batcher.add(List.of("c", "d", "e", "f"));
-        batcher.flush();
         batcher.awaitPendingTransmissions();
 
-        // then: the three are pending again, counted with the failed attempt and the element discarded
+        // then: the three most recent are pending again, counted with the failed attempt and the oldest one,
+        // discarded to put them back within the cap
         assertEquals(new Batcher.Metrics(3, 30, 0, 2, 1, 1), batcher.metrics());
     }
 

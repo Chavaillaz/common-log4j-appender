@@ -49,11 +49,12 @@ import com.chavaillaz.appender.TransmissionResult;
  * <p>
  * Safety limits keep a struggling transport, or an element it never accepts, from growing memory or wedging
  * the pipeline: the pending batch is capped at {@code maxPendingElements}, and at {@code maxPendingBytes}
- * given an {@code elementSize} measurement, its oldest elements being discarded past them, and elements
- * failing {@code maxConsecutiveFailures} times in a row are discarded, the streak counting their own
- * failures alone. Every discard is reported through {@link BatcherListener#onDropped(List, String)}. A batch
- * bigger than {@code maxRequestElements}, or {@code maxRequestBytes}, is split into chunks transmitted and
- * retried independently.
+ * given an {@code elementSize} measurement. A batch reaching one of them is transmitted as if it reached the
+ * threshold, or loses its oldest elements past it while transmissions are held off after a failure. Elements
+ * failing {@code maxConsecutiveFailures} times in a row are discarded, the streak counting their own failures
+ * alone. Every discard is reported through {@link BatcherListener#onDropped(List, String)}. A batch bigger
+ * than {@code maxRequestElements}, or {@code maxRequestBytes}, is split into chunks transmitted and retried
+ * independently.
  * <p>
  * The pending batch itself, with the failure streaks of its elements and the trims bounding it, is a
  * {@link PendingBatch} guarded by the monitor of this instance, which decides when a batch is due and handles
@@ -479,8 +480,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Accumulates the given elements, triggering a transmission if this reaches {@code flushThreshold}.
-     * Never blocks the caller on the network: a transmission this triggers runs on its own virtual thread.
+     * Accumulates the given elements, triggering a transmission if this reaches {@code flushThreshold}, or
+     * fills the pending batch up to one of its limits. Never blocks the caller on the network: a transmission
+     * this triggers runs on its own virtual thread.
      *
      * @param elements The elements to accumulate
      * @throws NullPointerException If one of the elements is {@code null}
@@ -501,21 +503,23 @@ public class Batcher<T> {
             rejected = closed;
             if (!rejected) {
                 pending.append(elements);
-                // Read once and reused below, so the two readings cannot disagree.
+                // Each read once, so that two readings cannot disagree
                 long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
+                maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
+                maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
                 log.trace("Stacking batch {}/{}", pending.size(), threshold);
 
-                // Capped here too, and not only when requeuing, since nothing may be failing
-                maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
-                discarded = pending.trimToCount(maxPending);
-                maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
-                oversized = pending.trimToBytes(maxBytes);
-
-                boolean batchingEnabled = threshold > 1;
-                // Never an empty batch, which a threshold of 0 or less would otherwise send
-                boolean thresholdReached = !pending.isEmpty() && pending.size() >= threshold;
-                if (thresholdReached && !(batchingEnabled && transmissionFailed) && !isBackingOff()) {
+                // Due once it reaches the threshold, or fills up to a pending limit, which it would otherwise
+                // meet by discarding its oldest elements however healthy the transport
+                boolean batchDue = !pending.isEmpty() && (pending.size() >= threshold || pending.size() >= maxPending
+                        || (maxBytes > 0 && pending.bytes() >= maxBytes));
+                // After a failure while batching, the next flush retries rather than every new element
+                boolean heldOff = (threshold > 1 && transmissionFailed) || isBackingOff();
+                if (batchDue && !heldOff) {
                     due = swapBatch();
+                } else {
+                    discarded = pending.trimToCount(maxPending);
+                    oversized = pending.trimToBytes(maxBytes);
                 }
             }
         }
@@ -528,7 +532,7 @@ public class Batcher<T> {
         }
         // Off the calling thread where possible (see notifyDropped())
         if (discarded != null) {
-            log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while accumulating",
+            log.warn("Discarding {} oldest {}(s) after exceeding the maximum pending {}s of {} while transmissions are held off",
                     discarded.size(), elementNoun, elementNoun, maxPending);
             notifyDropped(discarded, "maximum pending " + elementNoun + "s exceeded");
         }

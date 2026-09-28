@@ -232,9 +232,51 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Discards the oldest documents once the pending batch exceeds MaxPendingBytes")
+        @DisplayName("Sends a batch reaching MaxPendingBytes below the flush threshold, rather than discarding from it")
+        void testBatchReachingPendingSizeCapIsSent() throws Exception {
+            // given: a batch that never fills up by count, capped at a size two documents reach
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1_000)
+                    .maxPendingBytes(150)
+                    .build();
+            var listener = new RecordingListener();
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 100, listener);
+
+            // when
+            logDelivery.send(Map.<String, Object>of("id", 1));
+            logDelivery.send(Map.<String, Object>of("id", 2));
+            logDelivery.awaitPendingTransmissions();
+
+            // then: nothing held it off, so nothing had to wait, nor be discarded to bound what waits
+            assertEquals(List.of(List.of(Map.of("id", 1), Map.of("id", 2))), logDelivery.allBulkDocuments);
+            assertEquals(List.of(), listener.dropped);
+        }
+
+        @Test
+        @DisplayName("Sends a document heavier than MaxPendingBytes on its own, rather than discarding it")
+        void testDocumentHeavierThanPendingSizeCapIsSent() throws Exception {
+            // given
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .maxPendingBytes(150)
+                    .build();
+            var listener = new RecordingListener();
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 200, listener);
+
+            // when
+            logDelivery.send(Map.<String, Object>of("id", 1));
+            logDelivery.awaitPendingTransmissions();
+
+            // then
+            assertEquals(List.of(List.of(Map.of("id", 1))), logDelivery.allBulkDocuments);
+            assertEquals(List.of(), listener.dropped);
+        }
+
+        @Test
+        @DisplayName("Discards the oldest documents once the pending batch exceeds MaxPendingBytes while held off")
         void testPendingSizeCapDiscardsOldestDocuments() throws Exception {
-            // given: a batch that never fills up by count, capped at a size two documents already exceed
+            // given: a batch that never fills up by count, capped at a size two documents already exceed, and
+            // a first document failing, which holds transmissions off until the next flush retries it
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(1_000)
                     .maxPendingBytes(150)
@@ -242,9 +284,12 @@ class AbstractBatchLogDeliveryTest {
             var listener = new RecordingListener();
             var logDelivery = new MeasuredTestLogDelivery(configuration, 100, listener);
             var first = Map.<String, Object>of("id", 1);
+            logDelivery.bulkResult = false;
+            logDelivery.send(first);
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
 
             // when
-            logDelivery.send(first);
             logDelivery.send(Map.<String, Object>of("id", 2));
 
             // then: a count-based cap alone would have seen nothing wrong here, the batch holding two of the
@@ -263,24 +308,21 @@ class AbstractBatchLogDeliveryTest {
             // it ("override if the limit should depend on more than just the configuration"), while the
             // configuration leaves MaxPendingBytes unbounded
             var configuration = TestLogConfiguration.builder().flushThreshold(1_000).build();
-            var listener = new RecordingListener();
-            var logDelivery = new MeasuredTestLogDelivery(configuration, 100, listener) {
+            var logDelivery = new MeasuredTestLogDelivery(configuration, 100) {
                 @Override
                 protected long getMaxPendingBytes() {
                     return 150;
                 }
             };
-            var first = Map.<String, Object>of("id", 1);
 
-            // when: two documents of a hundred bytes each go over that limit
-            logDelivery.send(first);
+            // when: two documents of a hundred bytes each reach that limit
+            logDelivery.send(Map.<String, Object>of("id", 1));
             logDelivery.send(Map.<String, Object>of("id", 2));
+            logDelivery.awaitPendingTransmissions();
 
-            // then: the oldest is discarded, rather than the limit quietly enforcing nothing because the
-            // measurement it needs was decided against once, from the configuration, at construction
-            awaitDropped(listener, 1);
-            assertEquals(List.of(first), listener.dropped.get(0).documents());
-            assertEquals("maximum pending bytes exceeded", listener.dropped.get(0).reason());
+            // then: the batch goes out, far below the flush threshold, rather than the limit quietly enforcing
+            // nothing because the measurement it needs was decided against once, from the configuration
+            assertEquals(List.of(List.of(Map.of("id", 1), Map.of("id", 2))), logDelivery.allBulkDocuments);
         }
 
         @Test
@@ -646,41 +688,64 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Discards the oldest documents while accumulating, even before any transmission is attempted")
-        void testPendingDocumentsCapEnforcedWhileAccumulating() throws Exception {
-            // given: a flush threshold high enough to never be reached by this test on its own (so the
-            // batch keeps growing purely through accumulation) and a maximum pending documents small enough
-            // to be exceeded well before that; this exercises the cap being enforced by stackAndSend()
-            // itself, as opposed to testPendingDocumentsCapDiscardsOldestDocuments() above which only
-            // exercises it being enforced by requeue() after a failed transmission
+        @DisplayName("Sends a batch filling up to the maximum pending documents below the flush threshold")
+        void testBatchFillingUpToPendingDocumentsCapIsSent() throws Exception {
+            // given: a flush threshold the batch cannot reach, being capped far below it
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(100)
                     .maxPendingDocuments(3).build();
             var listener = new RecordingListener();
             var logDelivery = new TestLogDelivery(configuration, listener);
 
-            // when accumulating 4 documents, one at a time, without ever reaching the flush threshold or
-            // any transmission ever failing (bulkResult defaults to true, and nothing is dispatched yet)
+            // when
             for (int i = 0; i < 4; i++) {
                 logDelivery.send(Map.of("id", i));
             }
+            logDelivery.awaitPendingTransmissions();
 
-            // then the oldest document (id=0) was already discarded once the cap of 3 was exceeded, well
-            // before the flush threshold was ever reached; awaited rather than asserted immediately since
-            // this particular notification is intentionally not tracked by awaitPendingTransmissions() (see
-            // notifyDropped()'s documentation), unlike every other assertion on a listener in this test class
-            assertEquals(0, logDelivery.countBulkSent.get());
+            // then: the first three went out once they filled the batch, rather than the oldest being
+            // discarded for every new one while the downstream system accepts everything
+            assertEquals(List.of(List.of(Map.of("id", 0), Map.of("id", 1), Map.of("id", 2))), logDelivery.allBulkDocuments);
+            assertEquals(List.of(), listener.dropped);
+        }
+
+        @Test
+        @DisplayName("Discards the oldest documents while accumulating as transmissions are held off, before any retry")
+        void testPendingDocumentsCapEnforcedWhileAccumulating() throws Exception {
+            // given: a first document failing, which holds transmissions off until the next flush retries
+            // it; this exercises the cap being enforced while accumulating, as opposed to
+            // testPendingDocumentsCapDiscardsOldestDocuments() above, where requeuing a failure enforces it
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .maxPendingDocuments(3).build();
+            var listener = new RecordingListener();
+            var logDelivery = new TestLogDelivery(configuration, listener);
+            logDelivery.bulkResult = false;
+            logDelivery.send(Map.of("id", 0));
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // when accumulating 3 more documents, one at a time
+            for (int i = 1; i < 4; i++) {
+                logDelivery.send(Map.of("id", i));
+            }
+
+            // then the oldest document (id=0) was discarded once the cap of 3 was exceeded, with no attempt
+            // since the failed one; awaited rather than asserted immediately since this particular notification
+            // is intentionally not tracked by awaitPendingTransmissions() (see notifyDropped()'s documentation)
+            assertEquals(1, logDelivery.countBulkSent.get());
             awaitDropped(listener, 1);
             assertEquals(1, listener.dropped.size());
             assertEquals(List.of(Map.of("id", 0)), listener.dropped.get(0).documents());
             assertTrue(listener.dropped.get(0).reason().contains("pending documents"));
 
-            // when flushing what remains
+            // when the backend recovers and what remains is flushed
+            logDelivery.bulkResult = true;
             logDelivery.flush();
             logDelivery.awaitPendingTransmissions();
 
-            // then only the 3 most recently received documents were ever sent
-            assertEquals(1, logDelivery.countBulkSent.get());
+            // then only the 3 most recently received documents were sent
+            assertEquals(2, logDelivery.countBulkSent.get());
             assertEquals(List.of(Map.of("id", 1), Map.of("id", 2), Map.of("id", 3)), logDelivery.lastBulkDocuments);
         }
 

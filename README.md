@@ -68,19 +68,21 @@ The flow for a single log event is:
    right away, never waiting on that task.
 3. The background thread converts the event (with a `DefaultLogConverter`, or the `LogConverter` your
    appender returns) and hands it to your `LogDelivery`, which stacks it into the current batch.
-4. Once `FlushThreshold` documents accumulate, or when the periodic flush runs every `FlushInterval`, the
-   batch is due: if bigger than `MaxRequestDocuments` (or heavier than `MaxRequestBytes`), it is first split
-   into chunks. Each chunk is handed to its own virtual thread, and the background thread resumes
-   accumulating the next batch, never waiting on the network. Up to `MaxConcurrentTransmissions` requests
-   (4 by default) run at the same time; beyond that, the background thread waits for a slot, so the
-   downstream system is never overwhelmed.
+4. Once `FlushThreshold` documents accumulate, or the batch fills up to `MaxPendingDocuments` (or
+   `MaxPendingBytes`) first, or when the periodic flush runs every `FlushInterval`, the batch is due: if
+   bigger than `MaxRequestDocuments` (or heavier than `MaxRequestBytes`), it is first split into chunks.
+   Each chunk is handed to its own virtual thread, and the background thread resumes accumulating the next
+   batch, never waiting on the network. Up to `MaxConcurrentTransmissions` requests (4 by default) run at
+   the same time; beyond that, the background thread waits for a slot, so the downstream system is never
+   overwhelmed.
 5. A failed request's documents are put back in front of the batch and retried later instead of lost; a
    failing chunk retries independently of its siblings. Retries are delayed by an exponential backoff with
    jitter (`RetryBackoff`, up to `MaxRetryBackoff`), so a downstream system that is down, overloaded or
    rate-limiting is not hit again at whatever rate logs happen to arrive. Two safety nets bound how far this
-   can go: the pending batch never grows past `MaxPendingDocuments` (or `MaxPendingBytes`), its oldest
-   documents being discarded past that point, and documents failing `MaxConsecutiveFailures` times in a row
-   are discarded, so that one the downstream system never accepts is not retried forever.
+   can go: while retries are held off, the pending batch never grows past `MaxPendingDocuments` (or
+   `MaxPendingBytes`), its oldest documents being discarded past that point, and documents failing
+   `MaxConsecutiveFailures` times in a row are discarded, so that one the downstream system never accepts is
+   not retried forever.
    Both are reported through a `LogDeliveryListener` if configured (see [Observability](#observability)
    below), so this data loss is never silent.
 
@@ -342,9 +344,9 @@ its documentation):
 | `FlushInterval` | Time between two periodic flushes, so a partial batch isn't delayed indefinitely under low traffic. Relevant whenever documents can pile up with nothing else to send them: when `FlushThreshold` is above `1`, and when `RetryBackoff` is enabled, since documents arriving while a backoff holds off transmissions are stacked rather than sent. Defaults to `5s`; at least `1ms`. |
 | `FlushLevel` | Minimum severity (e.g. `WARN`) that triggers an immediate flush of the whole current batch right after that event, instead of waiting for `FlushThreshold`/`FlushInterval`. Defaults to unset, disabling this behavior. |
 | `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`. |
-| `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory; oldest discarded past that (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`. |
+| `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory: reaching it sends the batch as `FlushThreshold` does, and while retries are held off, the oldest are discarded past it (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`. |
 | `MaxRequestDocuments` | Maximum documents sent together in a single request; a bigger batch is split into chunks of that size (see step 4 above), each retried independently. Defaults to unbounded (no chunking); set to match a downstream system's per-request limit. |
-| `MaxPendingBytes` | Maximum estimated size a pending batch can hold in memory; oldest discarded past that, exactly as `MaxPendingDocuments` does by count. Defaults to unbounded. |
+| `MaxPendingBytes` | Maximum estimated size a pending batch can hold in memory, which it bounds exactly as `MaxPendingDocuments` does by count. Defaults to unbounded. |
 | `MaxRequestBytes` | Maximum estimated size of a single request; a heavier batch is split into chunks that each stay under it. Usually the limit that actually matters — Elasticsearch and OpenSearch reject a bulk over `http.max_content_length` by payload size, not document count. Defaults to unbounded. |
 | `MaxConsecutiveFailures` | Maximum consecutive failed attempts for the same documents before they are discarded instead of retried again (see step 5 above). Defaults to `5`; `2147483647` retries for good in practice. |
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; oldest discarded past that to make room for a new one, mirroring `MaxPendingDocuments`. Defaults to `10'000`. |

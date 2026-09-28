@@ -41,14 +41,15 @@ import org.jspecify.annotations.Nullable;
  * @param maxConcurrentTransmissions Maximum number of requests in flight at once, the next batch waiting for a
  *                                   slot past it. Defaults to {@code 4}; at least {@code 1}.
  * @param maxPendingDocuments        Maximum number of documents the pending batch holds while waiting to be
- *                                   (re)transmitted, the oldest ones being discarded past it. Defaults to
- *                                   {@code 10'000}; at least {@code 1}.
+ *                                   (re)transmitted, the oldest ones being discarded past it while transmissions
+ *                                   are held off after a failure. A batch reaching it otherwise is transmitted,
+ *                                   as if it reached {@code flushThreshold}. Defaults to {@code 10'000}; at
+ *                                   least {@code 1}.
  * @param maxRequestDocuments        Maximum number of documents per request, a bigger batch being split into
  *                                   chunks transmitted and retried independently. Defaults to
  *                                   {@link Integer#MAX_VALUE}, not splitting by count; at least {@code 1}.
- * @param maxPendingBytes            Maximum estimated size of the pending batch, the oldest documents being
- *                                   discarded past it, as {@code maxPendingDocuments} does by count. Sizes are
- *                                   estimated by
+ * @param maxPendingBytes            Maximum estimated size of the pending batch, which it bounds as
+ *                                   {@code maxPendingDocuments} does by count. Sizes are estimated by
  *                                   {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)}.
  *                                   Defaults to {@link Long#MAX_VALUE}, unbounded; at least {@code 1}.
  * @param maxRequestBytes            Maximum estimated size of a request, a heavier batch being split into
