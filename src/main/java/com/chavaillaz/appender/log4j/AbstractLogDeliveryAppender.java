@@ -110,22 +110,27 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             }
 
             // Retried first, the worker having possibly taken an event since the offer that failed
-            if (executor.getQueue().offer(newTask)) {
-                return;
+            if (!executor.getQueue().offer(newTask)) {
+                // A race against the worker thread dequeuing the same event is harmless: nothing left to evict.
+                Runnable evicted = executor.getQueue().poll();
+                boolean queued = executor.getQueue().offer(newTask);
+
+                if (evicted instanceof EventTask evictedTask) {
+                    error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
+                    discard(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
+                }
+                if (!queued) {
+                    // Another event took the freed slot first, so this one is discarded instead
+                    error("Log delivery task rejected: the internal queue is full, or the appender is stopping");
+                    discard(newTask.event(), "internal queue capacity exceeded, or the appender is stopping");
+                    return;
+                }
             }
 
-            // A race against the worker thread dequeuing the same event is harmless: nothing left to evict.
-            Runnable evicted = executor.getQueue().poll();
-            boolean queued = executor.getQueue().offer(newTask);
-
-            if (evicted instanceof EventTask evictedTask) {
-                error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
-                discard(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
-            }
-            if (!queued) {
-                // Another event took the freed slot first, so this one is discarded instead
-                error("Log delivery task rejected: the internal queue is full, or the appender is stopping");
-                discard(newTask.event(), "internal queue capacity exceeded, or the appender is stopping");
+            // Checked again once queued, as ThreadPoolExecutor.execute() does: shut down since the check above,
+            // the executor may have no worker left to run it, nor anything left to report it
+            if (executor.isShutdown() && executor.remove(newTask)) {
+                throw new RejectedExecutionException("Task " + task + " rejected from " + executor);
             }
         }
 

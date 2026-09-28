@@ -140,6 +140,26 @@ class AbstractLogDeliveryAppenderTest {
         }
     }
 
+    /**
+     * The executor of the worker of an appender, which reports a full queue through the policy it was built with.
+     */
+    private static ThreadPoolExecutor workerExecutorOf(AbstractLogDeliveryAppender<?> appender)
+            throws ReflectiveOperationException {
+        Field field = AbstractLogDeliveryAppender.class.getDeclaredField("workerExecutor");
+        field.setAccessible(true);
+        return (ThreadPoolExecutor) field.get(appender);
+    }
+
+    /**
+     * Replaces the executor of the worker of an appender not started yet, which is then started instead.
+     */
+    private static void replaceWorkerExecutor(AbstractLogDeliveryAppender<?> appender, ThreadPoolExecutor executor)
+            throws ReflectiveOperationException {
+        Field field = AbstractLogDeliveryAppender.class.getDeclaredField("workerExecutor");
+        field.setAccessible(true);
+        field.set(appender, executor);
+    }
+
     private ErrorHandler recordingErrorHandler(List<Throwable> errors) {
         return new ErrorHandler() {
             @Override
@@ -344,16 +364,6 @@ class AbstractLogDeliveryAppenderTest {
 
             // cleanup
             appender.stop(1, SECONDS);
-        }
-
-        /**
-         * Replaces the executor of the worker of an appender not started yet, which is then started instead.
-         */
-        private static void replaceWorkerExecutor(AbstractLogDeliveryAppender<?> appender, ThreadPoolExecutor executor)
-                throws ReflectiveOperationException {
-            Field field = AbstractLogDeliveryAppender.class.getDeclaredField("workerExecutor");
-            field.setAccessible(true);
-            field.set(appender, executor);
         }
 
         @Test
@@ -1000,6 +1010,76 @@ class AbstractLogDeliveryAppenderTest {
             releaseTask.countDown();
             appender.stop(2, SECONDS);
             assertEquals(List.of("B", "C"), reported);
+        }
+
+        @Test
+        @DisplayName("Reports an event the worker shut down under while it was being queued, rather than stranding it")
+        void testEventQueuedAsTheWorkerShutsDownIsReported() throws Exception {
+            // given: a worker queue claiming to be full, which leaves the event to the policy discarding the
+            // oldest one, then shutting its executor down right before accepting it from that policy, its idle
+            // worker exiting: the window a stop leaves between the policy checking the executor and queuing
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                }
+            });
+            var queue = new ShutdownRaceQueue();
+            var executor = new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, queue,
+                    workerExecutorOf(appender).getRejectedExecutionHandler());
+            queue.executor = executor;
+            replaceWorkerExecutor(appender, executor);
+            appender.start();
+
+            // when
+            queue.armed = true;
+            appender.append(realLogEvent("queued too late"));
+
+            // then: reported as dropped, where it used to stay in the queue of an executor terminated for good,
+            // neither run nor reported
+            awaitSize(dropped, 1);
+            assertEquals("queued too late", dropped.get(0).get("logmessage"));
+            assertTrue(queue.isEmpty(), "The event should not have been left in the queue");
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+    }
+
+    /**
+     * A worker queue claiming to be full on the first offer once armed, which hands the task to the policy
+     * of its executor, then shutting that executor down, its idle worker exiting, right before accepting the
+     * offer the policy makes in turn.
+     */
+    static class ShutdownRaceQueue extends LinkedBlockingQueue<Runnable> {
+
+        volatile boolean armed;
+        volatile ThreadPoolExecutor executor;
+        private final AtomicInteger armedOffers = new AtomicInteger();
+
+        @Override
+        public boolean offer(Runnable task) {
+            if (armed) {
+                int offer = armedOffers.incrementAndGet();
+                if (offer == 1) {
+                    return false;
+                }
+                if (offer == 2) {
+                    executor.shutdown();
+                    try {
+                        executor.awaitTermination(5, SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+            return super.offer(task);
         }
 
     }
