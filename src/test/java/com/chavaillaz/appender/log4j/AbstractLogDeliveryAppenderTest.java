@@ -570,17 +570,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var handler = mock(LogDelivery.class);
-            LogConverter converter = new LogConverter() {
-                @Override
-                public Map<String, Object> convert(LogEvent event) {
-                    return Map.of("custom", event.getMessage().getFormattedMessage());
-                }
-
-                @Override
-                public void configure(LogConfiguration configuration) {
-                    // Nothing to configure
-                }
-            };
+            LogConverter converter = event -> Map.of("custom", event.getMessage().getFormattedMessage());
             var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
                 @Override
                 public LogDelivery createLogDeliveryHandler() {

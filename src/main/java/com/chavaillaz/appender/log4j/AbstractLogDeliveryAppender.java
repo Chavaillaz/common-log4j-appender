@@ -172,7 +172,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * before reaching the worker, so that it can still be reported whatever converter a subclass returns: this
      * one is known to be safe to call from the thread reporting it as well.
      */
-    private final DefaultLogConverter defaultConverter = new DefaultLogConverter();
+    private final DefaultLogConverter defaultConverter;
 
     /**
      * The events discarded on the application thread, waiting for {@link #discardReporter} to report them, so
@@ -228,7 +228,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.initialCloseTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents());
         this.pendingDiscards = new LinkedBlockingQueue<>(options.maxQueuedEvents());
-        this.defaultConverter.configure(configuration);
+        this.defaultConverter = new DefaultLogConverter(configuration);
     }
 
     /**
@@ -592,7 +592,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * The converter turning an event into the document sent, called on the background thread by the task
      * {@link #createLogDeliveryTask(LogEvent)} creates by default. Defaults to a {@link DefaultLogConverter}
-     * configured with the configuration of this appender; override it to return another, configured already.
+     * built with the configuration of this appender; override it to return another one (see
+     * {@link LogConverter#newInstance(String, LogConfiguration)} for one named in a configuration).
      *
      * @return The converter to use
      */

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.PrintWriter;
@@ -40,8 +41,7 @@ class DefaultLogConverterTest {
                 .host("my-host")
                 .environment("pre-production")
                 .application("my-application").build();
-        var converter = new DefaultLogConverter();
-        converter.configure(configuration);
+        var converter = new DefaultLogConverter(configuration);
         var mdc = new JdkMapAdapterStringMap();
         mdc.putValue("mdc-key", "mdc-value");
         var epochMilli = Instant.now().toEpochMilli();
@@ -83,8 +83,7 @@ class DefaultLogConverterTest {
         void testConversionWithoutException() {
             // given
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("No exception here"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -104,8 +103,7 @@ class DefaultLogConverterTest {
         void testConversionWithoutMdc() {
             // given
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("No MDC here"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -121,8 +119,7 @@ class DefaultLogConverterTest {
         void testConversionMdcDoesNotOverrideReservedFields() {
             // given: MDC contains a key colliding with one of the fields written by the converter itself
             var configuration = TestLogConfiguration.builder().host("real-host").build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var mdc = new JdkMapAdapterStringMap();
             mdc.putValue("host", "should-not-override");
             var event = Log4jLogEvent.newBuilder()
@@ -146,8 +143,7 @@ class DefaultLogConverterTest {
             // for a plain Logger.info() call, or an SLF4J bridge class when going through that facade); it is
             // not a meaningful logger/category name and must never win over the actual logger name
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -166,8 +162,7 @@ class DefaultLogConverterTest {
         void testConversionFallsBackToFqcnWhenLoggerNameMissing() {
             // given
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
                     .setLoggerName(null)
@@ -186,8 +181,7 @@ class DefaultLogConverterTest {
         void testConversionWithNullMessage() {
             // given
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
                     .build();
@@ -200,25 +194,10 @@ class DefaultLogConverterTest {
         }
 
         @Test
-        @DisplayName("Omits only the configuration-provided fields when the converter was never configured")
-        void testConversionWithoutConfiguration() {
-            // given: a converter used without configure() ever being called, which used to throw a
-            // NullPointerException out of convert() and lose the whole document
-            var converter = new DefaultLogConverter();
-            var event = Log4jLogEvent.newBuilder()
-                    .setMessage(new SimpleMessage("Message"))
-                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
-                    .build();
-
-            // when
-            var document = converter.convert(event);
-
-            // then: everything derivable from the event itself is still there
-            assertEquals("Message", document.get("logmessage"));
-            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
-            assertNull(document.get("host"));
-            assertNull(document.get("environment"));
-            assertNull(document.get("application"));
+        @DisplayName("Cannot be built without a configuration, rather than converting without it")
+        void testConverterRequiresAConfiguration() {
+            // when / then: refused when built, where a converter without one used to omit the fields it provides
+            assertThrows(NullPointerException.class, () -> new DefaultLogConverter(null));
         }
 
         @Test
@@ -227,13 +206,12 @@ class DefaultLogConverterTest {
             // given: a single log call carrying a large payload (a response body, a serialized entity, a
             // dumped collection), the one part of a document whose size the application controls entirely
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter() {
+            var converter = new DefaultLogConverter(configuration) {
                 @Override
                 protected int getMaxMessageLength() {
                     return 10;
                 }
             };
-            converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("0123456789abcdef"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -252,13 +230,12 @@ class DefaultLogConverterTest {
             // given: a message whose limit falls between the two halves of an emoji, which is a matter of
             // where the message happens to reach the limit rather than of anything exotic
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter() {
+            var converter = new DefaultLogConverter(configuration) {
                 @Override
                 protected int getMaxMessageLength() {
                     return 3;
                 }
             };
-            converter.configure(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("ab😀cd"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -277,8 +254,7 @@ class DefaultLogConverterTest {
         void testConversionDoesNotTruncateShortMessage() {
             // given
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("A perfectly ordinary log line"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -297,13 +273,12 @@ class DefaultLogConverterTest {
         void testNonPositiveMaxMessageLengthDisablesTruncation(int maxMessageLength) {
             // given: a message well past the default limit, so only the override under test can keep it whole
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter() {
+            var converter = new DefaultLogConverter(configuration) {
                 @Override
                 protected int getMaxMessageLength() {
                     return maxMessageLength;
                 }
             };
-            converter.configure(configuration);
             String message = "x".repeat(64_000);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage(message))
@@ -322,13 +297,12 @@ class DefaultLogConverterTest {
         void testConversionTruncatesLongStackTrace() {
             // given
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter() {
+            var converter = new DefaultLogConverter(configuration) {
                 @Override
                 protected int getMaxStackTraceLength() {
                     return 50;
                 }
             };
-            converter.configure(configuration);
             var exception = new RuntimeException("my-exception");
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
@@ -351,13 +325,12 @@ class DefaultLogConverterTest {
             // given: a cause chain a thousand deep, as a framework wrapping an exception at each layer builds,
             // each cause counting how often it is printed
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter() {
+            var converter = new DefaultLogConverter(configuration) {
                 @Override
                 protected int getMaxStackTraceLength() {
                     return 1_000;
                 }
             };
-            converter.configure(configuration);
             var printed = new AtomicInteger();
             Throwable exception = new CountedException("innermost", null, printed);
             for (int i = 0; i < 1_000; i++) {
@@ -383,8 +356,7 @@ class DefaultLogConverterTest {
             // given: a stack trace pinned to a single frame, since the real one at this point in the test
             // includes the whole JUnit/reflection call chain and could otherwise exceed the default limit
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var exception = new RuntimeException("my-exception");
             exception.setStackTrace(new StackTraceElement[]{
                     new StackTraceElement("com.chavaillaz.appender.log4j.MyClass", "myMethod", "MyClass.java", 42)
@@ -409,13 +381,12 @@ class DefaultLogConverterTest {
             // given: a deliberately deep (and therefore long) cause chain, which would normally exceed
             // the default limit and be truncated
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter() {
+            var converter = new DefaultLogConverter(configuration) {
                 @Override
                 protected int getMaxStackTraceLength() {
                     return maxStackTraceLength;
                 }
             };
-            converter.configure(configuration);
             Throwable exception = new RuntimeException("innermost");
             for (int i = 0; i < 200; i++) {
                 exception = new RuntimeException("wrapper-" + i, exception);
@@ -441,8 +412,7 @@ class DefaultLogConverterTest {
             // given: a custom Message implementation (unlike every one bundled with Log4j2) that throws
             // while formatting itself, which must not prevent every other field from being captured
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new ThrowingMessage())
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -465,8 +435,7 @@ class DefaultLogConverterTest {
             // relies on indirectly (through toString()) while writing every stack frame; this must not
             // prevent every other field, including "class", from being captured
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -487,8 +456,7 @@ class DefaultLogConverterTest {
             // given: a configuration resolving a value on demand rather than answering from a field, and
             // failing at it -- the last caller-supplied code in writeBasic() left unguarded, while the
             // message, MDC and stack trace around it each already fall back instead
-            var converter = new DefaultLogConverter();
-            converter.configure(new LogConfiguration() {
+            var converter = new DefaultLogConverter(new LogConfiguration() {
                 @Override
                 public String getApplication() {
                     return "my-application";
@@ -529,8 +497,7 @@ class DefaultLogConverterTest {
             // structure that refers back to itself does -- and an Error, so none of the guards meant to
             // confine such a failure to its one field used to see it
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new ErrorThrowingMessage())
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
@@ -553,8 +520,7 @@ class DefaultLogConverterTest {
             // given: an exception declared on the spot, the shape `throw new RuntimeException(...) {}` and
             // every exception declared inside a method produce, and which has no canonical name at all
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var thrown = new RuntimeException("boom") {
                 // Anonymous on purpose: Class#getCanonicalName() answers null for it
             };
@@ -580,8 +546,7 @@ class DefaultLogConverterTest {
             // which must not prevent every other field, already written before writeMDC() runs, from being
             // captured
             var configuration = TestLogConfiguration.builder().build();
-            var converter = new DefaultLogConverter();
-            converter.configure(configuration);
+            var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
                     .setLoggerName("com.chavaillaz.appender.log4j.MyClass")

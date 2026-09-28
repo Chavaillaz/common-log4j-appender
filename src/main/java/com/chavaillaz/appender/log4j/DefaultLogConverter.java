@@ -6,6 +6,7 @@ import java.io.Writer;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
@@ -54,27 +55,18 @@ public class DefaultLogConverter implements LogConverter {
     private static final int THROWABLE_FIELD_COUNT = 2;
 
     /**
-     * Volatile, {@link #configure(LogConfiguration)} and {@link #convert(LogEvent)} typically running on
-     * different threads.
+     * The configuration the host, environment and application of each document are taken from.
      */
-    private volatile @Nullable LogConfiguration configuration;
+    private final LogConfiguration configuration;
 
     /**
-     * Creates a new default log converter, to be configured through {@link #configure(LogConfiguration)}
-     * before converting events.
-     */
-    public DefaultLogConverter() {
-        // Nothing to initialize here: configuration is only available once configure() is called
-    }
-
-    /**
-     * {@inheritDoc}
+     * Creates a new default log converter.
      *
-     * @param configuration The configuration
+     * @param configuration The configuration the host, environment and application of each document are
+     *                      taken from
      */
-    @Override
-    public void configure(LogConfiguration configuration) {
-        this.configuration = configuration;
+    public DefaultLogConverter(LogConfiguration configuration) {
+        this.configuration = Objects.requireNonNull(configuration, "configuration must not be null");
     }
 
     /**
@@ -117,24 +109,17 @@ public class DefaultLogConverter implements LogConverter {
      * @param event    The logging event
      */
     protected void writeBasic(Map<String, Object> document, LogEvent event) {
-        LogConfiguration settings = configuration;
-        if (settings == null) {
-            // Reported for every event rather than thrown, costing the three fields of the configuration alone
-            log.warn("The converter was never configured, the host/environment/application fields will be omitted");
-        }
         String host = null;
         String environment = null;
         String application = null;
-        if (settings != null) {
-            try {
-                host = settings.getHost();
-                environment = settings.getEnvironment();
-                application = settings.getApplication();
-            } catch (Throwable e) {
-                // A configuration resolving a value on demand can fail: the fields read before are kept
-                log.warn("Unable to read the host/environment/application from the configuration, "
-                        + "the fields it did not provide will be omitted", e);
-            }
+        try {
+            host = configuration.getHost();
+            environment = configuration.getEnvironment();
+            application = configuration.getApplication();
+        } catch (Throwable e) {
+            // A configuration resolving a value on demand can fail: the fields read before are kept
+            log.warn("Unable to read the host/environment/application from the configuration, "
+                    + "the fields it did not provide will be omitted", e);
         }
         document.put("datetime", Instant.ofEpochMilli(event.getInstant().getEpochMillisecond()).toString());
         document.put("host", host);

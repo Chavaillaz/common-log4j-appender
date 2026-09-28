@@ -225,8 +225,10 @@ fields:
 
 All MDC (context) entries are also added as-is, without overriding any of the fields above should a key
 collide with one of them. To customize this behaviour, extend `DefaultLogConverter` and override the
-relevant `write*` method, or implement `LogConverter` from scratch for full control, then return it,
-configured, from `getLogConverter()` of your appender.
+relevant `write*` method, or implement `LogConverter` from scratch for full control, then return it from
+`getLogConverter()` of your appender. A converter takes the configuration it needs in its constructor, so that
+none converts before it has it: `LogConverter.newInstance(className, configuration)` creates one a
+configuration names by its class, through its public constructor taking the configuration.
 
 ## Observability
 
