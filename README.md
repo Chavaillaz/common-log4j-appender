@@ -186,8 +186,8 @@ Extend `AbstractLogDeliveryAppender` to wire everything together as a Log4j2 plu
 @Plugin(name = "MyAppender", category = Core.CATEGORY_NAME, elementType = Appender.ELEMENT_TYPE)
 public class MyAppender extends AbstractLogDeliveryAppender<MyConfiguration> {
 
-    protected MyAppender(String name, Filter filter, Layout<?> layout, MyConfiguration configuration) {
-        super(name, filter, layout, configuration);
+    protected MyAppender(String name, Filter filter, MyConfiguration configuration) {
+        super(name, filter, configuration);
     }
 
     @Override
@@ -202,7 +202,8 @@ public class MyAppender extends AbstractLogDeliveryAppender<MyConfiguration> {
 
 Each event is then converted by a `DefaultLogConverter` on the background thread, and the document sent to
 your delivery. Override `getLogConverter()` to convert with another one (see below), or
-`createLogDeliveryTask(LogEvent)` to take over the whole task.
+`createLogDeliveryTask(LogEvent)` to take over the whole task. The appender has no layout, the document being
+what is sent, so its plugin builder declares no `Layout` element.
 
 ### 4. Conversion (optional)
 

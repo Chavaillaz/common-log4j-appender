@@ -3,7 +3,6 @@ package com.chavaillaz.appender.log4j;
 import static java.lang.Thread.sleep;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLayout;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -44,7 +43,6 @@ import lombok.Getter;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.ErrorHandler;
 import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.message.Message;
@@ -191,7 +189,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofMillis(200)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when
             appender.start();
@@ -217,7 +215,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofMillis(200)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when: started again, as nothing in Log4j2's lifecycle rules out
             appender.start();
@@ -251,7 +249,7 @@ class AbstractLogDeliveryAppenderTest {
             // the options are re-read rather than captured once. start() reads them to decide whether to
             // schedule the periodic flush, after the delivery handler has already been built
             var configuration = new FlakyOptionsConfiguration();
-            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
 
@@ -279,7 +277,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofMillis(1_000)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when
             appender.start();
@@ -307,7 +305,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofMillis(50)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
             var failuresLeft = new AtomicInteger(1);
@@ -343,7 +341,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofMillis(100))
                     .maxQueuedEvents(1).build();
             var releaseFirstTask = new CountDownLatch(1);
-            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, configuration, releaseFirstTask);
             doAnswer(invocation -> {
                 appender.getProcessedMessages().add("flush");
                 return null;
@@ -374,7 +372,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(1)
                     .flushInterval(Duration.ofMillis(1_000)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when
             appender.start();
@@ -406,7 +404,7 @@ class AbstractLogDeliveryAppenderTest {
                     .retryBackoff(Duration.ofSeconds(1))
                     .maxRetryBackoff(Duration.ofSeconds(1))
                     .flushInterval(Duration.ofMillis(200)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when
             appender.start();
@@ -436,7 +434,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(100)
                     .flushInterval(Duration.ofSeconds(10))
                     .flushLevel(Level.WARN).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when
             appender.start();
@@ -460,7 +458,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushLevel(Level.WARN)
                     .maxQueuedEvents(1).build();
             var releaseFirstTask = new CountDownLatch(1);
-            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+            var appender = new RecordingBlockingLogDeliveryAppender("appender-name", null, configuration, releaseFirstTask);
             doAnswer(invocation -> {
                 appender.getProcessedMessages().add("flush");
                 return null;
@@ -490,7 +488,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(100)
                     .flushInterval(Duration.ofSeconds(10))
                     .flushLevel(Level.WARN).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when
             appender.start();
@@ -512,7 +510,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(100)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // when
             appender.start();
@@ -542,7 +540,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var handler = mock(LogDelivery.class);
-            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, createDefaultLayout(), configuration) {
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
                 @Override
                 public LogDelivery createLogDeliveryHandler() {
                     return handler;
@@ -556,6 +554,9 @@ class AbstractLogDeliveryAppenderTest {
             // then
             verify(handler, timeout(5_000)).send(argThat((Map<String, Object> document) ->
                     "hello".equals(document.get("logmessage")) && "my-application".equals(document.get("application"))));
+
+            // and: without a layout, the document being what is sent
+            assertNull(appender.getLayout());
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -580,7 +581,7 @@ class AbstractLogDeliveryAppenderTest {
                     // Nothing to configure
                 }
             };
-            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, createDefaultLayout(), configuration) {
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
                 @Override
                 public LogDelivery createLogDeliveryHandler() {
                     return handler;
@@ -617,7 +618,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
 
             // when
             appender.start();
@@ -651,7 +652,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10)).build();
             var releaseFirstTask = new CountDownLatch(1);
             var appender = new DeferredFormattingLogDeliveryAppender(
-                    "appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+                    "appender-name", null, configuration, releaseFirstTask);
             var items = new ArrayList<>(List.of("first"));
             var loggingEvent = Log4jLogEvent.newBuilder()
                     .setMessage(new ParameterizedMessage("Processing {}", items))
@@ -678,7 +679,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
             var message = mock(Message.class);
@@ -719,7 +720,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
             var droppedReasons = new CopyOnWriteArrayList<String>();
             LogDeliveryListener listener = new LogDeliveryListener() {
@@ -773,7 +774,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             LogDeliveryListener listener = new LogDeliveryListener() {
                 @Override
                 public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
@@ -811,7 +812,7 @@ class AbstractLogDeliveryAppenderTest {
                     .maxQueuedEvents(1).build();
             var releaseFirstTask = new CountDownLatch(1);
             var appender = new RecordingBlockingLogDeliveryAppender(
-                    "appender-name", null, createDefaultLayout(), configuration, releaseFirstTask);
+                    "appender-name", null, configuration, releaseFirstTask);
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
             var droppedReasons = new CopyOnWriteArrayList<String>();
             LogDeliveryListener listener = new LogDeliveryListener() {
@@ -852,7 +853,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             var queuedWhileReporting = new CompletableFuture<Integer>();
             LogDeliveryListener listener = new LogDeliveryListener() {
                 @Override
@@ -888,7 +889,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(LogDeliveryListener.NOOP);
             var printed = new AtomicInteger();
             var thrown = new IllegalStateException("boom") {
@@ -928,7 +929,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             var releaseListener = new CountDownLatch(1);
             var listenerThread = new CompletableFuture<Thread>();
             LogDeliveryListener listener = new LogDeliveryListener() {
@@ -973,7 +974,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             var releaseListener = new CountDownLatch(1);
             var listenerCalled = new CountDownLatch(1);
             var reported = new CopyOnWriteArrayList<Object>();
@@ -1021,7 +1022,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             var requestContext = new InheritableThreadLocal<String>();
             var requestClassLoader = new ClassLoader() {
             };
@@ -1066,7 +1067,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
                 @Override
@@ -1141,7 +1142,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(100)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var events = new CopyOnWriteArrayList<String>();
-            var appender = new RecordingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, events, 50);
+            var appender = new RecordingLogDeliveryAppender("appender-name", null, configuration, events, 50);
 
             // when
             appender.start();
@@ -1165,7 +1166,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(100)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var events = new CopyOnWriteArrayList<String>();
-            var appender = new RecordingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, events, 50);
+            var appender = new RecordingLogDeliveryAppender("appender-name", null, configuration, events, 50);
 
             // when
             appender.start();
@@ -1190,7 +1191,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(100)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var events = new CopyOnWriteArrayList<String>();
-            var appender = new RecordingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, events, 50);
+            var appender = new RecordingLogDeliveryAppender("appender-name", null, configuration, events, 50);
 
             // when
             appender.start();
@@ -1227,7 +1228,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .closeTimeout(Duration.ofMillis(200)).build();
             var interrupted = new CountDownLatch(1);
-            var appender = new StuckLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, interrupted);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, configuration, interrupted);
 
             // when
             appender.start();
@@ -1250,7 +1251,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var workerIsDaemon = new CompletableFuture<Boolean>();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration) {
+            var appender = new LogDeliveryAppender("appender-name", null, configuration) {
                 @Override
                 protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
                     return () -> workerIsDaemon.complete(Thread.currentThread().isDaemon());
@@ -1288,7 +1289,7 @@ class AbstractLogDeliveryAppenderTest {
             var requestClassLoader = new ClassLoader() {
             };
             var workerContext = new CompletableFuture<List<Object>>();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration) {
+            var appender = new LogDeliveryAppender("appender-name", null, configuration) {
                 @Override
                 protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
                     return () -> workerContext.complete(Arrays.asList(
@@ -1323,7 +1324,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new ErrorOnCloseLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new ErrorOnCloseLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
             appender.start();
@@ -1343,7 +1344,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
             appender.start();
@@ -1363,7 +1364,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var interrupted = new CountDownLatch(1);
-            var appender = new StuckLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, interrupted);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, configuration, interrupted);
 
             // when
             appender.start();
@@ -1385,7 +1386,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var interrupted = new CountDownLatch(1);
-            var appender = new StuckLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, interrupted);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, configuration, interrupted);
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
             var droppedReasons = new CopyOnWriteArrayList<String>();
             LogDeliveryListener listener = new LogDeliveryListener() {
@@ -1432,7 +1433,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new FailStartLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new FailStartLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
 
@@ -1464,7 +1465,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new NullHandlerLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new NullHandlerLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
 
@@ -1488,7 +1489,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new ErrorOnStartLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new ErrorOnStartLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
 
@@ -1516,7 +1517,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // then: nothing created yet, nothing to be unhealthy about
             assertTrue(appender.isHealthy());
@@ -1541,7 +1542,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             when(appender.getLogDeliveryHandler().getMetrics()).thenReturn(new DeliveryMetrics(0, 5, 500, 2, 40, 3, 7));
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(LogDeliveryListener.NOOP);
 
@@ -1573,7 +1574,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
 
             // when
             appender.start();
@@ -1604,7 +1605,7 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(10).build();
             var releaseTask = new CountDownLatch(1);
-            var appender = new BlockingLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration, releaseTask);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
 
             // when
             appender.start();
@@ -1640,7 +1641,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new FailFirstLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new FailFirstLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
 
@@ -1663,7 +1664,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
-            var appender = new FailCreationLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new FailCreationLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
@@ -1710,7 +1711,7 @@ class AbstractLogDeliveryAppenderTest {
             // an implementation varying its settings at runtime. It is read again by the severity check run
             // *after* the event is delivered, so that check is what fails here
             var configuration = new FlakyOptionsConfiguration();
-            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, createDefaultLayout(), configuration);
+            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
@@ -1746,8 +1747,8 @@ class AbstractLogDeliveryAppenderTest {
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
         AtomicInteger countTaskExecuted = new AtomicInteger();
 
-        protected LogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected LogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override
@@ -1768,9 +1769,9 @@ class AbstractLogDeliveryAppenderTest {
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
         CountDownLatch interrupted;
 
-        protected StuckLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+        protected StuckLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration,
                                             CountDownLatch interrupted) {
-            super(name, filter, layout, configuration);
+            super(name, filter, configuration);
             this.interrupted = interrupted;
         }
 
@@ -1798,9 +1799,9 @@ class AbstractLogDeliveryAppenderTest {
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
         CountDownLatch releaseTask;
 
-        protected BlockingLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+        protected BlockingLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration,
                                                CountDownLatch releaseTask) {
-            super(name, filter, layout, configuration);
+            super(name, filter, configuration);
             this.releaseTask = releaseTask;
         }
 
@@ -1829,9 +1830,9 @@ class AbstractLogDeliveryAppenderTest {
         CountDownLatch releaseFirstTask;
         List<String> processedMessages = new CopyOnWriteArrayList<>();
 
-        protected RecordingBlockingLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+        protected RecordingBlockingLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration,
                                                          CountDownLatch releaseFirstTask) {
-            super(name, filter, layout, configuration);
+            super(name, filter, configuration);
             this.releaseFirstTask = releaseFirstTask;
         }
 
@@ -1874,9 +1875,9 @@ class AbstractLogDeliveryAppenderTest {
         CountDownLatch releaseFirstTask;
         List<String> formattedMessages = new CopyOnWriteArrayList<>();
 
-        protected DeferredFormattingLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+        protected DeferredFormattingLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration,
                                                         CountDownLatch releaseFirstTask) {
-            super(name, filter, layout, configuration);
+            super(name, filter, configuration);
             this.releaseFirstTask = releaseFirstTask;
         }
 
@@ -1906,9 +1907,9 @@ class AbstractLogDeliveryAppenderTest {
         long taskDelayMillis;
         List<Duration> closeTimeouts = new CopyOnWriteArrayList<>();
 
-        protected RecordingLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+        protected RecordingLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration,
                                                 List<String> events, long taskDelayMillis) {
-            super(name, filter, layout, configuration);
+            super(name, filter, configuration);
             this.events = events;
             this.taskDelayMillis = taskDelayMillis;
         }
@@ -2005,8 +2006,8 @@ class AbstractLogDeliveryAppenderTest {
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
         AtomicInteger countTaskExecuted = new AtomicInteger();
 
-        protected FlakyOptionsLogDeliveryAppender(String name, Filter filter, Layout<?> layout, FlakyOptionsConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected FlakyOptionsLogDeliveryAppender(String name, Filter filter, FlakyOptionsConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override
@@ -2027,8 +2028,8 @@ class AbstractLogDeliveryAppenderTest {
      */
     static class ErrorOnCloseLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
-        protected ErrorOnCloseLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected ErrorOnCloseLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override
@@ -2070,8 +2071,8 @@ class AbstractLogDeliveryAppenderTest {
      */
     static class NullHandlerLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
-        protected NullHandlerLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected NullHandlerLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override
@@ -2094,8 +2095,8 @@ class AbstractLogDeliveryAppenderTest {
      */
     static class ErrorOnStartLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
-        protected ErrorOnStartLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected ErrorOnStartLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override
@@ -2116,8 +2117,8 @@ class AbstractLogDeliveryAppenderTest {
 
         AtomicInteger countTaskCreated = new AtomicInteger();
 
-        protected FailStartLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected FailStartLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override
@@ -2141,8 +2142,8 @@ class AbstractLogDeliveryAppenderTest {
         AtomicBoolean firstTask = new AtomicBoolean(true);
         AtomicInteger countTaskExecuted = new AtomicInteger();
 
-        protected FailFirstLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected FailFirstLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override
@@ -2169,8 +2170,8 @@ class AbstractLogDeliveryAppenderTest {
         AtomicBoolean firstCall = new AtomicBoolean(true);
         AtomicInteger countTaskExecuted = new AtomicInteger();
 
-        protected FailCreationLogDeliveryAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration) {
-            super(name, filter, layout, configuration);
+        protected FailCreationLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
         }
 
         @Override

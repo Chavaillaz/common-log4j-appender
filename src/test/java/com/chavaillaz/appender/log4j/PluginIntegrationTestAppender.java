@@ -1,7 +1,6 @@
 package com.chavaillaz.appender.log4j;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.apache.logging.log4j.core.layout.PatternLayout.createDefaultLayout;
 
 import java.util.List;
 import java.util.Map;
@@ -11,7 +10,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.apache.logging.log4j.core.Appender;
 import org.apache.logging.log4j.core.Core;
 import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.plugins.Plugin;
 import org.apache.logging.log4j.core.config.plugins.PluginBuilderAttribute;
@@ -40,9 +38,9 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
 
     private final long transmissionDelayMillis;
 
-    private PluginIntegrationTestAppender(String name, Filter filter, Layout<?> layout, TestLogConfiguration configuration,
+    private PluginIntegrationTestAppender(String name, Filter filter, TestLogConfiguration configuration,
                                           long transmissionDelayMillis) {
-        super(name, filter, layout, configuration);
+        super(name, filter, configuration);
         this.transmissionDelayMillis = transmissionDelayMillis;
     }
 
@@ -68,8 +66,7 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
                     .application(application)
                     .flushThreshold(flushThreshold)
                     .build();
-            Layout<?> layout = getLayout() != null ? getLayout() : createDefaultLayout();
-            return new PluginIntegrationTestAppender(getName(), getFilter(), layout, configuration, transmissionDelayMillis);
+            return new PluginIntegrationTestAppender(getName(), getFilter(), configuration, transmissionDelayMillis);
         }
 
     }

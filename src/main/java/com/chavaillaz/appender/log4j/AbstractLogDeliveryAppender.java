@@ -24,7 +24,6 @@ import java.util.concurrent.atomic.LongAdder;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
@@ -215,15 +214,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final @Nullable Duration initialCloseTimeout;
 
     /**
-     * Creates a new appender transmitting logs.
+     * Creates a new appender transmitting logs, without a layout: each event is sent as the document its
+     * converter makes of it (see {@link #getLogConverter()}).
      *
      * @param name          The appender name
      * @param filter        The filter to associate with the appender, or {@code null} for none
-     * @param layout        The layout to use to format the event, or {@code null} for none
      * @param configuration The log transmission configuration
      */
-    protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, @Nullable Layout<?> layout, C configuration) {
-        super(name, filter, layout, true, Property.EMPTY_ARRAY);
+    protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration) {
+        super(name, filter, null, true, Property.EMPTY_ARRAY);
         this.logConfiguration = configuration;
         DeliveryOptions options = configuration.getDeliveryOptions();
         this.initialCloseTimeout = options.closeTimeout();
