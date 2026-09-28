@@ -488,6 +488,36 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Measures each element once when splitting a batch, whatever the number of chunks")
+    void testSplittingMeasuresEachElementOnce() throws Exception {
+        // given: elements measured at 10 bytes each and a 25 byte request limit, so chunks hold two of them
+        var measured = new CopyOnWriteArrayList<String>();
+        var attempts = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 5L)
+                // One at a time, so the chunks arrive in the order they were cut rather than racing each other
+                .maxConcurrentTransmissions(1)
+                .elementSize(element -> {
+                    measured.add(element);
+                    return 10;
+                })
+                .maxRequestBytes(() -> 25L)
+                .transport(elements -> {
+                    attempts.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a", "b", "c", "d", "e"));
+        batcher.awaitPendingTransmissions();
+
+        // then: measured on the way in, then once more when split, an element starting a chunk included
+        assertEquals(List.of(List.of("a", "b"), List.of("c", "d"), List.of("e")), attempts);
+        assertEquals(List.of("a", "b", "c", "d", "e", "a", "b", "c", "d", "e"), measured);
+    }
+
+    @Test
     @DisplayName("Discards the oldest elements once the pending batch weighs more than allowed")
     void testPendingBytesCapDiscardsOldestElements() throws Exception {
         // given: a batch that never transmits on its own, capped at 25 bytes with elements of 10

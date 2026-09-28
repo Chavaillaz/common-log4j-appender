@@ -6,6 +6,8 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -541,7 +543,7 @@ public class Batcher<T> {
             notifyDropped(oversized, "maximum pending bytes exceeded");
         }
         if (snapshot != null) {
-            dispatch(List.copyOf(snapshot.elements()), snapshot.failedRuns());
+            dispatch(snapshot);
         }
     }
 
@@ -628,12 +630,12 @@ public class Batcher<T> {
             log.debug("Sending partial batch of {}/{}", batch.size(), readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold"));
             snapshot = swapBatch();
         }
-        dispatch(List.copyOf(snapshot.elements()), snapshot.failedRuns());
+        dispatch(snapshot);
     }
 
     /**
      * The content of {@link #batch} at the time it was swapped out, together with the failure streaks of its
-     * leading elements (see {@link #failedRuns}), copied into a list once the monitor is released.
+     * leading elements (see {@link #failedRuns}), split into chunks once the monitor is released.
      *
      * @param elements   The content of the batch prior to the swap
      * @param failedRuns The failure streaks of its leading elements, the others having never failed
@@ -1021,60 +1023,81 @@ public class Batcher<T> {
     }
 
     /**
-     * Dispatches the given elements for transmission, split first into chunks within the request limits if
-     * needed, each chunk being handed to {@link #dispatchChunk(List, List)} independently.
+     * Dispatches the elements of a swapped batch for transmission, split first into chunks within the request
+     * limits if needed, each chunk being handed to {@link #dispatchChunk(List, List)} independently.
+     * <p>
+     * Each element is copied once, from the batch into the chunk holding it: the batch is no one else's once
+     * swapped out, and a chunk of its own lets the elements of a completed transmission go while another is
+     * still in flight.
      *
-     * @param elements   The elements to dispatch, possibly more than one request's worth
-     * @param failedRuns The failure streaks of the leading elements, the others having never failed
+     * @param pending The batch swapped out, with the failure streaks of its leading elements
      */
-    private void dispatch(List<T> elements, List<Run> failedRuns) {
+    private void dispatch(PendingBatch<T> pending) {
+        ArrayDeque<T> elements = pending.elements();
         int maxCount = readLimit(maxRequestElements, Integer.MAX_VALUE, "the maximum request elements");
         long maxBytes = readLimit(maxRequestBytes, Long.MAX_VALUE, "the maximum request bytes");
         boolean countLimited = maxCount > 0 && elements.size() > maxCount;
         // A single element goes out on its own whatever it weighs, so it is not measured
         boolean byteLimited = elementSize != null && maxBytes > 0 && maxBytes < Long.MAX_VALUE && elements.size() > 1;
-        if (!countLimited && !byteLimited) {
-            dispatchChunk(elements, runsOf(failedRuns, 0, elements.size()));
-            return;
-        }
+        List<Integer> chunkSizes = countLimited || byteLimited
+                ? chunkSizes(elements, maxCount, byteLimited ? maxBytes : 0)
+                : List.of(elements.size());
 
         int offset = 0;
-        for (List<T> chunk : chunk(elements, maxCount, byteLimited ? maxBytes : 0)) {
-            dispatchChunk(chunk, runsOf(failedRuns, offset, offset + chunk.size()));
-            offset += chunk.size();
+        for (int size : chunkSizes) {
+            dispatchChunk(take(elements, size), runsOf(pending.failedRuns(), offset, offset + size));
+            offset += size;
         }
     }
 
     /**
-     * Splits the given list into consecutive, independent chunks preserving order, cutting whenever the next
-     * element would push the current chunk past {@code maxCount} elements or {@code maxBytes} bytes.
+     * Where to cut the given elements into consecutive chunks preserving their order: before whichever element
+     * would push the current chunk past {@code maxCount} elements or {@code maxBytes} bytes.
      *
-     * @param elements The elements to split
+     * @param elements The elements to split, left untouched
      * @param maxCount The maximum number of elements per chunk, or a non-positive value for no such limit
      * @param maxBytes The maximum estimated size per chunk, or a non-positive value for no such limit
-     * @return The list of chunks, in original order
+     * @return The number of elements of each chunk, in order
      */
-    private List<List<T>> chunk(List<T> elements, int maxCount, long maxBytes) {
-        List<List<T>> chunks = new ArrayList<>();
-        List<T> current = new ArrayList<>();
-        long currentBytes = 0;
+    private List<Integer> chunkSizes(Collection<T> elements, int maxCount, long maxBytes) {
+        List<Integer> sizes = new ArrayList<>();
+        int count = 0;
+        long bytes = 0;
         for (T element : elements) {
             long size = maxBytes > 0 ? sizeOf(element) : 0;
-            boolean countReached = maxCount > 0 && current.size() >= maxCount;
+            boolean countReached = maxCount > 0 && count >= maxCount;
             // Never cut before the first element of a chunk, so that one heavier than the limit goes out alone
-            boolean bytesReached = maxBytes > 0 && !current.isEmpty() && currentBytes + size > maxBytes;
+            boolean bytesReached = maxBytes > 0 && count > 0 && bytes + size > maxBytes;
             if (countReached || bytesReached) {
-                chunks.add(List.copyOf(current));
-                current = new ArrayList<>();
-                currentBytes = 0;
+                sizes.add(count);
+                count = 0;
+                bytes = 0;
             }
-            current.add(element);
-            currentBytes += size;
+            count++;
+            bytes += size;
         }
-        if (!current.isEmpty()) {
-            chunks.add(List.copyOf(current));
+        if (count > 0) {
+            sizes.add(count);
         }
-        return chunks;
+        return sizes;
+    }
+
+    /**
+     * Moves the given number of elements from the front of a swapped batch into a chunk of their own, as an
+     * unmodifiable list: what the transport is handed is what gets retried or reported if it fails.
+     *
+     * @param elements The swapped batch, which loses them
+     * @param count    How many elements to take, at most as many as it holds
+     * @param <T>      The type of element
+     * @return The chunk, holding exactly these elements in their order
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> List<T> take(ArrayDeque<T> elements, int count) {
+        Object[] chunk = new Object[count];
+        for (int i = 0; i < count; i++) {
+            chunk[i] = elements.pollFirst();
+        }
+        return (List<T>) Collections.unmodifiableList(Arrays.asList(chunk));
     }
 
     /**
@@ -1145,8 +1168,8 @@ public class Batcher<T> {
         long start = System.nanoTime();
         CompletableFuture<TransmissionResult<T>> future;
         try {
-            // Unmodifiable, since what the transport is handed is what gets retried or reported if it fails
-            CompletableFuture<TransmissionResult<T>> applied = transport.apply(Collections.unmodifiableList(elements));
+            // The chunk itself, unmodifiable already (see take())
+            CompletableFuture<TransmissionResult<T>> applied = transport.apply(elements);
             future = applied != null ? applied : CompletableFuture.completedFuture(null);
         } catch (Throwable e) {
             // Throwable: an Error, from a class of the transport missing say, would otherwise skip the release
