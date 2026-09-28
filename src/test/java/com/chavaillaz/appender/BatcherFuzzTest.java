@@ -116,12 +116,10 @@ class BatcherFuzzTest {
         batcher.awaitPendingTransmissions();
 
         // Drive a fixed, generous number of retry cycles unconditionally (not just until stillPending looks
-        // empty: a corrupted rejected list can smuggle a foreign element into the live batch, which then
-        // keeps cycling through retries on its own even after every real element has resolved). Every round
-        // any content remains rejected (even a shifting mix of real and foreign elements) increments the
-        // same shared streak (see Batcher#requeue), so maxConsecutiveFailures rounds of "not fully accepted"
-        // back to back are always enough to force a give-up; the margin only covers rounds where a partial
-        // acceptance resets that streak before it gets there.
+        // empty: a corrupted rejected list could smuggle a foreign element into the live batch, which would
+        // then keep cycling through retries on its own even after every real element has resolved). Every
+        // round sends the whole batch, and each element still rejected adds one to its own streak, so
+        // maxConsecutiveFailures rounds are always enough to force a give-up; the margin is only a margin.
         for (int i = 0; i < maxConsecutiveFailures + 20; i++) {
             batcher.flush();
             batcher.awaitPendingTransmissions();

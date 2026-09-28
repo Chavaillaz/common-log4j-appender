@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -1132,6 +1133,92 @@ class BatcherTest {
         // then: only the elements that really did fail twice were given up on. The newer ones have a single
         // failure of their own, and used to be discarded alongside them on a streak they never earned
         assertEquals(List.of("old-1", "old-2", "old-3"), dropped);
+    }
+
+    @Test
+    @DisplayName("Counts the failures of an element joining a failed one from its own first attempt")
+    void testFailureStreakIsNotInheritedByElementsJoiningTheBatch() throws Exception {
+        // given: two consecutive failures allowed, and a transport failing every attempt
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> Long.MAX_VALUE)
+                .maxConsecutiveFailures(() -> 2)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+
+        // when: an element fails once, then a newer one joins it and both fail together
+        batcher.add(List.of("old"));
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        batcher.add(List.of("new"));
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: only the element that failed twice was given up on. The newer one failed once, and used to
+        // be discarded along with it, after a single attempt, on the streak of the batch it joined
+        assertEquals(List.of("old"), dropped);
+
+        // when: the newer one fails a second time
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: it is given up on in turn
+        assertEquals(List.of("old", "new"), dropped);
+    }
+
+    @Test
+    @DisplayName("Keeps the failure streak of each element across the requests a batch is split into")
+    void testFailureStreaksFollowTheirElementsIntoChunks() throws Exception {
+        // given: requests of two elements at most, three consecutive failures allowed, and a transport
+        // rejecting everything but "fresh-1"
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> Long.MAX_VALUE)
+                .maxRequestElements(() -> 2)
+                .maxConsecutiveFailures(() -> 3)
+                .transport(elements -> {
+                    List<String> rejected = elements.stream().filter(element -> !element.equals("fresh-1")).toList();
+                    return completedFuture(rejected.isEmpty()
+                            ? TransmissionResult.success()
+                            : TransmissionResult.partialFailure(rejected, null));
+                })
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+
+        // when: three elements fail twice, then three newer ones join them, the batch of six being split in
+        // requests mixing both, which fail once more
+        batcher.add(List.of("old-1", "old-2", "old-3"));
+        for (int i = 0; i < 2; i++) {
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+        }
+        batcher.add(List.of("fresh-1", "fresh-2", "fresh-3"));
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: only the three that failed three times were given up on, whichever request carried them
+        assertEquals(Set.of("old-1", "old-2", "old-3"), Set.copyOf(dropped));
+
+        // when: the two newer ones still rejected fail twice more
+        for (int i = 0; i < 2; i++) {
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+        }
+
+        // then: they are given up on in turn, the accepted one never being
+        assertEquals(Set.of("old-1", "old-2", "old-3", "fresh-2", "fresh-3"), Set.copyOf(dropped));
+        assertEquals(5, dropped.size());
     }
 
     @Test
