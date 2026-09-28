@@ -1,4 +1,4 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.log4j;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -12,7 +12,8 @@ import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Common utility methods.
+ * Resolves the defaults of the attributes of an appender plugin: a variable of the environment or a system
+ * property, and the name of the host the application runs on.
  */
 public final class CommonUtils {
 

@@ -1,8 +1,8 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.log4j;
 
-import static com.chavaillaz.appender.CommonUtils.getInitialHostname;
-import static com.chavaillaz.appender.CommonUtils.getProperty;
-import static com.chavaillaz.appender.CommonUtils.withTimeout;
+import static com.chavaillaz.appender.log4j.CommonUtils.getInitialHostname;
+import static com.chavaillaz.appender.log4j.CommonUtils.getProperty;
+import static com.chavaillaz.appender.log4j.CommonUtils.withTimeout;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
