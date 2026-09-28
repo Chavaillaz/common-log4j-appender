@@ -6,7 +6,6 @@ import java.io.Writer;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
@@ -86,7 +85,7 @@ public class DefaultLogConverter implements LogConverter {
      */
     @Override
     public Map<String, Object> convert(LogEvent event) {
-        Map<String, Object> document = new HashMap<>(estimateCapacity(event));
+        Map<String, Object> document = HashMap.newHashMap(expectedFieldCount(event));
         writeBasic(document, event);
         writeThrowable(document, event);
         writeMDC(document, event);
@@ -94,22 +93,21 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Estimates the {@link HashMap} capacity needed to hold the document without a resize while populating
-     * it, based on the fields this converter is expected to write.
+     * Counts the fields this converter is expected to write for the given event, so that the document is
+     * never resized while being populated.
      *
      * @param event The logging event
-     * @return The estimated initial capacity to use for the resulting document
+     * @return The expected number of fields
      */
-    private int estimateCapacity(LogEvent event) {
-        int entries = BASIC_FIELD_COUNT;
+    private int expectedFieldCount(LogEvent event) {
+        int fields = BASIC_FIELD_COUNT;
         if (event.getThrown() != null) {
-            entries += THROWABLE_FIELD_COUNT;
+            fields += THROWABLE_FIELD_COUNT;
         }
         if (event.getContextData() != null) {
-            entries += event.getContextData().size();
+            fields += event.getContextData().size();
         }
-        // Default HashMap load factor is 0.75, so this avoids a resize for the estimated entry count
-        return (int) (entries / 0.75f) + 1;
+        return fields;
     }
 
     /**
@@ -142,11 +140,10 @@ public class DefaultLogConverter implements LogConverter {
         document.put("host", host);
         document.put("environment", environment);
         document.put("application", application);
-        document.put("logger", Optional.ofNullable(event.getLoggerName())
-                .orElse(event.getLoggerFqcn()));
-        document.put("level", Optional.ofNullable(event.getLevel())
-                .map(Level::toString)
-                .orElse(null));
+        String loggerName = event.getLoggerName();
+        document.put("logger", loggerName != null ? loggerName : event.getLoggerFqcn());
+        Level level = event.getLevel();
+        document.put("level", level != null ? level.toString() : null);
         document.put("logmessage", formatMessage(event.getMessage()));
         document.put("thread", event.getThreadName());
     }
