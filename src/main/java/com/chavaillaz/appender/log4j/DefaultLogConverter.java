@@ -39,7 +39,7 @@ public class DefaultLogConverter implements LogConverter {
 
     /**
      * The status logger of Log4j2 rather than an application logger, which would feed these diagnostics back
-     * into the appender they are about (see {@link com.chavaillaz.appender.Batcher}).
+     * into the appender they are about (see {@link com.chavaillaz.appender.internal.Batcher}).
      */
     private static final Logger log = StatusLogger.getLogger();
 

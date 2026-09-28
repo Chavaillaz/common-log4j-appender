@@ -1,4 +1,4 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.internal;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,6 +17,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
+
+import com.chavaillaz.appender.TransmissionResult;
 
 /**
  * Fuzzes {@link Batcher} with adversarial {@link TransmissionResult} values a well-behaved transport would

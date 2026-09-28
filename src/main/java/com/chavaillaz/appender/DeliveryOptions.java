@@ -65,10 +65,11 @@ import org.jspecify.annotations.Nullable;
  *                                   appender, the oldest one being discarded past it. Defaults to
  *                                   {@code 10'000}; at least {@code 1}.
  * @param retryBackoff               Base delay before retrying after a failed transmission, doubling with each
- *                                   consecutive failure up to {@code maxRetryBackoff}, with jitter (see
- *                                   {@link BackoffPolicy#exponential(Duration, Duration)}). Newly accumulated
- *                                   documents are held back too while it is in effect. Defaults to one second;
- *                                   {@link Duration#ZERO} disables it, and it cannot be negative.
+ *                                   consecutive failure up to {@code maxRetryBackoff}, each delay being drawn at
+ *                                   random up to that value, so that instances losing the same system do not
+ *                                   retry in lockstep. Newly accumulated documents are held back too while it
+ *                                   is in effect. Defaults to one second; {@link Duration#ZERO} disables it, and
+ *                                   it cannot be negative.
  * @param maxRetryBackoff            Cap of the delay described by {@code retryBackoff}, ignored if smaller than
  *                                   it. Defaults to thirty seconds; it cannot be negative.
  * @param closeTimeout               Maximum time closing a delivery waits for the transmissions in flight, its

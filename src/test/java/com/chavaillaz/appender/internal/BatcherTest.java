@@ -1,4 +1,4 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.internal;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -27,6 +27,8 @@ import org.apache.logging.log4j.status.StatusListener;
 import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import com.chavaillaz.appender.TransmissionResult;
 
 /**
  * Focused tests proving {@link Batcher} is genuinely generic and transport-agnostic: unlike

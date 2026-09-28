@@ -1,4 +1,4 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.internal;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
@@ -33,10 +33,12 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.TransmissionResult;
+
 /**
  * Generic accumulate, batch, transmit and retry engine, knowing nothing of Log4j2 nor of the shape of an
  * element: {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery} wires it to log documents and a
- * {@link LogDeliveryListener}.
+ * {@link com.chavaillaz.appender.LogDeliveryListener}.
  * <p>
  * Elements are stacked until a threshold is reached, or {@link #flush()} is called, and the batch is then
  * handed to the transport function on a virtual thread of its own, so that a slow transmission never delays

@@ -1,4 +1,4 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.internal;
 
 import java.util.ArrayList;
 import java.util.Collections;

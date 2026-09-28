@@ -1,4 +1,4 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.internal;
 
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;

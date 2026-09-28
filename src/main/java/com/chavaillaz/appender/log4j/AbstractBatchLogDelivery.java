@@ -12,9 +12,6 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
-import com.chavaillaz.appender.BackoffPolicy;
-import com.chavaillaz.appender.Batcher;
-import com.chavaillaz.appender.BatcherListener;
 import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.DocumentSizeEstimator;
@@ -22,9 +19,12 @@ import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
 import com.chavaillaz.appender.TransmissionResult;
+import com.chavaillaz.appender.internal.BackoffPolicy;
+import com.chavaillaz.appender.internal.Batcher;
+import com.chavaillaz.appender.internal.BatcherListener;
 
 /**
- * Base of a delivery transmitting logs by batches, adapting the {@link Batcher} engine to a
+ * Base of a delivery transmitting logs by batches, adapting the batching engine of the library to a
  * {@link LogConfiguration} and a {@link LogDeliveryListener}: a subclass only implements
  * {@link #sendBulk(List)}.
  * <p>

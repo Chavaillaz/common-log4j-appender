@@ -5,7 +5,8 @@ import java.util.List;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The outcome of one transmission attempt by the transport function of a {@link Batcher}.
+ * The outcome of one transmission attempt, which the future returned by
+ * {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#sendBulk(List)} completes with.
  * <p>
  * A {@link PartialFailure} tells that only some elements were rejected, a malformed document in a bulk
  * response for instance, rather than the whole request failing, so that only those are retried and counted

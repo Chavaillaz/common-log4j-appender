@@ -1,4 +1,4 @@
-package com.chavaillaz.appender;
+package com.chavaillaz.appender.internal;
 
 import java.util.List;
 
@@ -6,9 +6,10 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Observes the outcome of transmissions performed by a {@link Batcher}. The generic, transport-agnostic
- * counterpart of {@link LogDeliveryListener}: {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery}
- * bridges the two, forwarding every call here to whatever {@link LogDeliveryListener} it was configured
- * with. Every method has a no-op default; override only the ones you need.
+ * counterpart of {@link com.chavaillaz.appender.LogDeliveryListener}:
+ * {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery} bridges the two, forwarding every call here
+ * to whatever listener it was configured with. Every method has a no-op default; override only the ones you
+ * need.
  *
  * @param <T> The type of element transmitted
  */
