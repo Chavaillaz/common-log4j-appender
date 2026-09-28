@@ -1397,9 +1397,14 @@ class AbstractLogDeliveryAppenderTest {
             for (int i = 0; i < 5; i++) {
                 appender.append(mockLogEvent());
             }
+
+            // then: an appender discarding every event says so, where it used to report itself healthy with
+            // nothing dropped, the failure showing in the status logger at startup alone
+            assertFalse(appender.isHealthy());
+            assertEquals(5, appender.getMetrics().droppedDocuments());
             appender.stop(2, SECONDS);
 
-            // then: append() never even attempted to create a delivery task for a handler that never
+            // and: append() never even attempted to create a delivery task for a handler that never
             // started, instead of paying for a snapshot, a background thread hand-off and a doomed task
             // on every single one of the 5 events above
             assertEquals(0, appender.getCountTaskCreated().get());

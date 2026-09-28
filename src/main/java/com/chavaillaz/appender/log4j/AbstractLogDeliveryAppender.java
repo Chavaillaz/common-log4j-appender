@@ -416,7 +416,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     @Override
     public void append(LogEvent loggingEvent) {
         if (logDeliveryHandler == null) {
-            // Starting failed, and reported it: Log4j2 appends to an appender not started all the same
+            // Creating the delivery failed, which starting reported: counted, with nothing to report it to
+            discardedEvents.increment();
             return;
         }
 
@@ -584,13 +585,14 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Whether the most recent transmission attempt of the delivery succeeded (see
-     * {@link LogDelivery#isHealthy()}), {@code true} before the handler is created, or if it could not be.
+     * {@link LogDelivery#isHealthy()}): {@code false} once started without a delivery, its creation having
+     * failed and every event being discarded, and {@code true} before the appender is started.
      *
      * @return The current health of the log delivery pipeline
      */
     public boolean isHealthy() {
         LogDelivery handler = logDeliveryHandler;
-        return handler == null || handler.isHealthy();
+        return handler != null ? handler.isHealthy() : !isStarted();
     }
 
     /**
@@ -617,7 +619,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Takes a snapshot of this appender and of its delivery, for a metrics library to poll (see
-     * {@link DeliveryMetrics}): the dropped documents count the events this appender discarded as well.
+     * {@link DeliveryMetrics}): the dropped documents count the events this appender discarded as well, every
+     * one of them once started without a delivery.
      *
      * @return The current metrics, those of the delivery being {@code 0} before it is created, or if it could
      *         not be

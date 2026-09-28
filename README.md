@@ -286,7 +286,8 @@ Four methods also let you poll the current state of the pipeline directly, e.g. 
 endpoint or a metrics library, instead of only reacting to listener callbacks:
 
 - `AbstractLogDeliveryAppender#isHealthy()` — `false` once the most recent transmission attempt failed
-  (documents are not necessarily lost yet, just being retried).
+  (documents are not necessarily lost yet, just being retried), and for good once the appender started
+  without a delivery, its creation having failed, every event then being discarded.
 - `AbstractLogDeliveryAppender#isBackpressured()` — `true` once the internal queue feeding the background
   thread (bounded by `MaxQueuedEvents`) is full, meaning the very next logging event would evict the oldest
   queued one — an early warning before `onDocumentsDropped` actually fires.
