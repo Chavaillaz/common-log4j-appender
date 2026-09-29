@@ -68,6 +68,17 @@ class BackoffPolicyTest {
     }
 
     @Test
+    @DisplayName("Keeps backing off at the cap when doubling a base delay of months overflows")
+    void testOverflowOfALongBaseDelayStaysAtTheCap() {
+        // given: a base delay of 2^33 + 5 ms, about 99 days, whose 31st doubling drops its top bit and leaves
+        // 5 x 2^31 ms, about 124 days: a wrapped value above the base delay, which comparing with it misses
+        BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofMillis((1L << 33) + 5), Duration.ofDays(365));
+
+        // when/then: the delay after 32 failures reaches the cap rather than stopping at the wrapped value
+        assertCeiling(policy, 32, Duration.ofDays(365).toMillis());
+    }
+
+    @Test
     @DisplayName("Keeps backing off at the cap across every consecutive failure count in a long outage")
     void testEveryFailureCountKeepsSomeDelay() {
         BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofSeconds(1), Duration.ofSeconds(30));

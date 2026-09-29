@@ -47,15 +47,12 @@ public interface BackoffPolicy {
         }
         long cappedMaxMillis = Math.max(initialMillis, maxMillis);
         return consecutiveFailures -> {
-            // Only the low six bits of a shift distance count for a long, and anything that large is past the
-            // cap anyway
-            int exponent = Math.min(Math.max(consecutiveFailures, 1) - 1, 62);
-            long unbounded = initialMillis << exponent;
-            // A shift past the width of a long drops the high bits and can leave a small positive value, or 0,
-            // which would lift the delay during the long outage it exists for: doubling only ever grows a
-            // positive value, so a result below the base delay wrapped, and is past the cap
-            boolean overflowed = unbounded < initialMillis;
-            long ceiling = overflowed ? cappedMaxMillis : Math.min(unbounded, cappedMaxMillis);
+            int exponent = Math.max(consecutiveFailures, 1) - 1;
+            // Doubled while it fits in a long, as it does shifted by fewer places than it has leading zeros:
+            // shifted further, it drops high bits and can leave any value, 0 included, where it is past the cap
+            long ceiling = exponent < Long.numberOfLeadingZeros(initialMillis)
+                    ? Math.min(initialMillis << exponent, cappedMaxMillis)
+                    : cappedMaxMillis;
             return ThreadLocalRandom.current().nextLong(ceiling + 1);
         };
     }
