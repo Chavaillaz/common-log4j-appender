@@ -562,6 +562,36 @@ class DefaultLogConverterTest {
             assertEquals("INFO", document.get("level"));
         }
 
+        @Test
+        @DisplayName("Converts an event whose context data claims more entries than a document can hold")
+        void testConversionToleratesAContextDataOverstatingItsSize() {
+            // given: a custom context data holding nothing, whose size() says otherwise
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .setContextData(new ThrowingContextData() {
+                        @Override
+                        public <V> void forEach(BiConsumer<String, ? super V> action) {
+                            // Holds nothing
+                        }
+
+                        @Override
+                        public int size() {
+                            return Integer.MAX_VALUE;
+                        }
+                    })
+                    .build();
+
+            // when
+            var document = assertDoesNotThrow(() -> converter.convert(event));
+
+            // then: sized for what it holds, rather than failing to size for a count no map can reach
+            assertEquals("Message", document.get("logmessage"));
+        }
+
     }
 
     private static class ThrowingMessage implements Message {

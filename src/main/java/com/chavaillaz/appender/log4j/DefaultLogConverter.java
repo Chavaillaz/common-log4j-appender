@@ -56,6 +56,13 @@ public class DefaultLogConverter implements LogConverter {
     private static final int THROWABLE_FIELD_COUNT = 2;
 
     /**
+     * Most MDC entries a document is sized for up front, far more than a log event usually carries: the
+     * {@code size()} of a custom context data is application code, whose wrong answer must not size a map
+     * beyond what memory holds.
+     */
+    private static final int MAX_PRESIZED_MDC_FIELDS = 64;
+
+    /**
      * The configuration the host, environment and application of each document are taken from.
      */
     private final LogConfiguration configuration;
@@ -86,8 +93,8 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Counts the fields this converter is expected to write for the given event, so that the document is
-     * never resized while being populated.
+     * Counts the fields this converter is expected to write for the given event, so that the document is not
+     * resized while being populated, unless its MDC is unusually large.
      *
      * @param event The logging event
      * @return The expected number of fields, never negative
@@ -100,7 +107,8 @@ public class DefaultLogConverter implements LogConverter {
         ReadOnlyStringMap contextData = event.getContextData();
         if (contextData != null) {
             try {
-                fields += Math.max(0, contextData.size());
+                // A larger one only resizes the document while it is populated
+                fields += Math.clamp(contextData.size(), 0, MAX_PRESIZED_MDC_FIELDS);
             } catch (Throwable e) {
                 // Throwable, a custom context data running code of the application: left to writeMDC(),
                 // which reports it failing, the document only resizing meanwhile
