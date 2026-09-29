@@ -43,8 +43,8 @@ import org.apache.logging.log4j.status.StatusLogger;
  * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Lines are appended whole, so that neither
  * concurrent callers nor other listeners or processes appending to the same file interleave within one, a line
  * left incomplete by a write cut short (a crash, a full disk) is ended before the next one is appended, and a
- * failure to write is passed to {@link #onWriteFailure(Path, List, String, IOException)}, logged by default,
- * rather than thrown into the pipeline.
+ * failure to write passes the documents it left out to {@link #onWriteFailure(Path, List, String, IOException)},
+ * logged by default, rather than throwing into the pipeline.
  * <p>
  * The JSON is written without any dependency: {@code null}, {@link Boolean}, {@link Number}, {@link Map},
  * {@link Iterable} and array values as their JSON counterpart, the latter three recursively and keys in their
@@ -85,6 +85,11 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      * The most bytes appended by a single write, made of whole lines, unless one line alone is longer.
      */
     private static final int MAX_WRITE_BYTES = 64 * 1024;
+
+    /**
+     * What ends each line, encoded.
+     */
+    private static final byte[] LINE_SEPARATOR = System.lineSeparator().getBytes(UTF_8);
 
     /**
      * The file whose name the one of each day is derived from, never written to itself.
@@ -169,25 +174,41 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             return;
         }
         Instant droppedAt = clock.instant();
-        List<String> lines = new ArrayList<>(documents.size());
+        List<byte[]> lines = new ArrayList<>(documents.size());
         for (Map<String, Object> document : documents) {
-            lines.add(toLine(document, reason, droppedAt));
+            lines.add(toLine(document, reason, droppedAt).getBytes(UTF_8));
         }
         Path target = fileOf(LocalDate.ofInstant(droppedAt, clock.getZone()));
+        // Counted write by write, so that one failing partway hands over only the documents it left out
+        int appended = 0;
         try {
             writeLock.lock();
-            try {
+            try (OutputStream out = openForAppend(target)) {
                 if (endsWithPartialLine(target)) {
                     // A write cut short, by a crash or a full disk, would otherwise swallow the first line
-                    lines.addFirst("");
+                    out.write(LINE_SEPARATOR);
                 }
-                appendLines(target, lines);
+                while (appended < lines.size()) {
+                    appended = appendWholeLines(out, lines, appended);
+                }
             } finally {
                 writeLock.unlock();
             }
         } catch (IOException e) {
-            onWriteFailure(target, documents, reason, e);
+            onWriteFailure(target, documents.subList(appended, documents.size()), reason, e);
         }
+    }
+
+    /**
+     * Opens the given file for appending, creating it if it does not exist. Package-private so that a test can
+     * make a write fail partway, as a full disk does.
+     *
+     * @param file The file to append to
+     * @return A stream appending to it
+     * @throws IOException If the file cannot be opened
+     */
+    OutputStream openForAppend(Path file) throws IOException {
+        return Files.newOutputStream(file, CREATE, APPEND);
     }
 
     /**
@@ -217,29 +238,27 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Appends the given lines to the given file, each followed by a line separator, in writes of whole lines:
-     * on a local file system, each write to a file opened for appending lands at its end in one piece, so that
-     * another listener or process appending to the same file puts its lines between these, never inside one.
+     * Appends, in a single write, the given lines from the given one on, each followed by a line separator, as
+     * many as fit in {@link #MAX_WRITE_BYTES}, and that one at least however long: on a local file system, a
+     * write to a file opened for appending lands at its end in one piece, so that another listener or process
+     * appending to the same file puts its lines between these, never inside one.
      *
-     * @param file  The file to append to, created if it does not exist
-     * @param lines The lines to append, in order
-     * @throws IOException If the file cannot be opened or written
+     * @param out   The file to append to
+     * @param lines The lines to append, encoded
+     * @param from  The index of the first line to append
+     * @return The index past the last line appended
+     * @throws IOException If the write fails, possibly after appending part of it
      */
-    private static void appendLines(Path file, List<String> lines) throws IOException {
-        byte[] separator = System.lineSeparator().getBytes(UTF_8);
-        ByteArrayOutputStream pending = new ByteArrayOutputStream(MAX_WRITE_BYTES);
-        try (OutputStream out = Files.newOutputStream(file, CREATE, APPEND)) {
-            for (String line : lines) {
-                byte[] encoded = line.getBytes(UTF_8);
-                if (pending.size() > 0 && pending.size() + encoded.length + separator.length > MAX_WRITE_BYTES) {
-                    pending.writeTo(out);
-                    pending.reset();
-                }
-                pending.writeBytes(encoded);
-                pending.writeBytes(separator);
-            }
-            pending.writeTo(out);
-        }
+    private static int appendWholeLines(OutputStream out, List<byte[]> lines, int from) throws IOException {
+        ByteArrayOutputStream write = new ByteArrayOutputStream(MAX_WRITE_BYTES);
+        int next = from;
+        do {
+            write.writeBytes(lines.get(next));
+            write.writeBytes(LINE_SEPARATOR);
+            next++;
+        } while (next < lines.size() && write.size() + lines.get(next).length + LINE_SEPARATOR.length <= MAX_WRITE_BYTES);
+        write.writeTo(out);
+        return next;
     }
 
     /**
@@ -296,7 +315,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      * documents by default, so that they at least appear somewhere. Override to fall back to another sink.
      *
      * @param file      The file of the day the documents could not be appended to
-     * @param documents The documents that could not be appended
+     * @param documents The documents that could not be appended, those appended before the failure staying in
+     *                  the file
      * @param reason    The reason they were originally dropped
      * @param cause     The failure encountered while appending them
      */

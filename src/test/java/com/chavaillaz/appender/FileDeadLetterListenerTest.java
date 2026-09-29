@@ -7,7 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.FilterOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.lang.Thread.State;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -592,6 +595,49 @@ class FileDeadLetterListenerTest {
         assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
         assertEquals(List.of("reason"), failures);
         assertEquals(List.of(file), failedFiles);
+    }
+
+    @Test
+    @DisplayName("Hands over only the documents a write failing partway left out of the file")
+    void testWriteFailingPartwayHandsOverOnlyTheDocumentsLeftOut(@TempDir Path tempDir) throws Exception {
+        // given: documents taking several writes, the disk filling up after the first one
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var failed = new CopyOnWriteArrayList<Map<String, Object>>();
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK) {
+            @Override
+            OutputStream openForAppend(Path target) throws IOException {
+                return new FilterOutputStream(super.openForAppend(target)) {
+                    private int writes;
+
+                    @Override
+                    public void write(byte[] bytes, int offset, int length) throws IOException {
+                        if (++writes > 1) {
+                            throw new IOException("No space left on device");
+                        }
+                        out.write(bytes, offset, length);
+                    }
+                };
+            }
+
+            @Override
+            protected void onWriteFailure(Path target, List<Map<String, Object>> documents, String reason, IOException cause) {
+                failed.addAll(documents);
+            }
+        };
+        var documents = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 100; i++) {
+            documents.add(Map.of("id", i, "padding", "x".repeat(1_000)));
+        }
+
+        // when
+        listener.onDocumentsDropped(documents, "reason");
+
+        // then: the lines of the first write stay in the file, and only the others are handed over, rather than
+        // every document, which a fallback sink would then hold twice
+        int appended = Files.readAllLines(file, UTF_8).size();
+        assertTrue(appended > 0 && appended < documents.size(), "Unexpected number of lines appended: " + appended);
+        assertEquals(IntStream.range(appended, documents.size()).boxed().toList(),
+                failed.stream().map(document -> document.get("id")).toList());
     }
 
     @Test
