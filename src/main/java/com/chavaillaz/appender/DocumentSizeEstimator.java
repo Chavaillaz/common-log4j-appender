@@ -38,10 +38,14 @@ public final class DocumentSizeEstimator {
     private static final int ENTRY_OVERHEAD = 4;
 
     /**
-     * Bytes added by the two quotes surrounding a JSON string, plus the comma separating it from the next
-     * element when it sits in an array.
+     * Bytes added after each element of a JSON array: the comma separating it from the next one.
      */
-    private static final int STRING_OVERHEAD = 3;
+    private static final int ELEMENT_OVERHEAD = 1;
+
+    /**
+     * Bytes added by the two quotes surrounding a JSON string.
+     */
+    private static final int STRING_OVERHEAD = 2;
 
     /**
      * Bytes taken by a JSON {@code null}.
@@ -137,9 +141,7 @@ public final class DocumentSizeEstimator {
     private static long estimateArray(Iterable<?> iterable, int depth) {
         long size = CONTAINER_OVERHEAD;
         for (Object element : iterable) {
-            // One extra byte for the comma separating this element from the next one; already included in
-            // STRING_OVERHEAD for a string, so only added here for everything else.
-            size += estimateValue(element, depth + 1) + (element instanceof CharSequence ? 0 : 1);
+            size += estimateValue(element, depth + 1) + ELEMENT_OVERHEAD;
         }
         return size;
     }

@@ -4,7 +4,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -36,6 +38,28 @@ class DocumentSizeEstimatorTest {
         long large = DocumentSizeEstimator.estimate(Map.of("logmessage", "x".repeat(10_000)));
 
         assertTrue(large > small + 9_000, "A 10'000 character message should dominate the estimate, got " + large);
+    }
+
+    @Test
+    @DisplayName("Counts every separator of the compact JSON rendering once")
+    void testCountsEachSeparatorOnce() {
+        // given: strings, a number, and values rendered as strings, in the object and in arrays
+        Instant instant = Instant.parse("2026-09-28T10:15:30Z");
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("level", "ERROR");
+        document.put("count", 3);
+        document.put("tags", List.of("a", "b"));
+        document.put("when", instant);
+        document.put("seen", List.of(instant));
+        String json = "{\"level\":\"ERROR\",\"count\":3,\"tags\":[\"a\",\"b\"],"
+                + "\"when\":\"2026-09-28T10:15:30Z\",\"seen\":[\"2026-09-28T10:15:30Z\"]}";
+
+        // when
+        long overhead = DocumentSizeEstimator.estimate(document) - json.getBytes(UTF_8).length;
+
+        // then: never under it, and over it by no more than the comma counted after the last element of each of
+        // the three containers
+        assertTrue(overhead >= 0 && overhead <= 3, "Estimated " + overhead + " bytes more than the JSON takes");
     }
 
     @ParameterizedTest
