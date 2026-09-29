@@ -892,6 +892,80 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Waits for the listener still notified of a dropped element before returning from close")
+    void testCloseWaitsForTheDropNotificationsStillRunning() throws Exception {
+        // given: an element pushed out of the batch, notified on a thread of its own to a listener taking its
+        // time over it, as a remote dead-letter queue does
+        var release = new CountDownLatch(1);
+        var saved = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = batcherNotifyingTheFirstDiscard(release, saved);
+
+        // when
+        var closer = new Thread(() -> batcher.close(Duration.ofSeconds(10)));
+        closer.setDaemon(true);
+        closer.start();
+        closer.join(300);
+
+        // then: the close waits for that notification, which used to be left running, for the JVM exiting once
+        // the appender stopped to cut short
+        assertTrue(closer.isAlive(), "close() should wait for the listener still notified of a dropped element");
+        release.countDown();
+        closer.join(SECONDS.toMillis(5));
+        assertFalse(closer.isAlive(), "close() should return once the listener did");
+        assertEquals(List.of("first", "second"), saved);
+    }
+
+    @Test
+    @DisplayName("Gives up waiting for a listener stuck on a dropped element once the close timeout elapses")
+    void testCloseBoundsTheWaitForTheDropNotifications() throws Exception {
+        // given: the same notification, to a listener that does not return from it
+        var release = new CountDownLatch(1);
+        var saved = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = batcherNotifyingTheFirstDiscard(release, saved);
+
+        // when
+        long start = System.nanoTime();
+        batcher.close(Duration.ofMillis(200));
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+        // then: the wait is bounded like any other of the close, which still reports what is pending
+        assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
+        assertEquals(List.of("second"), saved);
+        release.countDown();
+    }
+
+    /**
+     * A batcher holding "second", which pushed "first" out to a listener notified of it on a thread of its own,
+     * and only returning from that notification once the given latch is released: the pending batch holds a
+     * single element, and a failing transport holds the next ones off until a flush.
+     */
+    private static Batcher<String> batcherNotifyingTheFirstDiscard(CountDownLatch release, List<String> saved)
+            throws InterruptedException {
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 100)
+                .maxPendingElements(() -> 1)
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        if (elements.contains("first")) {
+                            try {
+                                release.await();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+                        saved.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("first"));
+        batcher.awaitPendingTransmissions();
+        batcher.add(List.of("second"));
+        return batcher;
+    }
+
+    @Test
     @DisplayName("Holds off retrying while the backoff policy says to wait, then retries once it elapses")
     void testBackoffHoldsOffRetries() throws Exception {
         // given

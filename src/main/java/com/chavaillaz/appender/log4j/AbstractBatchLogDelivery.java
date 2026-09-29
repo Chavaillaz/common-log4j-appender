@@ -371,8 +371,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * Flushes the current batch and waits, up to the given timeout, for every pending transmission, that final
-     * one included: a subclass overriding it calls it first, and releases the resources of
-     * {@link #sendBulk(List)} once it returns.
+     * one included, and for the listener still being notified of documents dropped before: a subclass
+     * overriding it calls it first, and releases the resources of {@link #sendBulk(List)} once it returns.
      * <p>
      * What is still pending once that wait is over, the documents of a transmission still in flight included,
      * is reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}, giving a dead-letter sink

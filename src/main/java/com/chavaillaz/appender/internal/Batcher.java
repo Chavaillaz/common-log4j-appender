@@ -167,7 +167,7 @@ public class Batcher<T> {
     /**
      * Bounds the drop notifications handed to {@link #transmissionExecutor} at once. Separate from
      * {@link #transmissionPermits}, so that a notification never takes the slot of a transmission, nor makes
-     * {@link #awaitPendingTransmissions()} wait for a listener.
+     * {@link #awaitPendingTransmissions()} wait for a listener: only {@link #close(Duration)} waits for them.
      */
     private final Semaphore dropNotificationPermits = new Semaphore(MAX_CONCURRENT_DROP_NOTIFICATIONS);
 
@@ -824,8 +824,8 @@ public class Batcher<T> {
      * listener does not stall {@link #add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS}
      * run at once: past that, or once no thread starts, the executor being shut down for instance, the
      * notification runs on the calling thread, so that a slow listener cannot pile notifications, and the
-     * elements they hold, up without bound under the very overload causing them. Not tracked by
-     * {@link #transmissionPermits}, so closing does not wait for it.
+     * elements they hold, up without bound under the very overload causing them. Waited for by
+     * {@link #close(Duration)}, not by {@link #awaitPendingTransmissions()}.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded
@@ -1232,15 +1232,18 @@ public class Batcher<T> {
 
     /**
      * Flushes the current batch and waits for every pending transmission, that final one included, to
-     * complete, so that the resources of the transport function can be released right after.
+     * complete, so that the resources of the transport function can be released right after. It also waits for
+     * the listener to return from the notifications of elements dropped before, which run on threads of their
+     * own that the JVM exiting once closed would cut short.
      * <p>
      * What is still pending once that wait is over, put back by a failing final transmission or held by one
      * not completed in time, is reported through {@link BatcherListener#onDropped(List, String)}, giving a
      * dead-letter sink a last chance to save it. A transmission completing later has its result ignored, its
      * elements being possibly delivered as well as reported.
      *
-     * @param timeout The maximum time to wait for pending transmissions to complete, or {@code null} to wait
-     *                indefinitely, which is only safe for a transport always completing its future
+     * @param timeout The maximum time to wait for pending transmissions and notifications to complete, or
+     *                {@code null} to wait indefinitely, which is only safe for a transport always completing
+     *                its future and a listener always returning
      */
     public void close(@Nullable Duration timeout) {
         closed = true;
@@ -1258,9 +1261,32 @@ public class Batcher<T> {
             Thread.currentThread().interrupt();
             log.warn("Interrupted while waiting for pending transmissions to complete");
         } finally {
+            // First: past it, a notification runs on the thread dropping its elements, so that the wait misses none
             transmissionExecutor.shutdown();
+            awaitDropNotifications();
             reportRemainingAsDropped();
             reportInFlightAsDropped();
+        }
+    }
+
+    /**
+     * Waits, until {@link #closeDeadlineNanos} if any, for the drop notifications running on a thread of their
+     * own (see {@link #notifyDropped(List, String)}), an interruption ending the wait.
+     */
+    private void awaitDropNotifications() {
+        long deadline = closeDeadlineNanos;
+        try {
+            if (deadline == NO_DEADLINE) {
+                dropNotificationPermits.acquire(MAX_CONCURRENT_DROP_NOTIFICATIONS);
+            } else if (!dropNotificationPermits.tryAcquire(MAX_CONCURRENT_DROP_NOTIFICATIONS,
+                    Math.max(0, deadline - System.nanoTime()), NANOSECONDS)) {
+                log.warn("Gave up waiting for the listener to return from {} notification(s) of dropped {}s",
+                        MAX_CONCURRENT_DROP_NOTIFICATIONS - dropNotificationPermits.availablePermits(), elementNoun);
+                return;
+            }
+            dropNotificationPermits.release(MAX_CONCURRENT_DROP_NOTIFICATIONS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
