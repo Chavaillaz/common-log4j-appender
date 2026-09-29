@@ -53,7 +53,8 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * they are processed, while every transmission slot is stuck on an unresponsive downstream system for
  * instance, cannot grow memory without bound. Once full, the oldest event is discarded to make room, and
  * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} on a virtual thread, so that a
- * slow listener never holds up the application: past as many discards waiting for it, one is only logged.
+ * slow listener never holds up the application: once as many discards wait for it as the queue holds, the next
+ * ones are only logged.
  * <p>
  * An event at least as severe as {@link DeliveryOptions#flushLevel()} flushes the batch right after it, so
  * that it is not held back by settings favoring throughput.
@@ -63,15 +64,14 @@ import com.chavaillaz.appender.LogDeliveryListener;
 public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> extends AbstractAppender {
 
     /**
-     * Creates the threads of an executor, named with the given prefix for thread dumps.
+     * Creates the threads of an executor, all given the same name for thread dumps.
      * <p>
-     * Daemon threads, like the background threads of Log4j2: neither ends before
-     * {@link #stop(long, TimeUnit)}, which only the shutdown hook of Log4j2 calls, once the JVM starts shutting
-     * down, which a live non-daemon thread prevents. Nor do they inherit the inheritable thread-locals and the
-     * context class loader of the thread creating them, which they would keep reachable until the appender
-     * stops, the system class loader being theirs instead.
+     * Daemon threads, like those of Log4j2: they only end with {@link #stop(long, TimeUnit)}, which the shutdown
+     * hook of Log4j2 calls once the JVM starts shutting down, and a live non-daemon thread keeps it from doing so.
+     * They take neither the inheritable thread-locals nor the context class loader of the thread creating them,
+     * which they would otherwise keep reachable until the appender stops.
      *
-     * @param name The thread name prefix
+     * @param name The name of the threads
      * @return The thread factory to use
      */
     private static ThreadFactory namedThreadFactory(String name) {

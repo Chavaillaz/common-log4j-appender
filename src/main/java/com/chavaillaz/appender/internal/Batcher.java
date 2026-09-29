@@ -58,9 +58,9 @@ import com.chavaillaz.appender.TransmissionResult;
  * than {@code maxRequestElements}, or {@code maxRequestBytes}, is split into chunks transmitted and retried
  * independently.
  * <p>
- * The pending batch itself, with the failure streaks of its elements and the trims bounding it, is a
- * {@link PendingBatch} guarded by a lock of this instance, which decides when a batch is due and handles its
- * transmissions, their results and the close.
+ * The pending batch, with the failure streaks of its elements and the trims bounding it, is a
+ * {@link PendingBatch} guarded by a lock: this class decides when it is due, and handles its transmissions,
+ * their results and the close.
  * <p>
  * Instances are created through {@link #builder()}, every setting but the transport function having a usable
  * default.
