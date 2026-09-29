@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -1103,6 +1104,66 @@ class BatcherTest {
 
         // then: the listener was notified on the calling thread instead, rather than never
         assertEquals(List.of("first"), dropped);
+    }
+
+    @Test
+    @DisplayName("Leaves its carrier to other virtual threads while one waits for the pending batch")
+    void testWaitingForTheBatchDoesNotPinACarrier() throws Exception {
+        // given: a measurement blocking while it holds the pending batch, as a slow one does, and as many
+        // virtual threads waiting for the batch as there are carriers to run virtual threads on. On Java 21, one
+        // waiting to enter a monitor keeps its carrier, where one waiting for a lock gives it back; later
+        // versions give it back either way
+        var measuring = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10L)
+                .elementSize(element -> {
+                    measuring.countDown();
+                    try {
+                        release.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return 1;
+                })
+                .transport(elements -> completedFuture(TransmissionResult.success()))
+                .build();
+        Thread adder = Thread.ofPlatform().daemon().start(() -> batcher.add(List.of("a")));
+        assertTrue(measuring.await(5, SECONDS), "The measurement should have started");
+        int carriers = Integer.getInteger("jdk.virtualThreadScheduler.parallelism", Runtime.getRuntime().availableProcessors());
+        var waiting = new ArrayList<Thread>();
+        for (int i = 0; i < carriers; i++) {
+            waiting.add(Thread.ofVirtual().start(batcher::metrics));
+        }
+        awaitWaiting(waiting);
+
+        // when: one more virtual thread has something to run
+        var ran = new CountDownLatch(1);
+        Thread.ofVirtual().start(ran::countDown);
+        boolean ranMeanwhile = ran.await(2, SECONDS);
+        release.countDown();
+        adder.join();
+        for (Thread thread : waiting) {
+            thread.join();
+        }
+
+        // then: it ran while the others waited, rather than once they were done
+        assertTrue(ranMeanwhile, "A virtual thread should have run while " + carriers + " others waited for the batch");
+    }
+
+    /**
+     * Waits until each of the given threads waits, to enter a monitor or for a lock.
+     */
+    private static void awaitWaiting(List<Thread> threads) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        for (Thread thread : threads) {
+            while (thread.getState() != Thread.State.BLOCKED && thread.getState() != Thread.State.WAITING) {
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new AssertionError("Timed out waiting for " + thread + " to wait, " + thread.getState());
+                }
+                Thread.sleep(1);
+            }
+        }
     }
 
     /**

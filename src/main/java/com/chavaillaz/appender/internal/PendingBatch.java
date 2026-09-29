@@ -14,8 +14,8 @@ import org.jspecify.annotations.Nullable;
 /**
  * The elements a {@link Batcher} accumulates until they are sent, oldest first, along with the failure streaks
  * of those a failed transmission put back and their estimated size. Not thread-safe: the batcher guards the one
- * it accumulates with its monitor, and swaps it for an empty one once due, the one swapped out being no one
- * else's from then on.
+ * it accumulates with a lock, and swaps it for an empty one once due, the one swapped out being no one else's
+ * from then on.
  * <p>
  * What a failed transmission puts back goes in front of every newer element, so that the failure streaks only
  * ever describe the leading elements, the others having never failed, and both trims discard from the front,

@@ -19,6 +19,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
@@ -58,8 +59,8 @@ import com.chavaillaz.appender.TransmissionResult;
  * independently.
  * <p>
  * The pending batch itself, with the failure streaks of its elements and the trims bounding it, is a
- * {@link PendingBatch} guarded by the monitor of this instance, which decides when a batch is due and handles
- * its transmissions, their results and the close.
+ * {@link PendingBatch} guarded by a lock of this instance, which decides when a batch is due and handles its
+ * transmissions, their results and the close.
  * <p>
  * Instances are created through {@link #builder()}, every setting but the transport function having a usable
  * default.
@@ -132,8 +133,17 @@ public class Batcher<T> {
     private final BatcherListener<T> listener;
 
     /**
-     * The elements to be sent with the next transmission, swapped for an empty batch once due. Guarded by the
-     * monitor of this instance.
+     * Guards {@link #pending}, and the state deciding what happens to it, from the thread accumulating it and
+     * those handling the results of transmissions. A lock rather than the monitor of this instance, those being
+     * virtual threads: on Java 21, one blocked entering a monitor keeps its carrier, so that those waiting their
+     * turn could hold every carrier and stall every virtual thread of the application, where one waiting for a
+     * lock unmounts.
+     */
+    private final ReentrantLock lock = new ReentrantLock();
+
+    /**
+     * The elements to be sent with the next transmission, swapped for an empty batch once due. Guarded by
+     * {@link #lock}.
      */
     private PendingBatch<T> pending;
 
@@ -203,16 +213,15 @@ public class Batcher<T> {
 
     /**
      * Whether {@link #close(Duration)} was called, after which no element is accepted, since nothing would
-     * transmit or report it. Raised before the close first takes the monitor of this instance, so that
-     * {@link #add(List)} reading it unset under the monitor knows {@link #reportRemainingAsDropped()} will
-     * still see what it stacks.
+     * transmit or report it. Raised before the close first takes {@link #lock}, so that {@link #add(List)}
+     * reading it unset under the lock knows {@link #reportRemainingAsDropped()} will still see what it stacks.
      */
     private volatile boolean closed;
 
     /**
      * Whether {@link #reportRemainingAsDropped()} emptied {@link #pending} for good, past which
      * {@link #requeue(Chunk)} reports its elements rather than merging them into a batch nobody looks at.
-     * Guarded by the monitor of this instance.
+     * Guarded by {@link #lock}.
      */
     private boolean drained;
 
@@ -513,8 +522,9 @@ public class Batcher<T> {
         boolean rejected;
         int maxPending = 0;
         long maxBytes = 0;
-        synchronized (this) {
-            // Read under the monitor, which close() only takes after raising it (see closed)
+        lock.lock();
+        try {
+            // Read under the lock, which close() only takes after raising it (see closed)
             rejected = closed;
             if (!rejected) {
                 pending.append(elements);
@@ -537,6 +547,8 @@ public class Batcher<T> {
                     oversized = pending.trimToBytes(maxBytes);
                 }
             }
+        } finally {
+            lock.unlock();
         }
         if (rejected) {
             log.warn("Discarding {} {}(s) submitted after this engine was closed", elements.size(), elementNoun);
@@ -615,9 +627,12 @@ public class Batcher<T> {
     public Metrics metrics() {
         int pendingElements;
         long pendingSize;
-        synchronized (this) {
+        lock.lock();
+        try {
             pendingElements = pending.size();
             pendingSize = pending.bytes();
+        } finally {
+            lock.unlock();
         }
         int inFlight = Math.max(0, maxConcurrentTransmissions - transmissionPermits.availablePermits());
         return new Metrics(pendingElements, pendingSize, inFlight,
@@ -640,7 +655,8 @@ public class Batcher<T> {
      */
     private void flush(boolean force) {
         PendingBatch<T> due;
-        synchronized (this) {
+        lock.lock();
+        try {
             if (pending.isEmpty()) {
                 return;
             }
@@ -651,6 +667,8 @@ public class Batcher<T> {
             }
             log.debug("Sending partial batch of {}/{}", pending.size(), readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold"));
             due = swapBatch();
+        } finally {
+            lock.unlock();
         }
         dispatch(due);
     }
@@ -659,7 +677,7 @@ public class Batcher<T> {
      * Replaces the pending batch with an empty one and returns it, so that accumulating the next batch
      * resumes while this one is transmitted.
      * <p>
-     * Must be called while holding the monitor of this instance.
+     * Must be called while holding {@link #lock}.
      *
      * @return The batch swapped out, no one else's from then on
      */
@@ -755,7 +773,8 @@ public class Batcher<T> {
         List<T> abandoned = null;
         int maxPending = 0;
         long maxBytes = 0;
-        synchronized (this) {
+        lock.lock();
+        try {
             if (drained) {
                 // Nothing would ever transmit or report them: a transmission, or a dispatch that got no permit
                 // within the close budget, handing its elements back once close() drained the batch
@@ -767,8 +786,10 @@ public class Batcher<T> {
                 maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
                 oversized = pending.trimToBytes(maxBytes);
             }
+        } finally {
+            lock.unlock();
         }
-        // Outside the monitor, which accumulating the next batch needs, and directly: this runs where a
+        // Outside the lock, which accumulating the next batch needs, and directly: this runs where a
         // transmission completed, or where a dispatch failed while closing
         if (abandoned != null) {
             log.error("Discarding {} {}(s) put back after this engine was closed, they were never successfully transmitted",
@@ -955,7 +976,7 @@ public class Batcher<T> {
             future.whenComplete(handler);
         } else {
             // The thread completing it belongs to the client, an I/O thread serving other requests, which the
-            // listener, a dead-letter write or a requeue waiting for the monitor must not hold up
+            // listener, a dead-letter write or a requeue waiting for the lock must not hold up
             future.whenCompleteAsync(handler, this::executeOffTheCompletingThread);
         }
     }
@@ -1186,11 +1207,14 @@ public class Batcher<T> {
         }
 
         long deadline = System.nanoTime() + MILLISECONDS.toNanos(delayMillis);
-        synchronized (this) {
+        lock.lock();
+        try {
             long current = retryNotBeforeNanos;
             if (current == NO_BACKOFF || deadline - current > 0) {
                 retryNotBeforeNanos = deadline;
             }
+        } finally {
+            lock.unlock();
         }
         log.debug("Holding off the next transmission for {}ms after {} consecutive failure(s)", delayMillis, consecutiveFailures);
     }
@@ -1266,13 +1290,16 @@ public class Batcher<T> {
      */
     private void reportRemainingAsDropped() {
         List<T> remaining;
-        synchronized (this) {
+        lock.lock();
+        try {
             // Raised for an empty batch too, so that a later requeue reports its elements
             drained = true;
             if (pending.isEmpty()) {
                 return;
             }
             remaining = pending.drain();
+        } finally {
+            lock.unlock();
         }
         log.error("Discarding {} {}(s) still pending once closed, they were never successfully transmitted",
                 remaining.size(), elementNoun);
