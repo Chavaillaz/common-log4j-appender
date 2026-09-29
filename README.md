@@ -193,7 +193,7 @@ public class MyAppender extends AbstractLogDeliveryAppender<MyConfiguration> {
     }
 
     @Override
-    public LogDelivery createLogDeliveryHandler() {
+    protected LogDelivery createLogDeliveryHandler() {
         return new MyLogDelivery(getLogConfiguration());
     }
 

@@ -591,7 +591,7 @@ class AbstractLogDeliveryAppenderTest {
             var handler = mock(LogDelivery.class);
             var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
                 @Override
-                public LogDelivery createLogDeliveryHandler() {
+                protected LogDelivery createLogDeliveryHandler() {
                     return handler;
                 }
             };
@@ -622,7 +622,7 @@ class AbstractLogDeliveryAppenderTest {
             LogConverter converter = event -> Map.of("custom", event.getMessage().getFormattedMessage());
             var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
                 @Override
-                public LogDelivery createLogDeliveryHandler() {
+                protected LogDelivery createLogDeliveryHandler() {
                     return handler;
                 }
 
@@ -751,7 +751,7 @@ class AbstractLogDeliveryAppenderTest {
             var threads = new CopyOnWriteArrayList<String>();
             var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
                 @Override
-                public LogDelivery createLogDeliveryHandler() {
+                protected LogDelivery createLogDeliveryHandler() {
                     return mock(LogDelivery.class);
                 }
 
@@ -850,7 +850,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return mock(LogDelivery.class);
         }
 
@@ -1982,7 +1982,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
@@ -2006,7 +2006,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
@@ -2036,7 +2036,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
@@ -2067,7 +2067,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
@@ -2112,7 +2112,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
@@ -2145,7 +2145,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return new LogDelivery() {
                 @Override
                 public void send(Map<String, Object> document) {
@@ -2249,7 +2249,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
@@ -2271,7 +2271,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return new LogDelivery() {
                 @Override
                 public void send(Map<String, Object> document) {
@@ -2315,7 +2315,7 @@ class AbstractLogDeliveryAppenderTest {
 
         @Override
         @SuppressWarnings("NullAway")
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return null;
         }
 
@@ -2338,7 +2338,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             throw new NoClassDefFoundError("com/example/transport/RestClient");
         }
 
@@ -2360,7 +2360,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             throw new RuntimeException("Simulated startup failure");
         }
 
@@ -2385,7 +2385,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 
@@ -2413,7 +2413,7 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Override
-        public LogDelivery createLogDeliveryHandler() {
+        protected LogDelivery createLogDeliveryHandler() {
             return logDeliveryHandler;
         }
 

@@ -83,7 +83,7 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
     }
 
     @Override
-    public LogDelivery createLogDeliveryHandler() {
+    protected LogDelivery createLogDeliveryHandler() {
         return new AbstractBatchLogDelivery<>(getLogConfiguration()) {
             @Override
             protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {

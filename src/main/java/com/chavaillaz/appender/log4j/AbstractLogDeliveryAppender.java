@@ -405,11 +405,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Creates the client for logs transmission.
+     * Creates the client for logs transmission, once, when the appender starts: it closes that one when it
+     * stops.
      *
      * @return The logs delivery handler
      */
-    public abstract LogDelivery createLogDeliveryHandler();
+    protected abstract LogDelivery createLogDeliveryHandler();
 
     /**
      * The configuration this appender was created with.
