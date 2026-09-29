@@ -26,8 +26,8 @@ import org.jspecify.annotations.Nullable;
 final class PendingBatch<T> {
 
     /**
-     * Measures one element, never throwing nor returning a negative size, or {@code null} not to track sizes,
-     * leaving the size limits inert.
+     * Measures one element, never throwing nor returning a size outside {@code [0, 2 GiB]}, so that no total
+     * overflows, or {@code null} not to track sizes, leaving the size limits inert.
      */
     private final @Nullable ToLongFunction<T> sizeOf;
 
@@ -54,8 +54,8 @@ final class PendingBatch<T> {
     /**
      * Creates an empty batch.
      *
-     * @param sizeOf          Measures one element, never throwing nor returning a negative size, or {@code null}
-     *                        not to track sizes
+     * @param sizeOf          Measures one element, never throwing nor returning a size outside
+     *                        {@code [0, 2 GiB]}, or {@code null} not to track sizes
      * @param initialCapacity The number of elements to reserve room for
      */
     PendingBatch(@Nullable ToLongFunction<T> sizeOf, int initialCapacity) {

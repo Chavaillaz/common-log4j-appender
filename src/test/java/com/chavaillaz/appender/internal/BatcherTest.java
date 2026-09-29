@@ -506,6 +506,35 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Sends elements measured at the largest size apart rather than adding them up past overflow")
+    void testHugeMeasurementsDoNotOverflowTheLimits() throws Exception {
+        // given: a measurement answering Long.MAX_VALUE for the elements it deems unbounded, two of which added
+        // up to a negative size, under the limit, sending them in one request along with every small one
+        var attempts = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                // One at a time, so the chunks arrive in the order they were cut rather than racing each other
+                .maxConcurrentTransmissions(1)
+                .flushThreshold(() -> 100)
+                .elementSize(element -> element.startsWith("huge") ? Long.MAX_VALUE : 10)
+                .maxRequestBytes(() -> 1_000L)
+                .transport(elements -> {
+                    attempts.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+        batcher.add(List.of("huge-1", "huge-2", "a", "b"));
+        long pendingBytes = batcher.metrics().pendingBytes();
+
+        // when
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: each huge one alone, as any element heavier than a request, the small ones together
+        assertEquals(List.of(List.of("huge-1"), List.of("huge-2"), List.of("a", "b")), attempts);
+        assertEquals(2L * Integer.MAX_VALUE + 20, pendingBytes);
+    }
+
+    @Test
     @DisplayName("Measures each element once when splitting a batch, whatever the number of chunks")
     void testSplittingMeasuresEachElementOnce() throws Exception {
         // given: elements measured at 10 bytes each and a 25 byte request limit, so chunks hold two of them

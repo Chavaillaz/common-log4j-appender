@@ -113,6 +113,12 @@ public class Batcher<T> {
      */
     private static final long PERMIT_WAIT_SLICE_NANOS = Duration.ofSeconds(1).toNanos();
 
+    /**
+     * The most bytes one element counts for: more than a request can carry, a Java array holding at most 2 GiB,
+     * and little enough that the size of a batch holding as many elements as a collection can never overflows.
+     */
+    private static final long MAX_ELEMENT_BYTES = Integer.MAX_VALUE;
+
     private final IntSupplier flushThreshold;
     private final IntSupplier maxPendingElements;
     private final IntSupplier maxRequestElements;
@@ -382,7 +388,8 @@ public class Batcher<T> {
          * <p>
          * Expected to be cheap and free of side effects, being called for every element on the way in, and
          * again when a batch is split for transmission. A negative result counts as zero, and so does one
-         * throwing, which is logged, so that a faulty measurement only makes the limits less accurate.
+         * throwing, which is logged, so that a faulty measurement only makes the limits less accurate. A result
+         * past 2 GiB counts as 2 GiB, more than any request carries.
          *
          * @param elementSize The measurement function
          * @return This builder
@@ -690,17 +697,18 @@ public class Batcher<T> {
     /**
      * Measures one element through {@link #elementSize}, or returns {@code 0} if sizes are not tracked. A
      * negative result, or a measurement throwing, counts as weightless: a byte limit going unenforced is better
-     * than losing the element over a faulty estimate.
+     * than losing the element over a faulty estimate. A result past {@link #MAX_ELEMENT_BYTES} counts as that
+     * much, so that two huge ones cannot add up to a size under the limits, sent in one request.
      *
      * @param element The element to measure
-     * @return The estimated size of the element in bytes, never negative
+     * @return The estimated size of the element in bytes, between {@code 0} and {@link #MAX_ELEMENT_BYTES}
      */
     private long sizeOf(T element) {
         if (elementSize == null) {
             return 0;
         }
         try {
-            return Math.max(0, elementSize.applyAsLong(element));
+            return Math.clamp(elementSize.applyAsLong(element), 0, MAX_ELEMENT_BYTES);
         } catch (Throwable e) {
             // Throwable: measuring a self-referencing element overflows the stack, which would escape add()
             // between appending the elements and accounting for them
