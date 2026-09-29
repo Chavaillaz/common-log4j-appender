@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -247,8 +248,9 @@ public class Batcher<T> {
         this.listener = builder.listener;
         this.pending = newPendingBatch();
         this.transmissionPermits = new Semaphore(builder.maxConcurrentTransmissions);
-        this.transmissionExecutor = Executors.newThreadPerTaskExecutor(
-                Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).factory());
+        this.transmissionExecutor = Executors.newThreadPerTaskExecutor(builder.transmissionThreadFactory != null
+                ? builder.transmissionThreadFactory
+                : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).factory());
     }
 
     /**
@@ -280,6 +282,7 @@ public class Batcher<T> {
         private int maxConcurrentTransmissions = 4;
         private BackoffPolicy backoff = BackoffPolicy.none();
         private String transmissionThreadPrefix = "batcher-transmission-";
+        private @Nullable ThreadFactory transmissionThreadFactory;
         private String elementNoun = "element";
         private @Nullable Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport;
         private BatcherListener<T> listener = BatcherListener.noop();
@@ -413,6 +416,18 @@ public class Batcher<T> {
          */
         public Builder<T> transmissionThreadPrefix(String transmissionThreadPrefix) {
             this.transmissionThreadPrefix = transmissionThreadPrefix;
+            return this;
+        }
+
+        /**
+         * Replaces the factory of the virtual threads named after {@link #transmissionThreadPrefix(String)},
+         * so that a test can make starting one fail.
+         *
+         * @param transmissionThreadFactory The factory of the threads running transmissions and notifications
+         * @return This builder
+         */
+        Builder<T> transmissionThreadFactory(ThreadFactory transmissionThreadFactory) {
+            this.transmissionThreadFactory = transmissionThreadFactory;
             return this;
         }
 
@@ -786,9 +801,10 @@ public class Batcher<T> {
     /**
      * Counts dropped elements, and notifies {@link #listener} of them on a virtual thread, so that a slow
      * listener does not stall {@link #add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS}
-     * run at once: past that, or once the executor is shut down, the notification runs on the calling thread, so
-     * that a slow listener cannot pile notifications, and the elements they hold, up without bound under the
-     * very overload causing them. Not tracked by {@link #transmissionPermits}, so closing does not wait for it.
+     * run at once: past that, or once no thread starts, the executor being shut down for instance, the
+     * notification runs on the calling thread, so that a slow listener cannot pile notifications, and the
+     * elements they hold, up without bound under the very overload causing them. Not tracked by
+     * {@link #transmissionPermits}, so closing does not wait for it.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded
@@ -809,10 +825,16 @@ public class Batcher<T> {
                     dropNotificationPermits.release();
                 }
             });
-        } catch (RejectedExecutionException e) {
+        } catch (Throwable e) {
+            // Throwable, an Error starting the thread keeping the slot for good otherwise (see dispatchChunk())
             dropNotificationPermits.release();
-            log.warn("Notifying the listener of {} dropped {}(s) on the calling thread, the engine is shutting down",
-                    elements.size(), elementNoun);
+            if (e instanceof RejectedExecutionException) {
+                log.warn("Notifying the listener of {} dropped {}(s) on the calling thread, the engine is shutting down",
+                        elements.size(), elementNoun);
+            } else {
+                log.warn("Notifying the listener of {} dropped {}(s) on the calling thread, unable to start a thread for it",
+                        elements.size(), elementNoun, e);
+            }
             notifyListener(() -> listener.onDropped(elements, reason));
         }
     }
@@ -856,8 +878,13 @@ public class Batcher<T> {
         inFlight.add(chunk);
         try {
             transmissionExecutor.execute(() -> transmit(chunk));
-        } catch (RejectedExecutionException e) {
+        } catch (Throwable e) {
+            // Throwable: an Error starting the thread, the memory running out say, would keep the permit for
+            // good, a few of them wedging every later dispatch, and lose the chunks still to dispatch
             transmissionPermits.release();
+            if (!(e instanceof RejectedExecutionException)) {
+                log.warn("Unable to start the transmission of {} {}(s), putting them back", chunk.size(), elementNoun, e);
+            }
             // Unless the close shutting the executor down reported them already
             if (inFlight.remove(chunk)) {
                 requeue(chunk);

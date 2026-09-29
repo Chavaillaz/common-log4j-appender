@@ -2,11 +2,13 @@ package com.chavaillaz.appender.internal;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -17,6 +19,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -1047,6 +1050,75 @@ class BatcherTest {
         // then: the Error was treated as an ordinary failure, so "a" was put back and went out with "b"
         assertEquals(2, attempts.get());
         assertEquals(List.of(List.of("a", "b")), transmitted);
+    }
+
+    @Test
+    @DisplayName("Retries a chunk whose thread failed to start with an Error instead of leaking its permit")
+    void testThreadFailingToStartDoesNotLeakAPermit() throws Exception {
+        // given: a single transmission permit, and a first thread failing to start, as one does once the
+        // memory runs out
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1L)
+                .maxConcurrentTransmissions(1)
+                .transmissionThreadFactory(failingToCreate(1))
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return completedFuture(TransmissionResult.success());
+                })
+                .build();
+
+        // when: the first element fails to start, the second one needs the very permit it took
+        assertDoesNotThrow(() -> batcher.add(List.of("a")));
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> batcher.add(List.of("b")));
+        batcher.awaitPendingTransmissions();
+
+        // then: "a" was put back, and went out with "b" on the permit it gave back
+        assertEquals(List.of(List.of("a", "b")), transmitted);
+    }
+
+    @Test
+    @DisplayName("Notifies a discard on the calling thread when its own thread failed to start with an Error")
+    void testDropNotificationWhoseThreadFailsToStartIsNotLost() throws Exception {
+        // given: a pending cap of one, and a first element failing, which holds the next ones off until the
+        // next flush; the first thread transmits it, and the second one, notifying its discard, fails to start
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> Long.MAX_VALUE)
+                .maxPendingElements(() -> 1)
+                .transmissionThreadFactory(failingToCreate(2))
+                .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("first"));
+        batcher.awaitPendingTransmissions();
+
+        // when: the next element pushes the first one out of the batch
+        assertDoesNotThrow(() -> batcher.add(List.of("second")));
+
+        // then: the listener was notified on the calling thread instead, rather than never
+        assertEquals(List.of("first"), dropped);
+    }
+
+    /**
+     * A factory of virtual threads failing to create the given one, counting from one, with an Error as a thread
+     * fails to start once the memory runs out: an InternalError rather than an OutOfMemoryError, which JUnit
+     * rethrows out of a failing test, aborting every other one.
+     */
+    private static ThreadFactory failingToCreate(int failing) {
+        var created = new AtomicInteger();
+        ThreadFactory virtualThreads = Thread.ofVirtual().factory();
+        return task -> {
+            if (created.incrementAndGet() == failing) {
+                throw new InternalError("Unable to start a thread");
+            }
+            return virtualThreads.newThread(task);
+        };
     }
 
     @Test
