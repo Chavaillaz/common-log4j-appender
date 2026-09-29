@@ -155,6 +155,45 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Ends a line a write cut short left incomplete rather than appending to it")
+    void testEndsAnIncompleteLineBeforeAppending(@TempDir Path tempDir) throws Exception {
+        // given: the file of the day ending in the middle of a line, as a crash during a write leaves it
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        Files.writeString(file, "{\"reason\":\"cut\"");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+
+        // when
+        listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason");
+
+        // then: the incomplete line costs only itself, the new one standing on a line of its own
+        List<String> lines = Files.readAllLines(file, UTF_8);
+        assertEquals(2, lines.size(), "Unexpected lines: " + lines);
+        assertEquals("{\"reason\":\"cut\"", lines.get(0));
+        assertTrue(lines.get(1).startsWith("{\"reason\":\"reason\""), "Unexpected line: " + lines.get(1));
+    }
+
+    @Test
+    @DisplayName("Appends on an interrupted thread, as an interrupted stop reports what it abandons")
+    void testAppendsOnAnInterruptedThread(@TempDir Path tempDir) throws Exception {
+        // given: a file already holding a complete line, checked before appending to it
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+        listener.onDocumentsDropped(List.of(Map.of("id", 1)), "first");
+
+        // when: the next drop is reported by an interrupted thread
+        Thread.currentThread().interrupt();
+        try {
+            listener.onDocumentsDropped(List.of(Map.of("id", 2)), "second");
+        } finally {
+            // then: still flagged, and cleared for the next tests
+            assertTrue(Thread.interrupted());
+        }
+
+        // and: saved all the same
+        assertEquals(2, Files.readAllLines(file, UTF_8).size());
+    }
+
+    @Test
     @DisplayName("Writes one line per document when multiple are dropped together")
     void testOneLinePerDocument(@TempDir Path tempDir) throws Exception {
         // given

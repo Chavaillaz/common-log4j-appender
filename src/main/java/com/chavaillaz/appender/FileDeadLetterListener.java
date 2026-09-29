@@ -3,10 +3,14 @@ package com.chavaillaz.appender;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.StandardOpenOption.APPEND;
 import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.READ;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
@@ -35,7 +39,8 @@ import org.apache.logging.log4j.status.StatusLogger;
  * <p>
  * Each line wraps the document, unmodified, with the reason it was dropped and when:
  * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Appends are serialized, so that concurrent
- * callers never interleave lines, and a failure to write is passed to
+ * callers never interleave lines, a line left incomplete by a write cut short (a crash, a full disk) is ended
+ * before the next one is appended, and a failure to write is passed to
  * {@link #onWriteFailure(Path, List, String, IOException)}, logged by default, rather than thrown into the
  * pipeline.
  * <p>
@@ -164,12 +169,42 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         try {
             writeLock.lock();
             try {
+                if (endsWithPartialLine(target)) {
+                    // A write cut short, by a crash or a full disk, would otherwise swallow the first line
+                    lines.addFirst("");
+                }
                 Files.write(target, lines, UTF_8, CREATE, APPEND);
             } finally {
                 writeLock.unlock();
             }
         } catch (IOException e) {
             onWriteFailure(target, documents, reason, e);
+        }
+    }
+
+    /**
+     * Whether the given file ends in the middle of a line, a previous write having been cut short, so that the
+     * next line appended must first end it. Reads its last byte alone, both line separators ending with a
+     * line feed. A file that cannot be read, being write-only or read on an interrupted thread, is appended to
+     * as is: the check must never cost the write.
+     *
+     * @param file The file about to be appended to
+     * @return {@code true} if it exists, can be read, and its last byte is not a line feed
+     */
+    private static boolean endsWithPartialLine(Path file) {
+        try (SeekableByteChannel channel = Files.newByteChannel(file, READ)) {
+            long size = channel.size();
+            if (size == 0) {
+                return false;
+            }
+            ByteBuffer last = ByteBuffer.allocate(1);
+            channel.position(size - 1).read(last);
+            return last.get(0) != '\n';
+        } catch (NoSuchFileException e) {
+            return false;
+        } catch (IOException e) {
+            log.debug("Unable to check whether {} ends with a complete line, appending to it as is", file, e);
+            return false;
         }
     }
 
