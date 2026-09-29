@@ -83,7 +83,7 @@ import org.jspecify.annotations.Nullable;
  *                                   negative.
  */
 public record DeliveryOptions(
-        long flushThreshold,
+        int flushThreshold,
         Duration flushInterval,
         @Nullable Level flushLevel,
         int maxConcurrentTransmissions,
@@ -205,7 +205,7 @@ public record DeliveryOptions(
      */
     public static final class Builder {
 
-        private long flushThreshold = 1;
+        private int flushThreshold = 1;
         private Duration flushInterval = Duration.ofSeconds(5);
         private @Nullable Level flushLevel;
         private int maxConcurrentTransmissions = 4;
@@ -229,7 +229,7 @@ public record DeliveryOptions(
          * @param flushThreshold The flush threshold
          * @return This builder
          */
-        public Builder flushThreshold(long flushThreshold) {
+        public Builder flushThreshold(int flushThreshold) {
             this.flushThreshold = flushThreshold;
             return this;
         }

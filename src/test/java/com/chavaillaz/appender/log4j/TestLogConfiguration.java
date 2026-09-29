@@ -65,7 +65,7 @@ class TestLogConfiguration implements LogConfiguration {
             return this;
         }
 
-        Builder flushThreshold(long flushThreshold) {
+        Builder flushThreshold(int flushThreshold) {
             options.flushThreshold(flushThreshold);
             return this;
         }

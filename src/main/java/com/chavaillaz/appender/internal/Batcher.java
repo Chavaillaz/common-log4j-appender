@@ -113,7 +113,7 @@ public class Batcher<T> {
      */
     private static final long PERMIT_WAIT_SLICE_NANOS = Duration.ofSeconds(1).toNanos();
 
-    private final LongSupplier flushThreshold;
+    private final IntSupplier flushThreshold;
     private final IntSupplier maxPendingElements;
     private final IntSupplier maxRequestElements;
     private final IntSupplier maxConsecutiveFailures;
@@ -281,7 +281,7 @@ public class Batcher<T> {
      */
     public static final class Builder<T> {
 
-        private LongSupplier flushThreshold = () -> 1L;
+        private IntSupplier flushThreshold = () -> 1;
         private IntSupplier maxPendingElements = () -> 10_000;
         private IntSupplier maxRequestElements = () -> Integer.MAX_VALUE;
         private IntSupplier maxConsecutiveFailures = () -> 5;
@@ -307,7 +307,7 @@ public class Batcher<T> {
          * @param flushThreshold The supplier of the flush threshold
          * @return This builder
          */
-        public Builder<T> flushThreshold(LongSupplier flushThreshold) {
+        public Builder<T> flushThreshold(IntSupplier flushThreshold) {
             this.flushThreshold = flushThreshold;
             return this;
         }
@@ -498,8 +498,8 @@ public class Batcher<T> {
      * @return The new batch
      */
     private PendingBatch<T> newPendingBatch() {
-        long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
-        int capacity = threshold > 0 ? (int) Math.min(threshold, MAX_INITIAL_BATCH_CAPACITY) : 16;
+        int threshold = readLimit(flushThreshold, Integer.MAX_VALUE, "the flush threshold");
+        int capacity = threshold > 0 ? Math.min(threshold, MAX_INITIAL_BATCH_CAPACITY) : 16;
         return new PendingBatch<>(elementSize != null ? this::sizeOf : null, capacity);
     }
 
@@ -529,7 +529,7 @@ public class Batcher<T> {
             if (!rejected) {
                 pending.append(elements);
                 // Each read once, so that two readings cannot disagree
-                long threshold = readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold");
+                int threshold = readLimit(flushThreshold, Integer.MAX_VALUE, "the flush threshold");
                 maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
                 maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
                 log.trace("Stacking batch {}/{}", pending.size(), threshold);
@@ -665,7 +665,7 @@ public class Batcher<T> {
                         pending.size(), elementNoun);
                 return;
             }
-            log.debug("Sending partial batch of {}/{}", pending.size(), readLimit(flushThreshold, Long.MAX_VALUE, "the flush threshold"));
+            log.debug("Sending partial batch of {}/{}", pending.size(), readLimit(flushThreshold, Integer.MAX_VALUE, "the flush threshold"));
             due = swapBatch();
         } finally {
             lock.unlock();

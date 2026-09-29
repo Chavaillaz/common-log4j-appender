@@ -190,7 +190,7 @@ class BatcherTest {
         };
         int maxConsecutiveFailures = 2;
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxPendingElements(() -> 10)
                 .maxConsecutiveFailures(() -> maxConsecutiveFailures)
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
@@ -218,7 +218,7 @@ class BatcherTest {
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         var maxPending = new AtomicInteger(10);
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 100L)
+                .flushThreshold(() -> 100)
                 .maxPendingElements(maxPending::get)
                 .transport(elements -> {
                     transmitted.add(elements);
@@ -251,7 +251,7 @@ class BatcherTest {
         var succeeded = new CopyOnWriteArrayList<Integer>();
         var attempts = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 3L)
+                .flushThreshold(() -> 3)
                 .maxPendingElements(() -> 10)
                 .transport(elements -> {
                     attempts.add(elements);
@@ -397,7 +397,7 @@ class BatcherTest {
         var attempts = new CopyOnWriteArrayList<List<String>>();
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConsecutiveFailures(() -> 2)
                 .transport(elements -> {
                     attempts.add(List.copyOf(elements));
@@ -432,7 +432,7 @@ class BatcherTest {
         // was never part of the chunk (nor of this Batcher at all)
         var attempts = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConsecutiveFailures(() -> 0)
                 .transport(elements -> {
                     attempts.add(elements);
@@ -460,7 +460,7 @@ class BatcherTest {
         // given: elements measured at 10 bytes each and a 25 byte request limit, so chunks hold two of them
         var attempts = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 5L)
+                .flushThreshold(() -> 5)
                 // One at a time, so the chunks arrive in the order they were cut rather than racing each other
                 .maxConcurrentTransmissions(1)
                 .elementSize(element -> 10)
@@ -487,7 +487,7 @@ class BatcherTest {
         Batcher<String> batcher = Batcher.<String>builder()
                 // One at a time, so the chunks arrive in the order they were cut rather than racing each other
                 .maxConcurrentTransmissions(1)
-                .flushThreshold(() -> 3L)
+                .flushThreshold(() -> 3)
                 .elementSize(element -> element.equals("big") ? 500 : 10)
                 .maxRequestBytes(() -> 100L)
                 .transport(elements -> {
@@ -512,7 +512,7 @@ class BatcherTest {
         var measured = new CopyOnWriteArrayList<String>();
         var attempts = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 5L)
+                .flushThreshold(() -> 5)
                 // One at a time, so the chunks arrive in the order they were cut rather than racing each other
                 .maxConcurrentTransmissions(1)
                 .elementSize(element -> {
@@ -545,7 +545,7 @@ class BatcherTest {
         var mutableLists = new CopyOnWriteArrayList<List<String>>();
         var failing = new AtomicBoolean(true);
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 100L)
+                .flushThreshold(() -> 100)
                 .elementSize(element -> 10)
                 .maxPendingBytes(() -> 25L)
                 .transport(elements -> completedFuture(failing.get()
@@ -596,7 +596,7 @@ class BatcherTest {
         // treating every element as weightless-but-still-counted (or worse, as unbounded)
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 3L)
+                .flushThreshold(() -> 3)
                 .maxRequestBytes(() -> 1L)
                 .maxPendingBytes(() -> 1L)
                 .transport(elements -> {
@@ -619,7 +619,7 @@ class BatcherTest {
         // given
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 2L)
+                .flushThreshold(() -> 2)
                 .elementSize(element -> {
                     throw new IllegalStateException("cannot measure " + element);
                 })
@@ -648,7 +648,7 @@ class BatcherTest {
         var dropped = new CopyOnWriteArrayList<String>();
         var reasons = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConsecutiveFailures(() -> 0)
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                 .listener(new BatcherListener<>() {
@@ -675,7 +675,7 @@ class BatcherTest {
         // given: a transport whose future is never completed, holding the single transmission permit for good
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConcurrentTransmissions(1)
                 .transport(elements -> new CompletableFuture<>())
                 .listener(new BatcherListener<>() {
@@ -741,7 +741,7 @@ class BatcherTest {
         // so the next dispatch blocks waiting for it with no close in progress yet
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 1L)
+                .flushThreshold(() -> 1)
                 .maxConcurrentTransmissions(1)
                 .maxConsecutiveFailures(() -> 0)
                 .transport(elements -> new CompletableFuture<>())
@@ -783,7 +783,7 @@ class BatcherTest {
         var reasons = new CopyOnWriteArrayList<String>();
         var inFlight = new CopyOnWriteArrayList<CompletableFuture<TransmissionResult<String>>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 1L)
+                .flushThreshold(() -> 1)
                 .maxConsecutiveFailures(() -> 0)
                 .transport(elements -> {
                     var future = new CompletableFuture<TransmissionResult<String>>();
@@ -831,7 +831,7 @@ class BatcherTest {
         var failing = new CountDownLatch(1);
         var resume = new CountDownLatch(1);
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 1L)
+                .flushThreshold(() -> 1)
                 .maxConsecutiveFailures(() -> 0)
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                 .listener(new BatcherListener<>() {
@@ -897,7 +897,7 @@ class BatcherTest {
         // given
         var attempts = new AtomicInteger();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConsecutiveFailures(() -> 0)
                 .backoff(consecutiveFailures -> 200)
                 .transport(elements -> {
@@ -934,7 +934,7 @@ class BatcherTest {
         // given: a backoff far longer than this test, engaged by a first failing attempt
         var attempts = new AtomicInteger();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConsecutiveFailures(() -> 0)
                 .backoff(consecutiveFailures -> 60_000)
                 .transport(elements -> completedFuture(
@@ -976,7 +976,7 @@ class BatcherTest {
         Batcher<String> batcher = Batcher.<String>builder()
                 // Never reached, the transport failing so that transmissions are held off until a flush, which
                 // never comes: nothing ever drains the batch and every add() trips the pending cap
-                .flushThreshold(() -> Long.MAX_VALUE)
+                .flushThreshold(() -> Integer.MAX_VALUE)
                 .maxPendingElements(() -> 1)
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                 .listener(new BatcherListener<String>() {
@@ -1029,7 +1029,7 @@ class BatcherTest {
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         var attempts = new AtomicInteger();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 1L)
+                .flushThreshold(() -> 1)
                 .maxConcurrentTransmissions(1)
                 .transport(elements -> {
                     if (attempts.incrementAndGet() == 1) {
@@ -1060,7 +1060,7 @@ class BatcherTest {
         // memory runs out
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 1L)
+                .flushThreshold(() -> 1)
                 .maxConcurrentTransmissions(1)
                 .transmissionThreadFactory(failingToCreate(1))
                 .transport(elements -> {
@@ -1085,7 +1085,7 @@ class BatcherTest {
         // next flush; the first thread transmits it, and the second one, notifying its discard, fails to start
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> Long.MAX_VALUE)
+                .flushThreshold(() -> Integer.MAX_VALUE)
                 .maxPendingElements(() -> 1)
                 .transmissionThreadFactory(failingToCreate(2))
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
@@ -1116,7 +1116,7 @@ class BatcherTest {
         var measuring = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .elementSize(element -> {
                     measuring.countDown();
                     try {
@@ -1189,7 +1189,7 @@ class BatcherTest {
         // handling it must never skip
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConsecutiveFailures(() -> 0)
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                 .listener(new BatcherListener<>() {
@@ -1219,7 +1219,7 @@ class BatcherTest {
         // given: a policy throwing an Error, consulted between the decision to retry and the requeue
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxConsecutiveFailures(() -> 0)
                 .backoff(consecutiveFailures -> {
                     throw new StackOverflowError("policy blew up");
@@ -1248,7 +1248,7 @@ class BatcherTest {
         // yet accounted for in the running byte total
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 2L)
+                .flushThreshold(() -> 2)
                 .elementSize(element -> {
                     throw new StackOverflowError("cannot measure " + element);
                 })
@@ -1267,7 +1267,7 @@ class BatcherTest {
         assertEquals(List.of(List.of("a", "b")), transmitted);
     }
 
-    private static Batcher<String> batcher(long flushThreshold,
+    private static Batcher<String> batcher(int flushThreshold,
             Function<List<String>, CompletableFuture<TransmissionResult<String>>> transport, BatcherListener<String> listener) {
         return Batcher.<String>builder()
                 .flushThreshold(() -> flushThreshold)
@@ -1285,7 +1285,7 @@ class BatcherTest {
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         var broken = new AtomicBoolean(true);
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 2L)
+                .flushThreshold(() -> 2)
                 .maxRequestElements(() -> {
                     if (broken.get()) {
                         throw new IllegalStateException("configuration unavailable");
@@ -1314,7 +1314,7 @@ class BatcherTest {
         var dropped = new CopyOnWriteArrayList<String>();
         var broken = new AtomicBoolean(false);
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> Long.MAX_VALUE)
+                .flushThreshold(() -> Integer.MAX_VALUE)
                 .maxPendingElements(() -> {
                     if (broken.get()) {
                         throw new IllegalStateException("configuration unavailable");
@@ -1352,7 +1352,7 @@ class BatcherTest {
         // elements it just put back
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> Long.MAX_VALUE)
+                .flushThreshold(() -> Integer.MAX_VALUE)
                 .maxPendingElements(() -> 3)
                 .maxConsecutiveFailures(() -> 2)
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
@@ -1387,7 +1387,7 @@ class BatcherTest {
         // given: two consecutive failures allowed, and a transport failing every attempt
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> Long.MAX_VALUE)
+                .flushThreshold(() -> Integer.MAX_VALUE)
                 .maxConsecutiveFailures(() -> 2)
                 .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                 .listener(new BatcherListener<>() {
@@ -1425,7 +1425,7 @@ class BatcherTest {
         // rejecting everything but "fresh-1"
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> Long.MAX_VALUE)
+                .flushThreshold(() -> Integer.MAX_VALUE)
                 .maxRequestElements(() -> 2)
                 .maxConsecutiveFailures(() -> 3)
                 .transport(elements -> {
@@ -1475,7 +1475,7 @@ class BatcherTest {
         var transmitted = new CopyOnWriteArrayList<List<String>>();
         var dropped = new CopyOnWriteArrayList<String>();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 0L)
+                .flushThreshold(() -> 0)
                 .maxPendingElements(() -> 0)
                 .backoff(consecutiveFailures -> 60_000L)
                 .transport(elements -> {
@@ -1551,7 +1551,7 @@ class BatcherTest {
         // next flush, the discard being logged
         try {
             Batcher<String> batcher = Batcher.<String>builder()
-                    .flushThreshold(() -> 10L)
+                    .flushThreshold(() -> 10)
                     .maxPendingElements(() -> 1)
                     .transport(elements -> completedFuture(TransmissionResult.failure(null)))
                     .build();
@@ -1575,7 +1575,7 @@ class BatcherTest {
         var unanswered = new CompletableFuture<TransmissionResult<String>>();
         var requests = new AtomicInteger();
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 10L)
+                .flushThreshold(() -> 10)
                 .maxPendingElements(() -> 3)
                 .elementSize(element -> 10)
                 .maxPendingBytes(() -> 1_000L)
@@ -1615,7 +1615,7 @@ class BatcherTest {
         // and room for several retries before anything is given up on
         var cause = new IOException("connection refused");
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 1L)
+                .flushThreshold(() -> 1)
                 .maxConsecutiveFailures(() -> 5)
                 .transport(elements -> completedFuture(TransmissionResult.failure(cause)))
                 .build();
@@ -1637,7 +1637,7 @@ class BatcherTest {
         // given
         var cause = new IOException("connection refused");
         Batcher<String> batcher = Batcher.<String>builder()
-                .flushThreshold(() -> 1L)
+                .flushThreshold(() -> 1)
                 .maxConsecutiveFailures(() -> 1)
                 .transport(elements -> completedFuture(TransmissionResult.failure(cause)))
                 .build();

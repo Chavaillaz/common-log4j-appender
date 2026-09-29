@@ -98,7 +98,7 @@ class BatcherFuzzTest {
         AtomicInteger transmitCount = new AtomicInteger();
 
         Batcher<Elem> batcher = Batcher.<Elem>builder()
-                .flushThreshold(() -> Long.MAX_VALUE)
+                .flushThreshold(() -> Integer.MAX_VALUE)
                 .maxPendingElements(() -> 100)
                 .maxConsecutiveFailures(() -> maxConsecutiveFailures)
                 .transmissionThreadPrefix("batcher-fuzz-")

@@ -172,7 +172,7 @@ class DeliveryOptionsTest {
                 .closeTimeout(Duration.ZERO)
                 .build();
         var largest = DeliveryOptions.builder()
-                .flushThreshold(Long.MAX_VALUE)
+                .flushThreshold(Integer.MAX_VALUE)
                 .maxConcurrentTransmissions(Integer.MAX_VALUE)
                 .maxConsecutiveFailures(Integer.MAX_VALUE)
                 .maxQueuedEvents(Integer.MAX_VALUE)

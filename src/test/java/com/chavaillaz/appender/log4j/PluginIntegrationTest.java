@@ -84,7 +84,7 @@ class PluginIntegrationTest {
      * @param transmissionDelayMillis How long each transmission of the appender takes
      * @return A logger of the started context
      */
-    private Logger startContext(long flushThreshold, long transmissionDelayMillis) {
+    private Logger startContext(int flushThreshold, long transmissionDelayMillis) {
         PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.clear();
         ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
         builder.setStatusLevel(Level.ERROR);

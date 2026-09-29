@@ -55,7 +55,7 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
         private String application = "unnamed-application";
 
         @PluginBuilderAttribute
-        private long flushThreshold = 1;
+        private int flushThreshold = 1;
 
         @PluginBuilderAttribute
         private long transmissionDelayMillis = 0;
