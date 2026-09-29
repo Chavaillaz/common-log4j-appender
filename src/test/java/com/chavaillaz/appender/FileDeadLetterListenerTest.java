@@ -194,6 +194,43 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Keeps each line whole while another listener appends to the same file")
+    void testLinesStayWholeAlongsideAnotherWriter(@TempDir Path tempDir) throws Exception {
+        // given: two listeners on the same file, as two appenders or two applications on one host configure
+        // them, each dropping batches far larger than a buffered write at the same time
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var first = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+        var second = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+        var firstDocuments = new ArrayList<Map<String, Object>>();
+        var secondDocuments = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 100; i++) {
+            firstDocuments.add(Map.of("logmessage", "a".repeat(5_000)));
+            secondDocuments.add(Map.of("logmessage", "b".repeat(5_000)));
+        }
+
+        // when
+        var start = new CountDownLatch(1);
+        var writers = new ArrayList<Thread>();
+        for (int round = 0; round < 5; round++) {
+            writers.add(Thread.ofPlatform().start(() -> awaitThenDrop(start, first, firstDocuments)));
+            writers.add(Thread.ofPlatform().start(() -> awaitThenDrop(start, second, secondDocuments)));
+        }
+        start.countDown();
+        for (Thread writer : writers) {
+            writer.join();
+        }
+
+        // then: every line is one complete document, the two writers only alternating between lines
+        List<String> lines = Files.readAllLines(file, UTF_8);
+        assertEquals(1_000, lines.size());
+        for (String line : lines) {
+            assertTrue(line.startsWith("{\"reason\":\"reason\"") && line.endsWith("\"}}")
+                    && (line.contains("a".repeat(5_000)) != line.contains("b".repeat(5_000))),
+                    "Corrupted line of " + line.length() + " characters");
+        }
+    }
+
+    @Test
     @DisplayName("Writes one line per document when multiple are dropped together")
     void testOneLinePerDocument(@TempDir Path tempDir) throws Exception {
         // given
@@ -227,7 +264,7 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
-    @DisplayName("Saves a batch holding half of a surrogate pair instead of failing the whole write")
+    @DisplayName("Saves half of a surrogate pair as its JSON escape rather than losing it")
     void testLoneSurrogateDoesNotFailTheBatch(@TempDir Path tempDir) throws Exception {
         // given: a message cut in the middle of an emoji, as any substring() of user content can produce,
         // dropped in the middle of a batch
@@ -249,8 +286,7 @@ class FileDeadLetterListenerTest {
         listener.onDocumentsDropped(List.of(Map.of("logmessage", "first"), cut, Map.of("logmessage", "last")), "reason");
         listener.onDocumentsDropped(List.of(Map.of("logmessage", "next")), "next");
 
-        // then: every document was saved, rather than the whole batch failing over one character UTF-8
-        // cannot encode
+        // then: every document was saved, whatever the one character UTF-8 cannot encode
         assertTrue(failures.isEmpty(), "No write should have failed: " + failures);
         List<String> lines = Files.readAllLines(file, UTF_8);
         assertEquals(4, lines.size(), "Unexpected lines: " + lines);
@@ -619,6 +655,19 @@ class FileDeadLetterListenerTest {
             }
             Thread.sleep(5);
         }
+    }
+
+    /**
+     * Drops the given documents through the given listener once the start is given, so that several writers
+     * append at the same time.
+     */
+    private static void awaitThenDrop(CountDownLatch start, FileDeadLetterListener listener, List<Map<String, Object>> documents) {
+        try {
+            start.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        listener.onDocumentsDropped(documents, "reason");
     }
 
 }

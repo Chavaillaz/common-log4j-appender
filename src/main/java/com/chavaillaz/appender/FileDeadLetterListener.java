@@ -5,7 +5,9 @@ import static java.nio.file.StandardOpenOption.APPEND;
 import static java.nio.file.StandardOpenOption.CREATE;
 import static java.nio.file.StandardOpenOption.READ;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
@@ -38,11 +40,11 @@ import org.apache.logging.log4j.status.StatusLogger;
  * deleted one day at a time.
  * <p>
  * Each line wraps the document, unmodified, with the reason it was dropped and when:
- * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Appends are serialized, so that concurrent
- * callers never interleave lines, a line left incomplete by a write cut short (a crash, a full disk) is ended
- * before the next one is appended, and a failure to write is passed to
- * {@link #onWriteFailure(Path, List, String, IOException)}, logged by default, rather than thrown into the
- * pipeline.
+ * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Lines are appended whole, so that neither
+ * concurrent callers nor other listeners or processes appending to the same file interleave within one, a line
+ * left incomplete by a write cut short (a crash, a full disk) is ended before the next one is appended, and a
+ * failure to write is passed to {@link #onWriteFailure(Path, List, String, IOException)}, logged by default,
+ * rather than thrown into the pipeline.
  * <p>
  * The JSON is written without any dependency: {@code null}, {@link Boolean}, {@link Number}, {@link Map},
  * {@link Iterable} and array values as their JSON counterpart, the latter three recursively and keys in their
@@ -80,6 +82,11 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     private static final String TRUNCATED_MARKER = "<truncated: maximum nesting depth of " + MAX_DEPTH + " reached>";
 
     /**
+     * The most bytes appended by a single write, made of whole lines, unless one line alone is longer.
+     */
+    private static final int MAX_WRITE_BYTES = 64 * 1024;
+
+    /**
      * The file whose name the one of each day is derived from, never written to itself.
      */
     private final Path file;
@@ -100,7 +107,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     private final Clock clock;
 
     /**
-     * Serializes appends to the files, so that concurrent callers never interleave lines.
+     * Serializes the appends of this listener, each checking whether the file ends with a line left open before
+     * appending to it.
      * <p>
      * A lock rather than {@code synchronized}, the callers often being virtual threads: on Java 21, one blocked
      * entering a monitor keeps its carrier, so that writers waiting their turn could hold every carrier and
@@ -173,7 +181,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
                     // A write cut short, by a crash or a full disk, would otherwise swallow the first line
                     lines.addFirst("");
                 }
-                Files.write(target, lines, UTF_8, CREATE, APPEND);
+                appendLines(target, lines);
             } finally {
                 writeLock.unlock();
             }
@@ -205,6 +213,32 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         } catch (IOException e) {
             log.debug("Unable to check whether {} ends with a complete line, appending to it as is", file, e);
             return false;
+        }
+    }
+
+    /**
+     * Appends the given lines to the given file, each followed by a line separator, in writes of whole lines:
+     * on a local file system, each write to a file opened for appending lands at its end in one piece, so that
+     * another listener or process appending to the same file puts its lines between these, never inside one.
+     *
+     * @param file  The file to append to, created if it does not exist
+     * @param lines The lines to append, in order
+     * @throws IOException If the file cannot be opened or written
+     */
+    private static void appendLines(Path file, List<String> lines) throws IOException {
+        byte[] separator = System.lineSeparator().getBytes(UTF_8);
+        ByteArrayOutputStream pending = new ByteArrayOutputStream(MAX_WRITE_BYTES);
+        try (OutputStream out = Files.newOutputStream(file, CREATE, APPEND)) {
+            for (String line : lines) {
+                byte[] encoded = line.getBytes(UTF_8);
+                if (pending.size() > 0 && pending.size() + encoded.length + separator.length > MAX_WRITE_BYTES) {
+                    pending.writeTo(out);
+                    pending.reset();
+                }
+                pending.writeBytes(encoded);
+                pending.writeBytes(separator);
+            }
+            pending.writeTo(out);
         }
     }
 
@@ -351,8 +385,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      * characters.
      * <p>
      * Half of a surrogate pair without its other half is escaped too, as JSON allows for any code unit: it is
-     * not a character, UTF-8 has no encoding for it, and {@link Files#write} would fail the whole batch on it,
-     * after writing part of it.
+     * not a character, and UTF-8, having no encoding for it, would write a question mark in its place.
      *
      * @param builder The builder to append to
      * @param value   The string to write
