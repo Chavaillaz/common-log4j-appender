@@ -107,6 +107,17 @@ class BackoffPolicyTest {
     }
 
     @Test
+    @DisplayName("Disables backoff for an initial delay too far below zero to be expressed in milliseconds")
+    void testDurationsTooNegativeToConvertDisableBackoff() {
+        // given: as far below zero as a duration goes, where Duration.toMillis() throws as well
+        BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofSeconds(Long.MIN_VALUE), Duration.ofSeconds(30));
+
+        // then: negative, so no backoff at all, rather than the year a large positive one is clamped to
+        assertEquals(0, policy.delayMillis(1));
+        assertEquals(0, policy.delayMillis(5));
+    }
+
+    @Test
     @DisplayName("Falls back to never delaying when the initial delay is null")
     void testNullInitialDelayDisablesBackoff() {
         BackoffPolicy policy = BackoffPolicy.exponential(null, Duration.ofSeconds(30));

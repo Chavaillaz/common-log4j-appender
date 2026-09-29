@@ -1591,6 +1591,9 @@ class BatcherTest {
         // and: a duration too large for Duration#toMillis() to express at all is past that cap too, rather
         // than the one value that leaves close() with no deadline in effect and therefore never times out
         assertEquals(oneYearMillis, Batcher.toMillis(Duration.ofSeconds(Long.MAX_VALUE)));
+
+        // and: one as far below zero does not wait at all, as any negative timeout
+        assertEquals(0L, Batcher.toMillis(Duration.ofSeconds(Long.MIN_VALUE)));
     }
 
     @Test

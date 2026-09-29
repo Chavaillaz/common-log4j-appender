@@ -1403,8 +1403,8 @@ public class Batcher<T> {
         try {
             return Math.clamp(timeout.toMillis(), 0, MAX_TIMEOUT_MILLIS);
         } catch (ArithmeticException e) {
-            // Past the clamp above, where null would mean waiting indefinitely
-            return MAX_TIMEOUT_MILLIS;
+            // Past one end of the clamp above, the upper one being where null would mean waiting indefinitely
+            return timeout.isNegative() ? 0 : MAX_TIMEOUT_MILLIS;
         }
     }
 

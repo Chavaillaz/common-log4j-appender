@@ -73,8 +73,8 @@ public interface BackoffPolicy {
         try {
             return Math.clamp(duration.toMillis(), 0L, maxMillis);
         } catch (ArithmeticException e) {
-            // Too large to be expressed in milliseconds, so past the clamp above
-            return maxMillis;
+            // Too large to be expressed in milliseconds, so past one end of the clamp above
+            return duration.isNegative() ? 0L : maxMillis;
         }
     }
 
