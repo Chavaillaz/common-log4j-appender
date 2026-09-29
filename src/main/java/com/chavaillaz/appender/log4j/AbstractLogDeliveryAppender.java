@@ -137,7 +137,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * A logging event discarded on the application thread, waiting in {@link #pendingDiscards} to be reported.
+     * A logging event discarded before reaching the delivery, waiting in {@link #pendingDiscards} to be reported.
      *
      * @param event  The logging event discarded
      * @param reason A short, human-readable explanation of why it was discarded
@@ -169,16 +169,16 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private volatile @Nullable LogDelivery logDeliveryHandler;
 
     /**
-     * The converter {@link #getLogConverter()} returns by default, which also converts an event discarded
-     * before reaching the worker, so that it can still be reported whatever converter a subclass returns: this
+     * The converter {@link #getLogConverter()} returns by default, which also converts every event discarded,
+     * so that it can still be reported whatever converter a subclass returns, one failing on it included: this
      * one is known to be safe to call from the thread reporting it as well.
      */
     private final DefaultLogConverter defaultConverter;
 
     /**
-     * The events discarded on the application thread, waiting for {@link #discardReporter} to report them, so
-     * that converting them and calling the listener never holds up the thread logging. Bounded like the queue,
-     * a discard past it being logged rather than waited for.
+     * The events discarded before reaching the delivery, waiting for {@link #discardReporter} to report them, so
+     * that converting them and calling the listener never holds up the thread logging, nor the worker. Bounded
+     * like the queue, a discard past it being logged rather than waited for.
      */
     private final BlockingQueue<Discard> pendingDiscards;
 
@@ -527,9 +527,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Hands a logging event discarded on the application thread to {@link #discardReporter}, so that
-     * converting it and calling the listener never holds up that thread. Reported right away only once the
-     * appender stopped, nothing being left to report it later.
+     * Hands a discarded logging event to {@link #discardReporter}, so that converting it and calling the
+     * listener never holds up the thread discarding it, the one logging or the worker. Reported right away only
+     * once the appender stopped, nothing being left to report it later.
      *
      * @param event  The logging event being discarded
      * @param reason A short, human-readable explanation of why it was discarded
@@ -625,7 +625,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Creates the task transmitting the given event, called on the application thread: it should only capture
      * what it needs, leaving the conversion and the transmission to the task, run on the background thread.
      * Defaults to a task converting the event with {@link #getLogConverter()} and sending the document to the
-     * delivery handler.
+     * delivery handler, an event failing to convert being reported as dropped.
      *
      * @param loggingEvent The logging event to send, an immutable snapshot
      * @return The task to run
@@ -633,9 +633,19 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
         return () -> {
             LogDelivery handler = logDeliveryHandler;
-            if (handler != null) {
-                handler.send(getLogConverter().convert(loggingEvent));
+            if (handler == null) {
+                return;
             }
+            @Nullable Map<String, Object> document;
+            try {
+                document = getLogConverter().convert(loggingEvent);
+            } catch (Throwable e) {
+                // Never sent, so lost for good unless reported, converted the default way as any discard is
+                error("Log conversion error, reporting the event as dropped", e);
+                discard(loggingEvent, "log conversion error");
+                return;
+            }
+            handler.send(document);
         };
     }
 
@@ -802,8 +812,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Stops the reporter of the events discarded on the application thread once it reported those still
-     * waiting, a report running past the given time finishing on its own.
+     * Stops the reporter of the discarded events once it reported those still waiting, a report running past
+     * the given time finishing on its own.
      *
      * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
      */

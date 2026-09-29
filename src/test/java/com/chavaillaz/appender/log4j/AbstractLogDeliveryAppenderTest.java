@@ -643,6 +643,54 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(1, SECONDS);
         }
 
+        @Test
+        @DisplayName("Reports an event the converter fails on as dropped, since it is never sent")
+        void testDefaultTaskReportsAnEventFailingToConvert() throws Exception {
+            // given: a converter failing on one event, as one reading a field that some events lack does
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var handler = mock(LogDelivery.class);
+            when(handler.getMetrics()).thenReturn(DeliveryMetrics.NONE);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            when(handler.getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                }
+            });
+            LogConverter converter = event -> {
+                String message = event.getMessage().getFormattedMessage();
+                if ("unconvertible".equals(message)) {
+                    throw new IllegalStateException("Simulated conversion failure");
+                }
+                return Map.of("custom", message);
+            };
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return handler;
+                }
+
+                @Override
+                protected LogConverter getLogConverter() {
+                    return converter;
+                }
+            };
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("unconvertible"));
+            appender.append(realLogEvent("convertible"));
+            appender.stop(2, SECONDS);
+
+            // then: the event never sent reached the listener, converted the default way, and the metrics,
+            // rather than being lost with nothing but an error the handler of the appender may rate-limit
+            verify(handler).send(Map.<String, Object>of("custom", "convertible"));
+            assertEquals(List.of("unconvertible"), dropped.stream().map(d -> d.get("logmessage")).toList());
+            assertEquals(1, appender.getMetrics().droppedDocuments());
+        }
+
     }
 
     @Nested
