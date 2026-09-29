@@ -235,7 +235,7 @@ public record DeliveryOptions(
         }
 
         /**
-         * Sets the maximum time between two transmissions.
+         * Sets the time between two periodic flushes.
          *
          * @param flushInterval The flush interval
          * @return This builder
@@ -312,7 +312,7 @@ public record DeliveryOptions(
         }
 
         /**
-         * Sets the maximum number of consecutive failed attempts allowed for the same pending batch.
+         * Sets the maximum number of consecutive failed attempts allowed for the same documents.
          *
          * @param maxConsecutiveFailures The maximum number of consecutive failures
          * @return This builder

@@ -9,9 +9,9 @@ import org.jspecify.annotations.Nullable;
  * How long a {@link Batcher} waits before retrying after a failed transmission, so that a downstream system
  * which is down, overloaded or rate-limiting is not hit again by the very traffic it is struggling with.
  * <p>
- * Consulted once per failed attempt, with the number of consecutive failures the pending batch reached
- * ({@code 1} for the first one). Holding off delays newly accumulated elements too: the point is to stop
- * sending for a while, not to reorder what is sent.
+ * Consulted once per failed attempt, with the highest failure streak among the elements it puts back for a
+ * retry ({@code 1} after their first failure). Holding off delays newly accumulated elements too: the point is
+ * to stop sending for a while, not to reorder what is sent.
  *
  * @see #exponential(Duration, Duration)
  */
@@ -84,8 +84,8 @@ public interface BackoffPolicy {
     /**
      * Computes how long to wait before the next transmission attempt.
      *
-     * @param consecutiveFailures The number of consecutive failed attempts for the pending batch, including
-     *                            the one that just failed, so always at least {@code 1}
+     * @param consecutiveFailures The highest number of consecutive failed attempts among the elements put back
+     *                            for a retry, the one that just failed included, so at least {@code 1}
      * @return The delay in milliseconds, {@code 0} or less meaning "retry at the next opportunity"
      */
     long delayMillis(int consecutiveFailures);

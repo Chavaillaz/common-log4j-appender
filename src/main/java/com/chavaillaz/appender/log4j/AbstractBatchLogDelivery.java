@@ -179,8 +179,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum number of documents the pending batch holds, the oldest ones being discarded past it. Defaults
-     * to {@link DeliveryOptions#maxPendingDocuments()}; override it for a limit depending on more than that.
+     * Maximum number of documents the pending batch holds: a batch reaching it is sent, and loses its oldest
+     * documents past it while transmissions are held off after a failure. Defaults to
+     * {@link DeliveryOptions#maxPendingDocuments()}; override it for a limit depending on more than that.
      *
      * @return The maximum number of documents a pending batch can hold in memory
      */
@@ -209,8 +210,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum estimated size of the pending batch, the oldest documents being discarded past it. Defaults to
-     * {@link DeliveryOptions#maxPendingBytes()}; override it for a limit depending on more than that.
+     * Maximum estimated size of the pending batch, which it bounds as {@link #getMaxPendingDocuments()} does by
+     * count. Defaults to {@link DeliveryOptions#maxPendingBytes()}; override it for a limit depending on more
+     * than that.
      *
      * @return The maximum estimated size a pending batch can reach, in bytes
      */
