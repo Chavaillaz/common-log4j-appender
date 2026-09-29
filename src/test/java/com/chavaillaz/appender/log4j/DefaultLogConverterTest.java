@@ -542,9 +542,9 @@ class DefaultLogConverterTest {
         @Test
         @DisplayName("Falls back to omitting MDC fields instead of losing the whole document when context data fails to be read")
         void testConversionToleratesThrowingContextData() {
-            // given: a custom ReadOnlyStringMap (unlike the one bundled with Log4j2) whose forEach() throws,
-            // which must not prevent every other field, already written before writeMDC() runs, from being
-            // captured
+            // given: a custom ReadOnlyStringMap (unlike the one bundled with Log4j2) whose size() and forEach()
+            // throw, which must not prevent every other field from being captured, the document being sized
+            // before any of them is written
             var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter(configuration);
             var event = Log4jLogEvent.newBuilder()
@@ -669,7 +669,7 @@ class DefaultLogConverterTest {
 
         @Override
         public int size() {
-            return 0;
+            throw new RuntimeException("Simulated context data failure");
         }
 
         @Override

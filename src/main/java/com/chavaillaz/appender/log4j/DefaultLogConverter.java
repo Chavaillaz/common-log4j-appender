@@ -13,6 +13,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.status.StatusLogger;
+import org.apache.logging.log4j.util.ReadOnlyStringMap;
 import org.jspecify.annotations.Nullable;
 
 import com.chavaillaz.appender.LogConfiguration;
@@ -89,15 +90,21 @@ public class DefaultLogConverter implements LogConverter {
      * never resized while being populated.
      *
      * @param event The logging event
-     * @return The expected number of fields
+     * @return The expected number of fields, never negative
      */
     private int expectedFieldCount(LogEvent event) {
         int fields = BASIC_FIELD_COUNT;
         if (event.getThrown() != null) {
             fields += THROWABLE_FIELD_COUNT;
         }
-        if (event.getContextData() != null) {
-            fields += event.getContextData().size();
+        ReadOnlyStringMap contextData = event.getContextData();
+        if (contextData != null) {
+            try {
+                fields += Math.max(0, contextData.size());
+            } catch (Throwable e) {
+                // Throwable, a custom context data running code of the application: left to writeMDC(),
+                // which reports it failing, the document only resizing meanwhile
+            }
         }
         return fields;
     }
