@@ -68,6 +68,7 @@ import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
+import com.chavaillaz.appender.TransmissionResult;
 
 @DisplayName("AbstractLogDeliveryAppender")
 class AbstractLogDeliveryAppenderTest {
@@ -414,39 +415,49 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
-        @DisplayName("Does not schedule a periodic flush when the flush threshold disables batching")
-        void testWithoutThreadPool() throws Exception {
-            // given
-            var logEvent = mockLogEvent();
+        @DisplayName("Retries a failed document without batching nor backoff, before any other event comes")
+        void testRetriesAFailedDocumentWithoutAnotherEvent() throws Exception {
+            // given: every document sent as it arrives, with no backoff, and a first attempt failing
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(1)
-                    .flushInterval(Duration.ofMillis(1_000)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, configuration);
+                    .flushInterval(Duration.ofMillis(100)).build();
+            var attempts = new AtomicInteger();
+            var delivered = new CountDownLatch(1);
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return new AbstractBatchLogDelivery<>(configuration) {
+                        @Override
+                        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                            if (attempts.incrementAndGet() == 1) {
+                                return CompletableFuture.completedFuture(TransmissionResult.failure(new IllegalStateException("Simulated outage")));
+                            }
+                            delivered.countDown();
+                            return CompletableFuture.completedFuture(TransmissionResult.success());
+                        }
+                    };
+                }
+            };
 
-            // when
+            // when: a single event, the application falling quiet after it
             appender.start();
-            appender.append(logEvent);
-            sleep(100);
+            appender.append(realLogEvent("last words"));
 
-            // then
-            assertEquals(1, appender.getCountTaskExecuted().get());
-            verify(appender.getLogDeliveryHandler(), never()).flush();
+            // then: the document put back is sent again by the periodic flush, rather than kept in memory for
+            // an event that may not come before the application stops
+            assertTrue(delivered.await(5, SECONDS), "The failed document should have been retried");
 
-            // when
-            appender.stop();
-
-            // then
-            verify(appender.getLogDeliveryHandler()).close(any());
-            verifyNoMoreInteractions(appender.getLogDeliveryHandler());
+            // cleanup
+            appender.stop(1, SECONDS);
         }
 
         @Test
         @DisplayName("Schedules a periodic flush when batching is disabled but a retry backoff can hold documents back")
         void testSchedulesPeriodicFlushForRetryBackoffWithoutBatching() throws Exception {
-            // given: no batching, so the threshold alone would not schedule anything -- but a retry backoff
-            // (enabled by default in production, unlike in this test configuration) stacks documents while
-            // it holds off transmissions, and once it elapses nothing sends them until the next document
-            // happens to arrive. Under low traffic the periodic flush is the only thing that ever will.
+            // given: no batching, but a retry backoff (enabled by default in production, unlike in this test
+            // configuration) stacks documents while it holds off transmissions, and once it elapses nothing
+            // sends them until the next document happens to arrive. Under low traffic the periodic flush is the
+            // only thing that ever will.
             var logEvent = mockLogEvent();
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(1)

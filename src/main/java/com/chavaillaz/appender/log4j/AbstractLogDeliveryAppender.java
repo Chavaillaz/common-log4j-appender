@@ -154,9 +154,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final ThreadPoolExecutor workerExecutor;
 
     /**
-     * The scheduler periodically queuing a flush, only created when something can leave a partial batch
-     * waiting (see {@link #needsPeriodicFlush(DeliveryOptions)}). Volatile, {@link #stop(long, TimeUnit)} being
-     * free to run on another thread than {@link #start()}.
+     * The scheduler periodically queuing a flush, created once the delivery is. Volatile,
+     * {@link #stop(long, TimeUnit)} being free to run on another thread than {@link #start()}.
      */
     private volatile @Nullable ScheduledExecutorService flushScheduler;
 
@@ -251,8 +250,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Starts the log delivery handler (see {@link #createLogDeliveryHandler()}) and, if anything can leave a
-     * partial batch waiting (see {@link #needsPeriodicFlush(DeliveryOptions)}), schedules the periodic flush
+     * Starts the log delivery handler (see {@link #createLogDeliveryHandler()}) and schedules the periodic flush
      * described in the class documentation.
      */
     @Override
@@ -277,40 +275,24 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Schedules the periodic flush, if anything can leave a partial batch waiting (see
-     * {@link #needsPeriodicFlush(DeliveryOptions)}). Delivery options that cannot be read are reported rather
-     * than thrown, which would leave the appender unstarted for good, its handler already created.
+     * Schedules the periodic flush, sending what would otherwise wait for the next event, however long that
+     * takes: a batch under the threshold, documents stacked while the retry backoff holds transmissions off, or
+     * put back by a failed transmission. Delivery options that cannot be read are reported rather than thrown,
+     * which would leave the appender unstarted for good, its handler already created.
      */
     private void startPeriodicFlush() {
-        DeliveryOptions options;
+        long intervalMillis;
         try {
-            options = logConfiguration.getDeliveryOptions();
+            // At least a millisecond, as the delivery options require
+            intervalMillis = logConfiguration.getDeliveryOptions().flushInterval().toMillis();
         } catch (Throwable e) {
             error("Unable to read the delivery options, no periodic flush will be scheduled and partial "
                     + "batches may be delayed indefinitely", e);
             return;
         }
 
-        if (!needsPeriodicFlush(options)) {
-            return;
-        }
-        // At least a millisecond, as the delivery options require
-        long intervalMillis = options.flushInterval().toMillis();
         flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
         flushScheduler.scheduleWithFixedDelay(this::requestFlush, intervalMillis, intervalMillis, MILLISECONDS);
-    }
-
-    /**
-     * Whether anything can leave documents in a partial batch with nothing else to send them: batching, and
-     * the retry backoff even without batching, the documents stacked while it holds transmissions off
-     * otherwise waiting for the next document to arrive, however long that takes.
-     *
-     * @param options The options to inspect
-     * @return {@code true} if a periodic flush should be scheduled
-     */
-    private static boolean needsPeriodicFlush(DeliveryOptions options) {
-        // A flush with nothing to do costing one wake-up per interval
-        return options.flushThreshold() > 1 || !options.retryBackoff().isZero();
     }
 
     /**

@@ -19,8 +19,7 @@ import org.jspecify.annotations.Nullable;
  * configuration can vary one at runtime by returning another instance, stored rather than built on every call.
  * A few are read once all the same: {@code flushInterval}, {@code maxConcurrentTransmissions},
  * {@code maxQueuedEvents}, {@code retryBackoff} and {@code maxRetryBackoff}, when the appender or its delivery
- * is created, along with whether a periodic flush is scheduled at all, which {@code flushThreshold} and
- * {@code retryBackoff} decide when the appender starts.
+ * is created.
  * <p>
  * Every setting is validated when built, a value out of its range throwing an {@link IllegalArgumentException}
  * and a missing one a {@link NullPointerException}, so that a misconfiguration fails the configuration rather
@@ -31,9 +30,10 @@ import org.jspecify.annotations.Nullable;
  *                                   sending every document on its own as it arrives. Defaults to {@code 1}; an
  *                                   appender shipping logs over the network normally raises it. At least
  *                                   {@code 1}.
- * @param flushInterval              Time between two periodic flushes, which send a partial batch nothing else
- *                                   would send: one under {@code flushThreshold}, or held back by
- *                                   {@code retryBackoff}. Defaults to five seconds; at least a millisecond.
+ * @param flushInterval              Time between two periodic flushes, which send the documents nothing else
+ *                                   would send: under {@code flushThreshold}, held back by {@code retryBackoff},
+ *                                   or put back by a failed transmission. Defaults to five seconds; at least a
+ *                                   millisecond.
  * @param flushLevel                 Minimum severity, compared with {@link Level#isMoreSpecificThan(Level)}, of
  *                                   an event flushing the batch right after it, so that an occasional severe
  *                                   event is not held back by settings favoring throughput. Defaults to

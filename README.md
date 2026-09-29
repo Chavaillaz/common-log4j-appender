@@ -136,7 +136,7 @@ implementation can vary a limit at runtime by returning a different instance —
 than building a new one on every call. Use `options.with().maxPendingDocuments(50_000).build()` to derive
 one instance from another without restating the rest. A few settings are read once all the same, when the
 appender or its delivery is created: `FlushInterval`, `MaxConcurrentTransmissions`, `MaxQueuedEvents`,
-`RetryBackoff` and `MaxRetryBackoff`, along with whether a periodic flush is scheduled at all.
+`RetryBackoff` and `MaxRetryBackoff`.
 
 ### 2. Delivery
 
@@ -342,7 +342,7 @@ its documentation):
 | `Host`          | Name of the host the application is running on, included in every document.                                 |
 | `Environment`   | Name of the environment the application is running in, included in every document.                         |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. `1` sends every log individually (no batching). Defaults to `1`, an appender shipping logs over the network normally raising it. |
-| `FlushInterval` | Time between two periodic flushes, so a partial batch isn't delayed indefinitely under low traffic. Relevant whenever documents can pile up with nothing else to send them: when `FlushThreshold` is above `1`, and when `RetryBackoff` is enabled, since documents arriving while a backoff holds off transmissions are stacked rather than sent. Defaults to `5s`; at least `1ms`. |
+| `FlushInterval` | Time between two periodic flushes, so that documents aren't delayed indefinitely under low traffic: a batch under `FlushThreshold`, documents stacked while `RetryBackoff` holds off transmissions, and those a failed transmission put back, all waiting for the next log otherwise. Defaults to `5s`; at least `1ms`. |
 | `FlushLevel` | Minimum severity (e.g. `WARN`) that triggers an immediate flush of the whole current batch right after that event, instead of waiting for `FlushThreshold`/`FlushInterval`. Defaults to unset, disabling this behavior. |
 | `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`. |
 | `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory: reaching it sends the batch as `FlushThreshold` does, and while retries are held off, the oldest are discarded past it (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`. |
