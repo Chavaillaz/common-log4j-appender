@@ -512,8 +512,9 @@ public class Batcher<T> {
 
     /**
      * Accumulates the given elements, triggering a transmission if this reaches {@code flushThreshold}, or
-     * fills the pending batch up to one of its limits. Never blocks the caller on the network: a transmission
-     * this triggers runs on its own virtual thread.
+     * fills the pending batch up to one of its limits. A transmission this triggers runs on a virtual thread of
+     * its own, the caller only waiting for one of those in flight to complete past
+     * {@code maxConcurrentTransmissions}.
      *
      * @param elements The elements to accumulate
      * @throws NullPointerException If one of the elements is {@code null}
@@ -770,7 +771,8 @@ public class Batcher<T> {
     /**
      * Puts back the elements of a failed (or not attempted) transmission at the front of the current batch,
      * so they are retried before any newer element, discarding the oldest elements in excess if this would
-     * grow the batch past {@code maxPendingElements}.
+     * grow the batch past {@code maxPendingElements} or {@code maxPendingBytes}. Once {@link #close(Duration)}
+     * drained the batch, reports them as dropped instead.
      *
      * @param chunk The elements to put back, with their failure streaks: unchanged if they were never
      *              actually attempted, because acquiring a transmission permit was interrupted for instance
