@@ -710,7 +710,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Stops accepting new logging events, waits for already-accepted ones to be processed and for discarded ones
      * to be reported, then flushes and closes the delivery handler, so logs accepted just before shutdown are
-     * not lost. Each step shares one budget, getting what the steps before it left.
+     * not lost. Each step shares one budget, getting what the steps before it left. Once that budget is spent
+     * on the accepted events, or the wait for them interrupted, the task running is interrupted and the events
+     * still queued are reported as dropped.
      *
      * @param timeout  The maximum time the whole stop may take, or {@code 0} or less for
      *                 {@link DeliveryOptions#closeTimeout()} instead: Log4j2 passes {@code 0} when its
@@ -729,30 +731,37 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 flushScheduler.shutdownNow();
             }
             workerExecutor.shutdown();
-            boolean terminated = workerExecutor.awaitTermination(budgetNanos, NANOSECONDS);
-            if (!terminated) {
+            if (!workerExecutor.awaitTermination(budgetNanos, NANOSECONDS)) {
                 error("Log delivery thread pool did not terminate within " + Duration.ofNanos(budgetNanos)
                         + ", some logs may be lost");
-                // Interrupts the task still running, possibly stuck, and reports the events still queued, which
-                // never ran, in one notification
-                List<LogEvent> abandonedEvents = new ArrayList<>();
-                for (Runnable abandoned : workerExecutor.shutdownNow()) {
-                    if (abandoned instanceof EventTask task) {
-                        abandonedEvents.add(task.event());
-                    }
-                }
-                discardedEvents.add(abandonedEvents.size());
-                reportDropped(abandonedEvents, "appender stopped before the event could be processed");
+                abandonQueuedEvents();
             }
         } catch (InterruptedException e) {
             error("Thread interrupted during termination", e);
             currentThread().interrupt();
+            // Otherwise left running past the stop, stuck for good or feeding the queue to a closed delivery
+            abandonQueuedEvents();
         } finally {
             stopDiscardReporter(remainingBudget(startNanos, budgetNanos));
             stopLogDeliveryHandler(remainingBudget(startNanos, budgetNanos));
             super.stop(timeout, timeUnit);
         }
         return true;
+    }
+
+    /**
+     * Stops the background thread without waiting for it any longer, interrupting the task it runs, possibly
+     * stuck, and reports the events still queued, which never ran, in one notification.
+     */
+    private void abandonQueuedEvents() {
+        List<LogEvent> abandonedEvents = new ArrayList<>();
+        for (Runnable abandoned : workerExecutor.shutdownNow()) {
+            if (abandoned instanceof EventTask task) {
+                abandonedEvents.add(task.event());
+            }
+        }
+        discardedEvents.add(abandonedEvents.size());
+        reportDropped(abandonedEvents, "appender stopped before the event could be processed");
     }
 
     /**

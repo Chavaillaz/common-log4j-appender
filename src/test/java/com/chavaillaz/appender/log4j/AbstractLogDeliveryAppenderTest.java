@@ -2,6 +2,7 @@ package com.chavaillaz.appender.log4j;
 
 import static java.lang.Thread.sleep;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -1607,6 +1608,42 @@ class AbstractLogDeliveryAppenderTest {
             // abandoned here -- ten thousand by default, on the path where a delay is least affordable
             assertEquals(1, droppedReasons.size(),
                     "Every abandoned event should be reported in a single call, but got " + droppedReasons.size());
+        }
+
+        @Test
+        @DisplayName("Interrupts a still-running task and reports the queued events when the stop is interrupted")
+        void testInterruptedStopAbandonsTheQueueAsATimeoutDoes() throws Exception {
+            // given: a task blocking the worker until interrupted, with two events queued behind it
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var interrupted = new CountDownLatch(1);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, configuration, interrupted);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+            appender.start();
+            appender.append(mockLogEvent());
+            appender.append(realLogEvent("queued-1"));
+            appender.append(realLogEvent("queued-2"));
+
+            // when: the thread stopping it is interrupted long before its budget elapses
+            Thread.currentThread().interrupt();
+            try {
+                appender.stop(1, MINUTES);
+            } finally {
+                Thread.interrupted();
+            }
+
+            // then: the worker was not left running past the stop, stuck for good or feeding the queued
+            // events one by one to a delivery closed by then, and those events were reported at once
+            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted");
+            assertEquals(List.of("queued-1", "queued-2"), dropped.stream().map(d -> d.get("logmessage")).toList());
         }
 
     }
