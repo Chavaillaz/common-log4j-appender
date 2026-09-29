@@ -13,7 +13,7 @@ import org.jspecify.annotations.Nullable;
  * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender} follows the same policy one event at a
  * time, through its own constant-time {@code poll()} and {@code offer()}.
  */
-public final class BoundedTrim {
+final class BoundedTrim {
 
     private BoundedTrim() {
         // Static methods only
@@ -33,7 +33,7 @@ public final class BoundedTrim {
      * @param <T>      The type of element
      * @return The elements discarded, oldest first, as an unmodifiable list, or {@code null} if none were
      */
-    public static <T> @Nullable List<T> trim(Queue<T> elements, int maxSize) {
+    static <T> @Nullable List<T> trim(Queue<T> elements, int maxSize) {
         // Clamped before the subtraction: a cap far enough below zero overflows size - maxSize into a negative
         // value, which would keep every element instead of discarding them all
         int overflow = elements.size() - Math.max(0, maxSize);
