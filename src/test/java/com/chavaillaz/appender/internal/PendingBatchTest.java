@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -111,6 +112,28 @@ class PendingBatchTest {
         assertEquals(2, batch.size());
         assertEquals(3, batch.bytes());
         assertNull(batch.trimToBytes(3));
+    }
+
+    @Test
+    @DisplayName("Never counts a negative size once an element weighs more leaving than it did coming in")
+    void testSizeNeverGoesNegative() {
+        // Given: an element counted as weightless, then measured, as a byte limit coming into effect makes it
+        AtomicBoolean measuring = new AtomicBoolean();
+        PendingBatch<String> batch = new PendingBatch<>(element -> measuring.get() ? element.length() : 0L, 4);
+        batch.append(List.of("a".repeat(100)));
+        measuring.set(true);
+        batch.append(List.of("bbbbbb", "cccccc"));
+
+        // When: trimmed by size, then by count, each discarding more than the batch is counted for
+        List<String> oversized = batch.trimToBytes(10);
+        long bytesAfterTrimToBytes = batch.bytes();
+        List<String> discarded = batch.trimToCount(1);
+
+        // Then: under-counted at worst, never below zero
+        assertEquals(List.of("a".repeat(100)), oversized);
+        assertEquals(0, bytesAfterTrimToBytes);
+        assertEquals(List.of("bbbbbb"), discarded);
+        assertEquals(0, batch.bytes());
     }
 
     @Test

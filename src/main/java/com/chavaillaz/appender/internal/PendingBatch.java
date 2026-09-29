@@ -84,7 +84,7 @@ final class PendingBatch<T> {
     /**
      * The estimated size of this batch.
      *
-     * @return The estimated size in bytes, {@code 0} without a measurement
+     * @return The estimated size in bytes, never negative, {@code 0} without a measurement
      */
     long bytes() {
         return bytes;
@@ -128,7 +128,7 @@ final class PendingBatch<T> {
     @Nullable List<T> trimToCount(int maxCount) {
         List<T> discarded = BoundedTrim.trim(elements, maxCount);
         if (discarded != null) {
-            bytes -= measure(discarded);
+            subtract(measure(discarded));
             forgetFront(discarded.size());
         }
         return discarded;
@@ -150,7 +150,7 @@ final class PendingBatch<T> {
         List<T> discarded = new ArrayList<>();
         while (!elements.isEmpty() && bytes > maxBytes) {
             T oldest = elements.pollFirst();
-            bytes -= measurement.applyAsLong(oldest);
+            subtract(measurement.applyAsLong(oldest));
             discarded.add(oldest);
         }
         if (elements.isEmpty()) {
@@ -273,6 +273,17 @@ final class PendingBatch<T> {
             total += measurement.applyAsLong(element);
         }
         return total;
+    }
+
+    /**
+     * Takes the size of discarded elements off the estimated size of this batch, never below zero: measured
+     * heavier than when they were added, a byte limit coming into effect in between for instance, they would
+     * otherwise leave it negative for as long as the batch is pending.
+     *
+     * @param discardedBytes The estimated size of the elements discarded
+     */
+    private void subtract(long discardedBytes) {
+        bytes = Math.max(0, bytes - discardedBytes);
     }
 
     /**
