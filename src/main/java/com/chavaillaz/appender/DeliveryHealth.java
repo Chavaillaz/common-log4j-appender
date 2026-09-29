@@ -41,8 +41,9 @@ public record DeliveryHealth(Status status, Duration sinceLastSuccess) {
         UP,
 
         /**
-         * The last transmission attempt failed, in whole or in part, and what failed is retried at the next
-         * opportunity: the next flush while batching, the next document otherwise.
+         * The last transmission attempt failed, in whole or in part, and the next one, retrying what failed
+         * unless it was given up on, waits for the next flush, or for the next document if it comes first
+         * without batching.
          */
         RETRYING,
 

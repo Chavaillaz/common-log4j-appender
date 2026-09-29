@@ -298,10 +298,10 @@ endpoint or a metrics library, instead of only reacting to listener callbacks:
 
 - `AbstractLogDeliveryAppender#getHealth()` — a `DeliveryHealth` telling what the pipeline does about its
   last transmission attempt: `UP` once it succeeded, `RETRYING` or `BACKING_OFF` after a failure (documents
-  are not necessarily lost yet, just being retried, at once or when the retry backoff elapses), and `DOWN`
-  while the appender is not started, and for good once it started without a delivery, its creation having
-  failed, every event then being discarded. It also tells how long ago documents were last accepted, so that
-  an outage lasting too long is told apart from a single failed attempt.
+  are not necessarily lost yet, being retried at the next opportunity or once the retry backoff elapses),
+  and `DOWN` while the appender is not started, and for good once it started without a delivery, its
+  creation having failed, every event then being discarded. It also tells how long ago documents were last
+  accepted, so that an outage lasting too long is told apart from a single failed attempt.
 - `AbstractLogDeliveryAppender#isBackpressured()` — `true` once the internal queue feeding the background
   thread (bounded by `MaxQueuedEvents`) is full, meaning the very next logging event would evict the oldest
   queued one — an early warning before `onDocumentsDropped` actually fires.
