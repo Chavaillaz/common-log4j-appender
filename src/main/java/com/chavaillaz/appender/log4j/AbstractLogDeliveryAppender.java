@@ -655,8 +655,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Takes the health of this appender, the one of its delivery while it runs (see
      * {@link LogDelivery#getHealth()}), and {@link DeliveryHealth.Status#DOWN} otherwise: before it starts,
-     * once stopped, and for good once started without a delivery, its creation having failed and every event
-     * being discarded.
+     * from the moment it starts stopping, and for good once started without a delivery, its creation having
+     * failed and every event being discarded.
      *
      * @return The current health of the log delivery pipeline, with the time since documents were last
      *         accepted, or since this appender was created while none were yet
@@ -724,6 +724,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     @Override
     public boolean stop(long timeout, TimeUnit timeUnit) {
+        // From the start, as the appenders of Log4j2 do, rather than started for as long as the stop takes
+        setStopping();
         long startNanos = System.nanoTime();
         long budgetNanos = timeout > 0 ? timeUnit.toNanos(timeout) : defaultStopTimeoutNanos();
         try {
@@ -745,7 +747,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         } finally {
             stopDiscardReporter(remainingBudget(startNanos, budgetNanos));
             stopLogDeliveryHandler(remainingBudget(startNanos, budgetNanos));
-            super.stop(timeout, timeUnit);
+            // The filter alone, the state of this appender being changed here
+            super.stop(timeout, timeUnit, false);
+            setStopped();
         }
         return true;
     }

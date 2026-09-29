@@ -1764,6 +1764,40 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("getHealth() is down from the moment the appender starts stopping")
+        void testHealthIsDownWhileStopping() throws Exception {
+            // given: a worker blocked on an event, which stopping waits for
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
+            appender.start();
+            var healthy = new DeliveryHealth(DeliveryHealth.Status.UP, Duration.ZERO);
+            when(appender.getLogDeliveryHandler().getHealth()).thenReturn(healthy);
+            appender.append(mockLogEvent());
+
+            // when: stopping, as far as waiting for that event
+            var stopping = Thread.ofPlatform().start(() -> appender.stop(5, SECONDS));
+            var worker = workerExecutorOf(appender);
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+            while (!worker.isShutdown() && System.nanoTime() < deadlineNanos) {
+                sleep(1);
+            }
+
+            // then: no longer accepting events, as Log4j2 is told, rather than up for as long as the stop
+            // takes, CloseTimeout by default
+            assertTrue(worker.isShutdown(), "The stop should have shut the worker down");
+            assertFalse(appender.isStarted(), "The appender should no longer report itself as started");
+            assertEquals(DeliveryHealth.Status.DOWN, appender.getHealth().status());
+
+            // cleanup
+            releaseTask.countDown();
+            stopping.join();
+            assertTrue(appender.isStopped(), "The appender should have finished stopping");
+        }
+
+        @Test
         @DisplayName("Adds what its queue holds and discarded to the metrics of its delivery")
         void testMetricsCombineTheQueueWithTheDelivery() throws Exception {
             // given: a one-slot queue behind a blocked worker, and a delivery with metrics of its own

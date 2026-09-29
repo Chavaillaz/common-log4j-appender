@@ -53,7 +53,8 @@ public record DeliveryHealth(Status status, Duration sinceLastSuccess) {
         BACKING_OFF,
 
         /**
-         * Nothing is delivered: the pipeline is not started, could not be created, or is stopped.
+         * Nothing is accepted for delivery: the pipeline is not started, could not be created, or is stopping
+         * or stopped.
          */
         DOWN
 
