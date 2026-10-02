@@ -42,6 +42,25 @@ class PendingBatchTest {
     }
 
     @Test
+    @DisplayName("Keeps the streaks of the elements behind a chunk whose runs leave out its last elements")
+    void testChunkWithoutRunsForItsLastElementsKeepsTheStreaksBehindIt() {
+        // Given: an element that failed three times, and a chunk whose runs describe its first element alone,
+        // the other one never having failed
+        PendingBatch<String> batch = measuredByLength();
+        batch.append(List.of("d"));
+        batch.prepend(new Chunk<>(List.of("c"), List.of(new FailureRun(3, 1))));
+
+        // When
+        batch.prepend(new Chunk<>(List.of("a", "b"), List.of(new FailureRun(1, 1))));
+        List<Chunk<String>> chunks = batch.split(0, 0);
+
+        // Then: the element left out counts no streak, rather than taking the one of the element behind it
+        assertThat(elementsOf(chunks)).containsExactly(List.of("a", "b", "c", "d"));
+        assertThat(runsOf(chunks)).containsExactly(List.of(
+                new FailureRun(1, 1), new FailureRun(0, 1), new FailureRun(3, 1), new FailureRun(0, 1)));
+    }
+
+    @Test
     @DisplayName("Forgets the streaks of the elements a trim discards")
     void testTrimsForgetTheStreaksOfWhatTheyDiscard() {
         // Given

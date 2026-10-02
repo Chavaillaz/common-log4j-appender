@@ -111,7 +111,9 @@ final class PendingBatch<T> {
         for (ListIterator<T> iterator = returned.listIterator(returned.size()); iterator.hasPrevious(); ) {
             elements.addFirst(iterator.previous());
         }
-        List<FailureRun> runs = chunk.runs();
+        // Describing all its elements, those past its runs never having failed: put in front of the runs of the
+        // elements behind them, runs describing fewer would hand those elements the streaks of others
+        List<FailureRun> runs = FailureRun.slice(chunk.runs(), 0, returned.size());
         for (ListIterator<FailureRun> iterator = runs.listIterator(runs.size()); iterator.hasPrevious(); ) {
             prependRun(iterator.previous());
         }
