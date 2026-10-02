@@ -281,6 +281,12 @@ irrecoverably discarded (see the safety nets above), which should normally never
 alerting on. It receives the actual documents (an unmodifiable list), not just a count, as a last chance to
 save them.
 
+Log what a listener observes through `StatusLogger.getLogger()`, as the library does (see
+[Shutdown and failure handling](#shutdown-and-failure-handling)), never through an ordinary logger: its
+messages would come back to the appender as documents, each failure logging one more to send, in a loop
+sending requests as fast as the downstream system refuses them while neither batching nor `RetryBackoff` holds
+them off.
+
 `FileDeadLetterListener` provides a ready-made `onDocumentsDropped` for the most common case: it appends
 every dropped document to a local file, one JSON object per line (newline-delimited JSON), wrapped with the
 reason and a timestamp, so nothing irrecoverably discarded is lost outright. Use it as-is, or combine it

@@ -13,6 +13,11 @@ import org.jspecify.annotations.Nullable;
  * Methods are called concurrently, from the threads transmitting, the background threads of the appender and
  * the thread stopping it, never from a thread while it logs: an implementation must be thread-safe, and should
  * return quickly, a stop waiting for its last notifications whatever its budget.
+ * <p>
+ * An implementation logging what it observes uses {@code StatusLogger.getLogger()}, as this library does: an
+ * ordinary logger feeds each message back to the appender as one more document, whose failure logs again, in
+ * a loop sending requests as fast as the downstream system refuses them while neither batching nor
+ * {@link DeliveryOptions#retryBackoff()} holds them off.
  */
 public interface LogDeliveryListener {
 
