@@ -409,6 +409,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * Waits until every transmission dispatched so far has completed, for the tests to wait for them.
+     *
+     * @throws InterruptedException If the current thread is interrupted while waiting
      */
     void awaitPendingTransmissions() throws InterruptedException {
         batcher.awaitPendingTransmissions();

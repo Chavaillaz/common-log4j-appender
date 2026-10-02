@@ -108,8 +108,8 @@ public class Batcher<T> {
     private static final long PERMIT_WAIT_SLICE_NANOS = Duration.ofSeconds(1).toNanos();
 
     /**
-     * The most bytes one element counts for: more than a request can carry, a Java array holding at most 2 GiB,
-     * and little enough that the size of a batch holding as many elements as a collection can never overflow.
+     * The most bytes one element counts for, 2 GiB: the most a Java array holds, so more than a request can
+     * carry, and small enough that the total of a batch cannot overflow, however many elements it holds.
      */
     private static final long MAX_ELEMENT_BYTES = Integer.MAX_VALUE;
 

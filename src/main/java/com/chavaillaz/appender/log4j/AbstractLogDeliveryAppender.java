@@ -99,7 +99,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Makes a full queue discard its oldest event to make room for the new one, rather than rejecting the new
      * one as the default {@code AbortPolicy} does, through the constant-time {@code poll()} and {@code offer()}
-     * of the queue. Anything else than an {@link EventTask}, such as a requested flush, which must never evict
+     * of the queue. Anything other than an {@link EventTask}, such as a requested flush, which must never evict
      * an event, and any task once the executor is shutting down, are still rejected.
      */
     private final class DiscardOldestEventPolicy implements RejectedExecutionHandler {
@@ -471,9 +471,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Snapshots the event on the calling thread, Log4j2 being free to reuse (mutate) it once
      * {@link #append(LogEvent)} returns.
      * <p>
-     * Its thread is read first: the {@code Log4jLogEvent} that Log4j2 creates while its thread-locals are off (by
-     * default, whenever the Servlet API is on the classpath) resolves its thread from whichever thread asks
-     * first, which before Log4j2 2.25 its {@code toImmutable()} leaves to the worker.
+     * Its thread is read first, on the logging thread: a {@code Log4jLogEvent}, created by Log4j2 while its
+     * thread-locals are off (by default whenever the Servlet API is on the classpath), records the thread that
+     * first reads it, and its {@code toImmutable()} only reads it since Log4j2 2.25.
      * <p>
      * The caller location is left out unless {@link #requiresLocation()}: a synchronous logger includes it by
      * default, and {@code toImmutable()} finds it by walking the stack, twenty times what the rest of
