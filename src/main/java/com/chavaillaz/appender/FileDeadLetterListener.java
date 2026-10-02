@@ -17,7 +17,6 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,7 +81,9 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     private static final String TRUNCATED_MARKER = "<truncated: maximum nesting depth of " + MAX_DEPTH + " reached>";
 
     /**
-     * The most bytes appended by a single write, made of whole lines, unless one line alone is longer.
+     * The most bytes appended by a single write, made of whole lines, unless one line alone is longer: on a local
+     * file system, a write to a file opened for appending lands at its end in one piece, so that another listener
+     * or process appending to the same file puts its lines between these, never inside one.
      */
     private static final int MAX_WRITE_BYTES = 64 * 1024;
 
@@ -175,10 +176,6 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             return;
         }
         Instant droppedAt = clock.instant();
-        List<byte[]> lines = new ArrayList<>(documents.size());
-        for (Map<String, Object> document : documents) {
-            lines.add(toLine(document, reason, droppedAt).getBytes(UTF_8));
-        }
         Path target = fileOf(LocalDate.ofInstant(droppedAt, clock.getZone()));
         // Counted write by write, so that one failing partway hands over only the documents it left out
         int appended = 0;
@@ -189,9 +186,24 @@ public class FileDeadLetterListener implements LogDeliveryListener {
                     // A write cut short, by a crash or a full disk, would otherwise swallow the first line
                     out.write(LINE_SEPARATOR);
                 }
-                while (appended < lines.size()) {
-                    appended = appendWholeLines(out, lines, appended);
+                // Rendered write by write rather than all at once, which would hold a second copy of the
+                // documents, of a whole batch when a delivery gives up on one
+                ByteArrayOutputStream write = new ByteArrayOutputStream(MAX_WRITE_BYTES);
+                int buffered = 0;
+                for (Map<String, Object> document : documents) {
+                    byte[] line = toLine(document, reason, droppedAt).getBytes(UTF_8);
+                    if (buffered > 0 && write.size() + line.length + LINE_SEPARATOR.length > MAX_WRITE_BYTES) {
+                        write.writeTo(out);
+                        appended += buffered;
+                        write.reset();
+                        buffered = 0;
+                    }
+                    write.writeBytes(line);
+                    write.writeBytes(LINE_SEPARATOR);
+                    buffered++;
                 }
+                write.writeTo(out);
+                appended += buffered;
             } finally {
                 writeLock.unlock();
             }
@@ -259,30 +271,6 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             log.debug("Unable to check whether {} ends with a complete line, appending to it as is", file, e);
             return false;
         }
-    }
-
-    /**
-     * Appends in a single write, each followed by a line separator, as many of the given lines as fit in
-     * {@link #MAX_WRITE_BYTES}, starting from the given one, which goes in however long: on a local file system,
-     * a write to a file opened for appending lands at its end in one piece, so that another listener or process
-     * appending to the same file puts its lines between these, never inside one.
-     *
-     * @param out   The file to append to
-     * @param lines The lines to append, encoded
-     * @param from  The index of the first line to append
-     * @return The index past the last line appended
-     * @throws IOException If the write fails, possibly after appending part of it
-     */
-    private static int appendWholeLines(OutputStream out, List<byte[]> lines, int from) throws IOException {
-        ByteArrayOutputStream write = new ByteArrayOutputStream(MAX_WRITE_BYTES);
-        int next = from;
-        do {
-            write.writeBytes(lines.get(next));
-            write.writeBytes(LINE_SEPARATOR);
-            next++;
-        } while (next < lines.size() && write.size() + lines.get(next).length + LINE_SEPARATOR.length <= MAX_WRITE_BYTES);
-        write.writeTo(out);
-        return next;
     }
 
     /**

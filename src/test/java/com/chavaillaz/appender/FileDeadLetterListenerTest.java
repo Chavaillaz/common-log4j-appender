@@ -675,6 +675,44 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Renders the documents write by write rather than all of them before the first write")
+    void testRendersTheDocumentsWriteByWrite(@TempDir Path tempDir) throws Exception {
+        // given: documents taking several writes, recording when each one is rendered and when each write goes out
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var events = new CopyOnWriteArrayList<String>();
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK) {
+            @Override
+            OutputStream openForAppend(Path target) throws IOException {
+                return new FilterOutputStream(super.openForAppend(target)) {
+                    @Override
+                    public void write(byte[] bytes, int offset, int length) throws IOException {
+                        events.add("write");
+                        out.write(bytes, offset, length);
+                    }
+                };
+            }
+        };
+        var documents = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 100; i++) {
+            documents.add(Map.of("payload", new Object() {
+                @Override
+                public String toString() {
+                    events.add("render");
+                    return "x".repeat(1_000);
+                }
+            }));
+        }
+
+        // when
+        listener.onDocumentsDropped(documents, "reason");
+
+        // then: the first write went out before the last documents were rendered, rather than after a second
+        // copy of all of them was held, a whole batch when a delivery gives up on one
+        assertThat(events.indexOf("write")).isLessThan(events.lastIndexOf("render"));
+        assertThat(Files.readAllLines(file, UTF_8)).hasSize(documents.size());
+    }
+
+    @Test
     @DisplayName("Does not create the file at all when there is nothing to append")
     void testEmptyNotificationDoesNotCreateTheFile(@TempDir Path tempDir) {
         // given: an empty notification, as a listener chain forwarding one it did not filter produces
