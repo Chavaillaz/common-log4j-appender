@@ -42,8 +42,8 @@ import org.apache.logging.log4j.status.StatusLogger;
  * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Lines are appended whole, never interleaved with
  * those of concurrent callers, nor of other listeners or processes appending to the same file, and a line left
  * incomplete by a write cut short (a crash, a full disk) is ended before the next one. A failure to write hands
- * the documents it left out to {@link #onWriteFailure(Path, List, String, IOException)}, which logs them by
- * default, rather than throwing into the pipeline.
+ * the documents it may have left out to {@link #onWriteFailure(Path, List, String, IOException)}, which logs
+ * them by default, rather than throwing into the pipeline.
  * <p>
  * The JSON is written without any dependency: {@code null}, {@link Boolean}, {@link Number}, {@link Map},
  * {@link Iterable} and array values as their JSON counterpart, the latter three recursively and keys in their
@@ -208,7 +208,12 @@ public class FileDeadLetterListener implements LogDeliveryListener {
                 writeLock.unlock();
             }
         } catch (IOException e) {
-            onWriteFailure(target, documents.subList(appended, documents.size()), reason, e);
+            // Closing failing once every line was written can mean none reached the file, a network file system
+            // reporting only then a write it could not complete: all of them, possibly saved twice but not lost
+            List<Map<String, Object>> unsaved = appended < documents.size()
+                    ? documents.subList(appended, documents.size())
+                    : documents;
+            onWriteFailure(target, unsaved, reason, e);
         }
     }
 
@@ -327,8 +332,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
      * documents by default, so that they at least appear somewhere. Override to fall back to another sink.
      *
      * @param file      The file of the day the documents could not be appended to
-     * @param documents The documents that could not be appended, those appended before the failure staying in
-     *                  the file
+     * @param documents The documents that may not be in the file: those from the failing write on, or all of
+     *                  them when only closing the file failed, which can mean none reached it
      * @param reason    The reason they were originally dropped
      * @param cause     The failure encountered while appending them
      */

@@ -675,6 +675,43 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Hands over every document when only closing the file fails, which can mean none reached it")
+    void testClosingFailingHandsOverEveryDocument(@TempDir Path tempDir) throws Exception {
+        // given: a file taking every write but failing to close, as a network file system reports a write it
+        // could not complete
+        var failed = new CopyOnWriteArrayList<Map<String, Object>>();
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK) {
+            @Override
+            OutputStream openForAppend(Path target) throws IOException {
+                return new FilterOutputStream(super.openForAppend(target)) {
+                    @Override
+                    public void write(byte[] bytes, int offset, int length) throws IOException {
+                        out.write(bytes, offset, length);
+                    }
+
+                    @Override
+                    public void close() throws IOException {
+                        super.close();
+                        throw new IOException("Input/output error");
+                    }
+                };
+            }
+
+            @Override
+            protected void onWriteFailure(Path target, List<Map<String, Object>> documents, String reason, IOException cause) {
+                failed.addAll(documents);
+            }
+        };
+        List<Map<String, Object>> documents = List.of(Map.of("id", 1), Map.of("id", 2));
+
+        // when
+        listener.onDocumentsDropped(documents, "reason");
+
+        // then: all of them, which a fallback sink may then hold twice, rather than none
+        assertThat(failed).containsExactlyElementsOf(documents);
+    }
+
+    @Test
     @DisplayName("Renders the documents write by write rather than all of them before the first write")
     void testRendersTheDocumentsWriteByWrite(@TempDir Path tempDir) throws Exception {
         // given: documents taking several writes, recording when each one is rendered and when each write goes out
