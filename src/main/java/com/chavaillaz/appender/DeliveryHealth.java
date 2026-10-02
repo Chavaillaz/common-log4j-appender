@@ -48,8 +48,8 @@ public record DeliveryHealth(Status status, Duration sinceLastSuccess) {
         RETRYING,
 
         /**
-         * The last transmission attempt failed, and transmissions are held off until the retry backoff elapses
-         * (see {@link DeliveryOptions#retryBackoff()}).
+         * A transmission attempt failed, and transmissions are held off until the retry backoff it decided
+         * elapses (see {@link DeliveryOptions#retryBackoff()}).
          */
         BACKING_OFF,
 

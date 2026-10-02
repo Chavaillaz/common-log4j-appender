@@ -312,10 +312,10 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     /**
      * {@inheritDoc}
      * <p>
-     * {@link DeliveryHealth.Status#DOWN} once closed, and otherwise what the last completed transmission attempt
-     * left: {@link DeliveryHealth.Status#UP} if it succeeded or none was made yet, and if it failed,
-     * {@link DeliveryHealth.Status#BACKING_OFF} while the retry backoff holds transmissions off,
-     * {@link DeliveryHealth.Status#RETRYING} once it no longer does.
+     * {@link DeliveryHealth.Status#DOWN} once closed, {@link DeliveryHealth.Status#BACKING_OFF} while the retry
+     * backoff holds transmissions off after a failure, and otherwise what the last completed transmission attempt
+     * left: {@link DeliveryHealth.Status#RETRYING} if it failed, {@link DeliveryHealth.Status#UP} if it succeeded
+     * or none was made yet.
      *
      * @return The current health, with the time since documents were last accepted, or since this delivery was
      *         created while none were yet

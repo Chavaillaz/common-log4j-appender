@@ -206,6 +206,56 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Reports itself backing off while a failure holds transmissions off, whatever succeeded meanwhile")
+    void testHealthReportsTheBackoffOfAFailureHandledAlongASuccess() throws Exception {
+        // given: a failure whose handling is held up between its notification and the backoff it decides
+        var attempts = new AtomicInteger();
+        var failing = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        var succeeded = new CountDownLatch(1);
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 1)
+                .maxConsecutiveFailures(() -> 0)
+                .backoff(consecutiveFailures -> 60_000)
+                .transport(elements -> {
+                    attempts.incrementAndGet();
+                    return completedFuture(elements.contains("fails") ? TransmissionResult.failure(null) : TransmissionResult.success());
+                })
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onSucceeded(int count, long durationMillis) {
+                        succeeded.countDown();
+                    }
+
+                    @Override
+                    public void onFailed(int count, Throwable cause) {
+                        failing.countDown();
+                        try {
+                            resume.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                })
+                .build();
+        batcher.add(List.of("fails"));
+        assertThat(failing.await(2, SECONDS)).as("The first transmission should have failed").isTrue();
+
+        // when: a concurrent transmission succeeds before that failure holds transmissions off
+        batcher.add(List.of("succeeds"));
+        assertThat(succeeded.await(2, SECONDS)).as("The second transmission should have succeeded").isTrue();
+        resume.countDown();
+        batcher.awaitPendingTransmissions();
+
+        // then: transmissions are held off, as the health says, which used to report the success instead
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        assertThat(attempts.get()).as("The retry should have been held off by the backoff").isEqualTo(2);
+        assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.BACKING_OFF);
+        batcher.close(Duration.ZERO);
+    }
+
+    @Test
     @DisplayName("Reports dropped elements through the listener once MaxConsecutiveFailures is exceeded")
     void testGivesUpAfterMaxConsecutiveFailures() throws Exception {
         // given

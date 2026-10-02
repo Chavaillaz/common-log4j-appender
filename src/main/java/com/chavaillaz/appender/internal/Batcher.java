@@ -587,9 +587,9 @@ public class Batcher<T> {
 
     /**
      * Takes the health of this engine, a signal a caller can poll, from a readiness endpoint for instance:
-     * {@link DeliveryHealth.Status#DOWN} once closed, {@link DeliveryHealth.Status#UP} while the last completed
-     * transmission attempt succeeded, and otherwise {@link DeliveryHealth.Status#BACKING_OFF} or
-     * {@link DeliveryHealth.Status#RETRYING}, whether a backoff delay holds the retry off or not.
+     * {@link DeliveryHealth.Status#DOWN} once closed, {@link DeliveryHealth.Status#BACKING_OFF} while a backoff
+     * delay holds transmissions off after a failure, and otherwise {@link DeliveryHealth.Status#RETRYING} or
+     * {@link DeliveryHealth.Status#UP}, whether the last completed transmission attempt failed or not.
      *
      * @return The current health, with the time since the transport last accepted elements
      */
@@ -597,10 +597,14 @@ public class Batcher<T> {
         DeliveryHealth.Status status;
         if (closed.get()) {
             status = DeliveryHealth.Status.DOWN;
-        } else if (!transmissionFailed) {
-            status = DeliveryHealth.Status.UP;
+        } else if (isBackingOff()) {
+            // Before the outcome of the last attempt: a success handled while a concurrent failure was, before
+            // that failure held transmissions off, leaves them held off all the same
+            status = DeliveryHealth.Status.BACKING_OFF;
+        } else if (transmissionFailed) {
+            status = DeliveryHealth.Status.RETRYING;
         } else {
-            status = isBackingOff() ? DeliveryHealth.Status.BACKING_OFF : DeliveryHealth.Status.RETRYING;
+            status = DeliveryHealth.Status.UP;
         }
         return new DeliveryHealth(status, Duration.ofNanos(Math.max(0, System.nanoTime() - lastSuccessNanos)));
     }
