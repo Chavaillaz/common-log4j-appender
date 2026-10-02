@@ -429,6 +429,28 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Names the failure of a message by its class when the failure cannot describe itself either")
+        void testConversionToleratesAMessageFailureThatCannotDescribeItself() {
+            // given: a message failing with an exception whose getMessage() throws as well, which the placeholder
+            // of the message used to run into, losing the whole document, and its report as dropped with it
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new ThrowingMessage(new ThrowingThrowable()))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertThat(document.get("level")).isEqualTo("INFO");
+            assertThat(document.get("logmessage"))
+                    .isEqualTo("<unable to format message: " + ThrowingThrowable.class.getName() + ">");
+        }
+
+        @Test
         @DisplayName("Falls back to omitting the field instead of losing the whole document when a stack trace fails to compute")
         void testConversionToleratesThrowingThrowable() {
             // given: a custom Throwable whose getMessage() throws, which Throwable#printStackTrace()
@@ -600,9 +622,19 @@ class DefaultLogConverterTest {
 
     private static class ThrowingMessage implements Message {
 
+        private final RuntimeException failure;
+
+        ThrowingMessage() {
+            this(new RuntimeException("Simulated formatting failure"));
+        }
+
+        ThrowingMessage(RuntimeException failure) {
+            this.failure = failure;
+        }
+
         @Override
         public String getFormattedMessage() {
-            throw new RuntimeException("Simulated formatting failure");
+            throw failure;
         }
 
         @Override

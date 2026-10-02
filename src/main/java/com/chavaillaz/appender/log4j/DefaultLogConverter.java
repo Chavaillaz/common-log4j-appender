@@ -165,7 +165,22 @@ public class DefaultLogConverter implements LogConverter {
         } catch (Throwable e) {
             // Throwable: a message built from a structure referring to itself overflows the stack
             log.warn("Unable to format the message of a logging event, using a placeholder instead", e);
-            return "<unable to format message: " + e + ">";
+            return "<unable to format message: " + describe(e) + ">";
+        }
+    }
+
+    /**
+     * Describes a failure of application code by its {@link Throwable#toString()}, or by its class name when that
+     * throws too, being application code as well.
+     *
+     * @param failure The failure to describe
+     * @return Its description
+     */
+    private static String describe(Throwable failure) {
+        try {
+            return failure.toString();
+        } catch (Throwable e) {
+            return failure.getClass().getName();
         }
     }
 
