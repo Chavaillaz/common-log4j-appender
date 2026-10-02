@@ -155,7 +155,9 @@ public class Batcher<T> {
 
     /**
      * Executor transmitting batches on virtual threads, so that transmission never blocks the thread
-     * accumulating the next batch.
+     * accumulating the next batch. They take neither the inheritable thread-locals nor the context class loader
+     * of the thread starting them, the one closing a web application for instance, which one stuck on an
+     * unresponsive transport would keep reachable for good.
      */
     private final ExecutorService transmissionExecutor;
 
@@ -265,7 +267,7 @@ public class Batcher<T> {
         this.transmissionPermits = new Semaphore(builder.maxConcurrentTransmissions);
         this.transmissionExecutor = Executors.newThreadPerTaskExecutor(builder.transmissionThreadFactory != null
                 ? builder.transmissionThreadFactory
-                : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).factory());
+                : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).inheritInheritableThreadLocals(false).factory());
     }
 
     /**

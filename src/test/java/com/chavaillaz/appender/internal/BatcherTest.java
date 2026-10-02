@@ -82,6 +82,35 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Transmits without the context of the thread handing the batch over")
+    void testTransmissionDoesNotTakeTheContextOfTheCallingThread() throws Exception {
+        // given: a transport reporting the context it runs with
+        var requestContext = new InheritableThreadLocal<String>();
+        var requestClassLoader = new ClassLoader() {
+        };
+        var transportContext = new CompletableFuture<List<Object>>();
+        Batcher<String> batcher = batcher(1, elements -> {
+            transportContext.complete(Arrays.asList(requestContext.get(), Thread.currentThread().getContextClassLoader()));
+            return completedFuture(TransmissionResult.success());
+        }, BatcherListener.noop());
+
+        // when: the batch is handed over by a thread carrying a context of its own, as the thread undeploying a
+        // web application does when it closes the engine, which sends the last batch
+        Thread.ofPlatform().start(() -> {
+            requestContext.set("request-1");
+            Thread.currentThread().setContextClassLoader(requestClassLoader);
+            batcher.add(List.of("a"));
+        }).join();
+
+        // then: a transmission that never completes runs for good, and a context it took from that thread would
+        // be kept alive as long, the class loader of an undeployed application included
+        var context = transportContext.get(5, SECONDS);
+        assertNull(context.get(0), "The transmission should not see the inheritable thread-locals of that thread");
+        assertNotSame(requestClassLoader, context.get(1), "The transmission should not use the class loader of that thread");
+        batcher.close();
+    }
+
+    @Test
     @DisplayName("Accumulates elements of an arbitrary type and transmits once the threshold is reached")
     void testAccumulatesAndTransmitsGenericElements() throws Exception {
         // given: a Batcher<String>, proving it has no dependency on any document/log4j type
