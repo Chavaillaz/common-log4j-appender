@@ -1,8 +1,7 @@
 package com.chavaillaz.appender;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -27,8 +26,8 @@ class DocumentSizeEstimatorTest {
     @Test
     @DisplayName("Estimates nothing for a null or empty document")
     void testEmptyDocument() {
-        assertEquals(0, DocumentSizeEstimator.estimate(null));
-        assertTrue(DocumentSizeEstimator.estimate(Map.of()) < 10, "An empty document should be near zero");
+        assertThat(DocumentSizeEstimator.estimate(null)).isZero();
+        assertThat(DocumentSizeEstimator.estimate(Map.of())).as("An empty document should be near zero").isLessThan(10);
     }
 
     @Test
@@ -37,7 +36,9 @@ class DocumentSizeEstimatorTest {
         long small = DocumentSizeEstimator.estimate(Map.of("logmessage", "short"));
         long large = DocumentSizeEstimator.estimate(Map.of("logmessage", "x".repeat(10_000)));
 
-        assertTrue(large > small + 9_000, "A 10'000 character message should dominate the estimate, got " + large);
+        assertThat(large)
+                .as("A 10'000 character message should dominate the estimate, got " + large)
+                .isGreaterThan(small + 9_000);
     }
 
     @Test
@@ -59,7 +60,9 @@ class DocumentSizeEstimatorTest {
 
         // then: never under it, and over it by no more than the comma counted after the last element of each of
         // the three containers
-        assertTrue(overhead >= 0 && overhead <= 3, "Estimated " + overhead + " bytes more than the JSON takes");
+        assertThat(overhead)
+                .as("Estimated " + overhead + " bytes more than the JSON takes")
+                .isBetween(0L, 3L);
     }
 
     @ParameterizedTest
@@ -71,7 +74,7 @@ class DocumentSizeEstimatorTest {
         long estimated = DocumentSizeEstimator.utf8Length(value);
 
         // then
-        assertEquals(value.getBytes(UTF_8).length, estimated);
+        assertThat(estimated).isEqualTo(value.getBytes(UTF_8).length);
     }
 
     @Test
@@ -81,7 +84,9 @@ class DocumentSizeEstimatorTest {
         long nested = DocumentSizeEstimator.estimate(Map.of("context",
                 Map.of("user", "a-fairly-long-user-identifier", "tags", List.of("alpha", "beta", "gamma"))));
 
-        assertTrue(nested > flat + 40, "Nested content should be counted, got " + nested + " against " + flat);
+        assertThat(nested)
+                .as("Nested content should be counted, got " + nested + " against " + flat)
+                .isGreaterThan(flat + 40);
     }
 
     @Test
@@ -93,8 +98,12 @@ class DocumentSizeEstimatorTest {
         long primitives = DocumentSizeEstimator.estimate(Map.of("payload", new int[10_000]));
 
         // then
-        assertTrue(objects > 10_000, "The elements of an object array should be counted, got " + objects);
-        assertTrue(primitives > 10_000, "The elements of a primitive array should be counted, got " + primitives);
+        assertThat(objects)
+                .as("The elements of an object array should be counted, got " + objects)
+                .isGreaterThan(10_000);
+        assertThat(primitives)
+                .as("The elements of a primitive array should be counted, got " + primitives)
+                .isGreaterThan(10_000);
     }
 
     @Test
@@ -107,7 +116,7 @@ class DocumentSizeEstimatorTest {
         document.put("self", document);
 
         // when / then: bounded depth means this returns rather than blowing the stack
-        assertTrue(DocumentSizeEstimator.estimate(document) > 0);
+        assertThat(DocumentSizeEstimator.estimate(document)).isPositive();
     }
 
 }

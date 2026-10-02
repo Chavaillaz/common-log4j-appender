@@ -1,8 +1,7 @@
 package com.chavaillaz.appender.log4j;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.Map;
@@ -30,7 +29,7 @@ class LogConverterTest {
 
         // Then
         LogEvent event = Log4jLogEvent.newBuilder().setMessage(new SimpleMessage("hello")).build();
-        assertEquals(Map.of("application", "my-application"), converter.convert(event));
+        assertThat(converter.convert(event)).isEqualTo(Map.of("application", "my-application"));
     }
 
     @Test
@@ -40,38 +39,41 @@ class LogConverterTest {
         LogConverter converter = LogConverter.newInstance(OverloadedConverter.class.getName(), CONFIGURATION);
 
         // Then
-        assertEquals("TestLogConfiguration", ((OverloadedConverter) converter).taken);
+        assertThat(((OverloadedConverter) converter).taken).isEqualTo("TestLogConfiguration");
     }
 
     @Test
     @DisplayName("Creates the default converter by its name too")
     void testCreatesTheDefaultConverter() throws Exception {
         // When / Then
-        assertInstanceOf(DefaultLogConverter.class, LogConverter.newInstance(DefaultLogConverter.class.getName(), CONFIGURATION));
+        assertThat(LogConverter.newInstance(DefaultLogConverter.class.getName(), CONFIGURATION))
+                .isInstanceOf(DefaultLogConverter.class);
     }
 
     @Test
     @DisplayName("Refuses a converter without a constructor taking the configuration")
     void testRequiresAConstructorTakingTheConfiguration() {
         // When / Then: rather than creating one that would convert without it
-        assertThrows(NoSuchMethodException.class,
-                () -> LogConverter.newInstance(UnconfiguredConverter.class.getName(), CONFIGURATION));
+        assertThatThrownBy(() -> LogConverter.newInstance(UnconfiguredConverter.class.getName(), CONFIGURATION))
+                .isInstanceOf(NoSuchMethodException.class);
     }
 
     @Test
     @DisplayName("Reports the failure of the constructor of the converter")
     void testReportsAFailingConstructor() {
         // When / Then
-        assertThrows(InvocationTargetException.class,
-                () -> LogConverter.newInstance(FailingConverter.class.getName(), CONFIGURATION));
+        assertThatThrownBy(() -> LogConverter.newInstance(FailingConverter.class.getName(), CONFIGURATION))
+                .isInstanceOf(InvocationTargetException.class);
     }
 
     @Test
     @DisplayName("Refuses a class that is not a converter, or cannot be found")
     void testRefusesWhatIsNotAConverter() {
         // When / Then
-        assertThrows(ClassCastException.class, () -> LogConverter.newInstance(String.class.getName(), CONFIGURATION));
-        assertThrows(ClassNotFoundException.class, () -> LogConverter.newInstance("does.not.Exist", CONFIGURATION));
+        assertThatThrownBy(() -> LogConverter.newInstance(String.class.getName(), CONFIGURATION))
+                .isInstanceOf(ClassCastException.class);
+        assertThatThrownBy(() -> LogConverter.newInstance("does.not.Exist", CONFIGURATION))
+                .isInstanceOf(ClassNotFoundException.class);
     }
 
     public static class ApplicationConverter implements LogConverter {

@@ -4,14 +4,8 @@ import static java.lang.Thread.sleep;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
@@ -208,7 +202,7 @@ class AbstractLogDeliveryAppenderTest {
             sleep(300);
 
             // then
-            assertEquals(1, appender.getCountTaskExecuted().get());
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verify(appender.getLogDeliveryHandler()).flush();
 
             // when
@@ -236,13 +230,14 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: still the same handler, rather than a second one leaving the first with no reference
             // left to close it
-            assertSame(handler, appender.getLogDeliveryHandler());
-            assertTrue(appender.isStarted());
+            assertThat(appender.getLogDeliveryHandler()).isSameAs(handler);
+            assertThat(appender.isStarted()).isTrue();
 
             // and: still a single scheduler. Counted rather than timed: a second one only shows up as two
             // flushes per interval, which is indistinguishable from one slow interval on a loaded machine
-            assertTrue(countFlushSchedulerThreads() <= schedulersAfterFirstStart,
-                    "Starting again should not have created a second flush scheduler");
+            assertThat(countFlushSchedulerThreads())
+                    .as("Starting again should not have created a second flush scheduler")
+                    .isLessThanOrEqualTo(schedulersAfterFirstStart);
 
             // and: that scheduler is running, waited for rather than slept through for the same reason
             appender.append(mockLogEvent());
@@ -266,15 +261,15 @@ class AbstractLogDeliveryAppenderTest {
 
             // when
             configuration.broken.set(true);
-            assertDoesNotThrow(appender::start);
+            assertThatNoException().isThrownBy(appender::start);
             configuration.broken.set(false);
 
             // then: reported and degraded to no periodic flush, rather than handed to whatever is applying
             // the Log4j2 configuration -- which also skipped the super.start() below it, leaving an appender
             // that already had a working handler permanently unstarted
-            assertFalse(errors.isEmpty(), "The failure should have been reported through the error handler");
-            assertTrue(appender.isStarted(), "The appender should have finished starting");
-            assertNotNull(appender.getLogDeliveryHandler());
+            assertThat(errors).as("The failure should have been reported through the error handler").isNotEmpty();
+            assertThat(appender.isStarted()).as("The appender should have finished starting").isTrue();
+            assertThat(appender.getLogDeliveryHandler()).isNotNull();
 
             // cleanup
             appender.stop(0, MILLISECONDS);
@@ -297,7 +292,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: the event itself was processed, but well below the flush threshold and before the
             // flush interval elapsed, no flush was triggered
-            assertEquals(1, appender.getCountTaskExecuted().get());
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
 
             // when
@@ -335,8 +330,9 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: the next flush still ran, rather than that Error cancelling every later one for good
             verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeastOnce()).flush();
-            assertTrue(errors.stream().anyMatch(OutOfMemoryError.class::isInstance),
-                    "The failure should have been reported through the error handler, got: " + errors);
+            assertThat(errors)
+                    .as("The failure should have been reported through the error handler, got: " + errors)
+                    .anyMatch(OutOfMemoryError.class::isInstance);
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -369,7 +365,7 @@ class AbstractLogDeliveryAppenderTest {
             // then: the flush requested meanwhile ran as soon as the worker was done with the first event. It
             // used to be skipped for as long as the queue stayed full, which a steady load keeps it
             awaitSize(appender.getProcessedMessages(), 3);
-            assertEquals(List.of("first", "flush", "second"), appender.getProcessedMessages().subList(0, 3));
+            assertThat(appender.getProcessedMessages().subList(0, 3)).containsExactly("first", "flush", "second");
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -414,7 +410,9 @@ class AbstractLogDeliveryAppenderTest {
                 mostFlushTasks = Math.max(mostFlushTasks, flushTasks);
                 sleep(1);
             }
-            assertTrue(mostFlushTasks <= 1, "At most one flush should have been queued at a time, got " + mostFlushTasks);
+            assertThat(mostFlushTasks)
+                    .as("At most one flush should have been queued at a time, got " + mostFlushTasks)
+                    .isLessThanOrEqualTo(1);
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -483,7 +481,7 @@ class AbstractLogDeliveryAppenderTest {
             // then: the flush still ran right after the first event, rather than waiting behind a check of its
             // severity that fails, and every later request with it, for as long as the options cannot be read
             awaitSize(appender.getProcessedMessages(), 3);
-            assertEquals(List.of("first", "flush", "second"), appender.getProcessedMessages().subList(0, 3));
+            assertThat(appender.getProcessedMessages().subList(0, 3)).containsExactly("first", "flush", "second");
 
             // cleanup
             configuration.broken.set(false);
@@ -521,7 +519,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: the document put back is sent again by the periodic flush, rather than kept in memory for
             // an event that may not come before the application stops
-            assertTrue(delivered.await(5, SECONDS), "The failed document should have been retried");
+            assertThat(delivered.await(5, SECONDS)).as("The failed document should have been retried").isTrue();
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -548,7 +546,7 @@ class AbstractLogDeliveryAppenderTest {
             sleep(300);
 
             // then
-            assertEquals(1, appender.getCountTaskExecuted().get());
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verify(appender.getLogDeliveryHandler()).flush();
 
             // cleanup
@@ -610,7 +608,7 @@ class AbstractLogDeliveryAppenderTest {
             // then: the flush follows the urgent event, where it used to need a slot of its own in the queue,
             // and was dropped for the lack of one
             awaitSize(appender.getProcessedMessages(), 3);
-            assertEquals(List.of("first", "urgent", "flush"), appender.getProcessedMessages());
+            assertThat(appender.getProcessedMessages()).containsExactly("first", "urgent", "flush");
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -632,7 +630,7 @@ class AbstractLogDeliveryAppenderTest {
             sleep(100);
 
             // then: INFO is less severe than the configured WARN threshold, so no immediate flush
-            assertEquals(1, appender.getCountTaskExecuted().get());
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verify(appender.getLogDeliveryHandler(), never()).flush();
 
             // cleanup
@@ -654,7 +652,7 @@ class AbstractLogDeliveryAppenderTest {
             sleep(100);
 
             // then: no FlushLevel configured, so not even a FATAL event triggers an immediate flush
-            assertEquals(1, appender.getCountTaskExecuted().get());
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verify(appender.getLogDeliveryHandler(), never()).flush();
 
             // cleanup
@@ -692,7 +690,7 @@ class AbstractLogDeliveryAppenderTest {
                     "hello".equals(document.get("logmessage")) && "my-application".equals(document.get("application"))));
 
             // and: without a layout, the document being what is sent
-            assertNull(appender.getLayout());
+            assertThat(appender.getLayout()).isNull();
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -774,8 +772,8 @@ class AbstractLogDeliveryAppenderTest {
             // then: the event never sent reached the listener, converted the default way, and the metrics,
             // rather than being lost with nothing but an error the handler of the appender may rate-limit
             verify(handler).send(Map.<String, Object>of("custom", "convertible"));
-            assertEquals(List.of("unconvertible"), dropped.stream().map(d -> d.get("logmessage")).toList());
-            assertEquals(1, appender.getMetrics().droppedDocuments());
+            assertThat(dropped.stream().map(d -> d.get("logmessage")).toList()).containsExactly("unconvertible");
+            assertThat(appender.getMetrics().droppedDocuments()).isEqualTo(1);
         }
 
     }
@@ -801,7 +799,9 @@ class AbstractLogDeliveryAppenderTest {
             long elapsedMillis = (System.nanoTime() - before) / 1_000_000;
 
             // then append() returns immediately, well before the (still blocked) task could possibly complete
-            assertTrue(elapsedMillis < 200, "append() should return immediately, took " + elapsedMillis + "ms");
+            assertThat(elapsedMillis)
+                    .as("append() should return immediately, took " + elapsedMillis + "ms")
+                    .isLessThan(200);
 
             // cleanup
             releaseTask.countDown();
@@ -843,7 +843,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(2, SECONDS);
 
             // then
-            assertEquals(List.of("A", "Processing [first]"), appender.getFormattedMessages());
+            assertThat(appender.getFormattedMessages()).containsExactly("A", "Processing [first]");
         }
 
         @Test
@@ -866,12 +866,12 @@ class AbstractLogDeliveryAppenderTest {
 
             // when
             appender.start();
-            assertDoesNotThrow(() -> appender.append(loggingEvent));
+            assertThatNoException().isThrownBy(() -> appender.append(loggingEvent));
             appender.stop(2, SECONDS);
 
             // then: left for the conversion to run into, where it only costs the message field
-            assertEquals(1, appender.getCountTaskExecuted().get());
-            assertEquals(List.of(), errors);
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
+            assertThat(errors).isEmpty();
         }
 
         @Test
@@ -905,7 +905,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(2, SECONDS);
 
             // then: rather than the worker, which reads it first otherwise
-            assertEquals(List.of("application-thread"), threads);
+            assertThat(threads).containsExactly("application-thread");
         }
 
         @Test
@@ -925,9 +925,9 @@ class AbstractLogDeliveryAppenderTest {
             logThroughSynchronousLogger(appender, next);
 
             // then: the next appender still finds it, the event being left as it was logged
-            assertEquals(Arrays.asList((StackTraceElement) null), appender.getSources());
-            assertEquals(1, nextSources.size());
-            assertEquals("logThroughSynchronousLogger", nextSources.getFirst().getMethodName());
+            assertThat(appender.getSources()).isEqualTo(Arrays.asList((StackTraceElement) null));
+            assertThat(nextSources).hasSize(1);
+            assertThat(nextSources.getFirst().getMethodName()).isEqualTo("logThroughSynchronousLogger");
         }
 
         @Test
@@ -940,8 +940,8 @@ class AbstractLogDeliveryAppenderTest {
             logThroughSynchronousLogger(appender);
 
             // then
-            assertEquals(1, appender.getSources().size());
-            assertEquals("logThroughSynchronousLogger", appender.getSources().getFirst().getMethodName());
+            assertThat(appender.getSources()).hasSize(1);
+            assertThat(appender.getSources().getFirst().getMethodName()).isEqualTo("logThroughSynchronousLogger");
         }
 
         /**
@@ -1077,12 +1077,16 @@ class AbstractLogDeliveryAppenderTest {
             var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then
-            assertTrue(elapsedMillis < 200, "append() should not block even when the queue is full, took " + elapsedMillis + "ms");
+            assertThat(elapsedMillis)
+                    .as("append() should not block even when the queue is full, took " + elapsedMillis + "ms")
+                    .isLessThan(200);
             awaitSize(dropped, 1);
-            assertEquals(1, dropped.size());
-            assertEquals("would have been dropped", dropped.get(0).get("logmessage"));
-            assertTrue(droppedReasons.get(0).contains("queue"), "Reason should mention the queue: " + droppedReasons.get(0));
-            assertFalse(errors.isEmpty(), "The discard should also have been reported through the error handler");
+            assertThat(dropped).hasSize(1);
+            assertThat(dropped.get(0).get("logmessage")).isEqualTo("would have been dropped");
+            assertThat(droppedReasons.get(0))
+                    .as("Reason should mention the queue: " + droppedReasons.get(0))
+                    .contains("queue");
+            assertThat(errors).as("The discard should also have been reported through the error handler").isNotEmpty();
 
             // cleanup
             releaseTask.countDown();
@@ -1117,8 +1121,10 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(realLogEvent("B")); // fills the one-slot queue
 
             // then: the discard reaches the error handler, not whatever application code called append()
-            assertDoesNotThrow(() -> appender.append(realLogEvent("C")));
-            assertFalse(errors.isEmpty(), "The listener failure should have been reported through the error handler");
+            assertThatNoException().isThrownBy(() -> appender.append(realLogEvent("C")));
+            assertThat(errors)
+                    .as("The listener failure should have been reported through the error handler")
+                    .isNotEmpty();
 
             // cleanup
             releaseTask.countDown();
@@ -1159,10 +1165,12 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(2, SECONDS); // waits for every accepted task (A, then C) to complete
 
             // then: B was discarded and never processed, while A and C both were, in that order
-            assertEquals(List.of("A", "C"), appender.getProcessedMessages());
-            assertEquals(1, dropped.size());
-            assertEquals("B", dropped.get(0).get("logmessage"));
-            assertTrue(droppedReasons.get(0).contains("queue"), "Reason should mention the queue: " + droppedReasons.get(0));
+            assertThat(appender.getProcessedMessages()).containsExactly("A", "C");
+            assertThat(dropped).hasSize(1);
+            assertThat(dropped.get(0).get("logmessage")).isEqualTo("B");
+            assertThat(droppedReasons.get(0))
+                    .as("Reason should mention the queue: " + droppedReasons.get(0))
+                    .contains("queue");
         }
 
         @Test
@@ -1196,7 +1204,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(realLogEvent("C")); // evicts B and takes its place
 
             // then: C was already back in the queue while B's discard was being reported
-            assertEquals(1, queuedWhileReporting.get(5, SECONDS));
+            assertThat(queuedWhileReporting.get(5, SECONDS)).isEqualTo(1);
 
             // cleanup
             releaseTask.countDown();
@@ -1241,7 +1249,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(2, SECONDS); // waits for the discard to be reported
 
             // then: B was not turned into a document, stack trace included, for a listener ignoring it
-            assertEquals(0, printed.get());
+            assertThat(printed.get()).isZero();
         }
 
         @Test
@@ -1281,8 +1289,10 @@ class AbstractLogDeliveryAppenderTest {
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: the application went on logging while the listener was still busy with the first discard
-            assertNotSame(Thread.currentThread(), listenerThread.get(5, SECONDS));
-            assertTrue(elapsedMillis < 1_000, "append() should not wait for the listener, took " + elapsedMillis + "ms");
+            assertThat(listenerThread.get(5, SECONDS)).isNotSameAs(Thread.currentThread());
+            assertThat(elapsedMillis)
+                    .as("append() should not wait for the listener, took " + elapsedMillis + "ms")
+                    .isLessThan(1_000);
 
             // cleanup
             releaseListener.countDown();
@@ -1325,17 +1335,18 @@ class AbstractLogDeliveryAppenderTest {
             awaitEmptyQueue(appender);
             appender.append(realLogEvent("B")); // fills the one-slot queue
             appender.append(realLogEvent("C")); // evicts B, reported
-            assertTrue(listenerCalled.await(5, SECONDS), "The listener should have been told about B");
+            assertThat(listenerCalled.await(5, SECONDS)).as("The listener should have been told about B").isTrue();
             appender.append(realLogEvent("D")); // evicts C, waiting for the listener
             appender.append(realLogEvent("E")); // evicts D, with nowhere left to wait
 
             // then: D is only logged, rather than kept on its way to a listener already that far behind
-            assertTrue(errors.stream().anyMatch(error -> error.getMessage().contains("Unable to report")),
-                    "The discard that could not be reported should have been logged, got: " + errors);
+            assertThat(errors)
+                    .as("The discard that could not be reported should have been logged, got: " + errors)
+                    .anyMatch(error -> error.getMessage().contains("Unable to report"));
             releaseListener.countDown();
             releaseTask.countDown();
             appender.stop(2, SECONDS);
-            assertEquals(List.of("B", "C"), reported);
+            assertThat(reported).containsExactly("B", "C");
         }
 
         @Test
@@ -1375,8 +1386,12 @@ class AbstractLogDeliveryAppenderTest {
             // then: the reporter runs until the appender stops, so a context it took from that thread would be
             // kept alive as long, the class loader of an undeployed application included
             var context = reporterContext.get(5, SECONDS);
-            assertNull(context.get(0), "The reporter should not see the inheritable thread-locals of that thread");
-            assertNotSame(requestClassLoader, context.get(1), "The reporter should not use the class loader of that thread");
+            assertThat(context.get(0))
+                    .as("The reporter should not see the inheritable thread-locals of that thread")
+                    .isNull();
+            assertThat(context.get(1))
+                    .as("The reporter should not use the class loader of that thread")
+                    .isNotSameAs(requestClassLoader);
 
             // cleanup
             releaseTask.countDown();
@@ -1414,8 +1429,8 @@ class AbstractLogDeliveryAppenderTest {
             // then: reported as dropped, where it used to stay in the queue of an executor terminated for good,
             // neither run nor reported
             awaitSize(dropped, 1);
-            assertEquals("queued too late", dropped.get(0).get("logmessage"));
-            assertTrue(queue.isEmpty(), "The event should not have been left in the queue");
+            assertThat(dropped.get(0).get("logmessage")).isEqualTo("queued too late");
+            assertThat(queue).as("The event should not have been left in the queue").isEmpty();
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -1478,8 +1493,8 @@ class AbstractLogDeliveryAppenderTest {
 
             // then all pending tasks must have completed (and been recorded) before the handler was closed,
             // otherwise logs accepted right before shutdown could be silently dropped
-            assertEquals(5, events.stream().filter("send"::equals).count());
-            assertEquals("close", events.get(events.size() - 1));
+            assertThat(events.stream().filter("send"::equals).count()).isEqualTo(5);
+            assertThat(events.get(events.size() - 1)).isEqualTo("close");
         }
 
         @Test
@@ -1501,8 +1516,8 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(0, MILLISECONDS);
 
             // then: waited up to CloseTimeout, rather than abandoning all but the running task in the queue
-            assertEquals(5, events.stream().filter("send"::equals).count());
-            assertEquals("close", events.get(events.size() - 1));
+            assertThat(events.stream().filter("send"::equals).count()).isEqualTo(5);
+            assertThat(events.get(events.size() - 1)).isEqualTo("close");
 
             // and: closed the delivery within what the tasks left of it, rather than a whole one of its own
             assertClosedWithin(appender, Duration.ofSeconds(10).minusMillis(250));
@@ -1527,7 +1542,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: the delivery got the rest of that second, rather than its own CloseTimeout on top of it,
             // which let a stop take twice as long as the shutdownTimeout Log4j2 was configured with
-            assertEquals(5, events.stream().filter("send"::equals).count());
+            assertThat(events.stream().filter("send"::equals).count()).isEqualTo(5);
             assertClosedWithin(appender, Duration.ofMillis(750));
         }
 
@@ -1536,12 +1551,15 @@ class AbstractLogDeliveryAppenderTest {
          * given maximum.
          */
         private static void assertClosedWithin(RecordingLogDeliveryAppender appender, Duration maximum) {
-            assertEquals(1, appender.getCloseTimeouts().size(), "The delivery should have been closed once");
+            assertThat(appender.getCloseTimeouts()).as("The delivery should have been closed once").hasSize(1);
             Duration timeout = appender.getCloseTimeouts().get(0);
-            assertNotNull(timeout, "The delivery should have been closed with a bounded timeout");
-            assertFalse(timeout.isNegative(), "The delivery should not have been closed with a negative timeout");
-            assertTrue(timeout.compareTo(maximum) <= 0,
-                    "The delivery should have been closed within " + maximum + ", but was given " + timeout);
+            assertThat(timeout).as("The delivery should have been closed with a bounded timeout").isNotNull();
+            assertThat(timeout.isNegative())
+                    .as("The delivery should not have been closed with a negative timeout")
+                    .isFalse();
+            assertThat(timeout)
+                    .as("The delivery should have been closed within " + maximum + ", but was given " + timeout)
+                    .isLessThanOrEqualTo(maximum);
         }
 
         @Test
@@ -1563,8 +1581,12 @@ class AbstractLogDeliveryAppenderTest {
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: gave up once the close timeout elapsed, instead of waiting on the stuck task forever
-            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted after the timeout");
-            assertTrue(elapsedMillis < 5_000, "stop() should have given up after the close timeout, took " + elapsedMillis + "ms");
+            assertThat(interrupted.await(2, SECONDS))
+                    .as("The stuck task should have been interrupted after the timeout")
+                    .isTrue();
+            assertThat(elapsedMillis)
+                    .as("stop() should have given up after the close timeout, took " + elapsedMillis + "ms")
+                    .isLessThan(5_000);
         }
 
         @Test
@@ -1593,11 +1615,13 @@ class AbstractLogDeliveryAppenderTest {
             // then: neither thread holds the JVM open. Neither ends before stop(), which only the Log4j2
             // shutdown hook calls, and that hook waits for the JVM to start shutting down -- which a live
             // non-daemon thread prevents, so an application returning from main() never exited at all
-            assertTrue(workerIsDaemon.get(5, SECONDS), "The worker thread should be a daemon");
+            assertThat(workerIsDaemon.get(5, SECONDS)).as("The worker thread should be a daemon").isTrue();
             var schedulersCreated = liveThreadsNamed("log-delivery-flush-scheduler");
             schedulersCreated.removeAll(schedulersBefore);
-            assertFalse(schedulersCreated.isEmpty(), "Starting should have created a flush scheduler");
-            assertTrue(schedulersCreated.stream().allMatch(Thread::isDaemon), "The flush scheduler thread should be a daemon");
+            assertThat(schedulersCreated).as("Starting should have created a flush scheduler").isNotEmpty();
+            assertThat(schedulersCreated)
+                    .as("The flush scheduler thread should be a daemon")
+                    .allMatch(Thread::isDaemon);
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -1634,8 +1658,12 @@ class AbstractLogDeliveryAppenderTest {
             // then: the worker runs until the appender stops, so a context it took from that thread would be
             // kept alive as long, the class loader of an undeployed application included
             var context = workerContext.get(5, SECONDS);
-            assertNull(context.get(0), "The worker should not see the inheritable thread-locals of that thread");
-            assertNotSame(requestClassLoader, context.get(1), "The worker should not use the class loader of that thread");
+            assertThat(context.get(0))
+                    .as("The worker should not see the inheritable thread-locals of that thread")
+                    .isNull();
+            assertThat(context.get(1))
+                    .as("The worker should not use the class loader of that thread")
+                    .isNotSameAs(requestClassLoader);
 
             // cleanup
             appender.stop(1, SECONDS);
@@ -1657,9 +1685,11 @@ class AbstractLogDeliveryAppenderTest {
             // when / then: reported rather than propagated, and the lifecycle still completes -- this runs
             // from stop()'s finally block, so an escaping failure also skipped the super.stop() after it and
             // left Log4j2 holding an appender still reporting itself as started
-            assertDoesNotThrow(() -> appender.stop(0, MILLISECONDS));
-            assertFalse(errors.isEmpty(), "The closing failure should have been reported through the error handler");
-            assertTrue(appender.isStopped(), "The appender should have finished stopping");
+            assertThatNoException().isThrownBy(() -> appender.stop(0, MILLISECONDS));
+            assertThat(errors)
+                    .as("The closing failure should have been reported through the error handler")
+                    .isNotEmpty();
+            assertThat(appender.isStopped()).as("The appender should have finished stopping").isTrue();
         }
 
         @Test
@@ -1676,8 +1706,8 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(1, SECONDS);
 
             // when / then: logging after the appender stopped must never propagate to the application thread
-            assertDoesNotThrow(() -> appender.append(mockLogEvent()));
-            assertFalse(errors.isEmpty(), "The rejection should still be reported through the error handler");
+            assertThatNoException().isThrownBy(() -> appender.append(mockLogEvent()));
+            assertThat(errors).as("The rejection should still be reported through the error handler").isNotEmpty();
         }
 
         @Test
@@ -1698,7 +1728,9 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: the stuck task was interrupted instead of being left running indefinitely after the
             // (already closed by then) delivery handler
-            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted after the timeout");
+            assertThat(interrupted.await(2, SECONDS))
+                    .as("The stuck task should have been interrupted after the timeout")
+                    .isTrue();
         }
 
         @Test
@@ -1732,17 +1764,21 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: both queued (never started) events were reported dropped, instead of vanishing without
             // a trace once shutdownNow() discarded them from the queue
-            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted after the timeout");
-            assertEquals(2, dropped.size());
-            assertEquals(List.of("queued-1", "queued-2"), dropped.stream().map(d -> d.get("logmessage")).toList());
-            assertTrue(droppedReasons.stream().allMatch(reason -> reason.contains("stop")),
-                    "Reason should mention the appender stopping: " + droppedReasons);
+            assertThat(interrupted.await(2, SECONDS))
+                    .as("The stuck task should have been interrupted after the timeout")
+                    .isTrue();
+            assertThat(dropped).hasSize(2);
+            assertThat(dropped.stream().map(d -> d.get("logmessage")).toList()).containsExactly("queued-1", "queued-2");
+            assertThat(droppedReasons)
+                    .as("Reason should mention the appender stopping: " + droppedReasons)
+                    .allMatch(reason -> reason.contains("stop"));
 
             // and: handed over as one notification rather than one per event. A listener saving them usually
             // pays per call (opening a file, a round trip to a queue), and a full queue's worth can be
             // abandoned here -- ten thousand by default, on the path where a delay is least affordable
-            assertEquals(1, droppedReasons.size(),
-                    "Every abandoned event should be reported in a single call, but got " + droppedReasons.size());
+            assertThat(droppedReasons)
+                    .as("Every abandoned event should be reported in a single call, but got " + droppedReasons.size())
+                    .hasSize(1);
         }
 
         @Test
@@ -1777,8 +1813,8 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: the worker was not left running past the stop, stuck for good or feeding the queued
             // events one by one to a delivery closed by then, and those events were reported at once
-            assertTrue(interrupted.await(2, SECONDS), "The stuck task should have been interrupted");
-            assertEquals(List.of("queued-1", "queued-2"), dropped.stream().map(d -> d.get("logmessage")).toList());
+            assertThat(interrupted.await(2, SECONDS)).as("The stuck task should have been interrupted").isTrue();
+            assertThat(dropped.stream().map(d -> d.get("logmessage")).toList()).containsExactly("queued-1", "queued-2");
         }
 
     }
@@ -1800,22 +1836,22 @@ class AbstractLogDeliveryAppenderTest {
 
             // when
             appender.start();
-            assertEquals(1, errors.size(), "The startup failure should have been reported exactly once");
+            assertThat(errors).as("The startup failure should have been reported exactly once").hasSize(1);
             for (int i = 0; i < 5; i++) {
                 appender.append(mockLogEvent());
             }
 
             // then: an appender discarding every event says so, where it used to report itself healthy with
             // nothing dropped, the failure showing in the status logger at startup alone
-            assertEquals(DeliveryHealth.Status.DOWN, appender.getHealth().status());
-            assertEquals(5, appender.getMetrics().droppedDocuments());
+            assertThat(appender.getHealth().status()).isEqualTo(DeliveryHealth.Status.DOWN);
+            assertThat(appender.getMetrics().droppedDocuments()).isEqualTo(5);
             appender.stop(2, SECONDS);
 
             // and: append() never even attempted to create a delivery task for a handler that never
             // started, instead of paying for a snapshot, a background thread hand-off and a doomed task
             // on every single one of the 5 events above
-            assertEquals(0, appender.getCountTaskCreated().get());
-            assertEquals(1, errors.size(), "No additional error should have been reported for the skipped events");
+            assertThat(appender.getCountTaskCreated().get()).isZero();
+            assertThat(errors).as("No additional error should have been reported for the skipped events").hasSize(1);
         }
 
         @Test
@@ -1835,8 +1871,8 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(realLogEvent("goes nowhere"));
 
             // then: the appender says so, instead of quietly swallowing everything logged for its lifetime
-            assertEquals(1, errors.size(), "The missing handler should have been reported exactly once");
-            assertNull(appender.getLogDeliveryHandler());
+            assertThat(errors).as("The missing handler should have been reported exactly once").hasSize(1);
+            assertThat(appender.getLogDeliveryHandler()).isNull();
 
             // cleanup
             appender.stop(0, MILLISECONDS);
@@ -1857,9 +1893,9 @@ class AbstractLogDeliveryAppenderTest {
             // when / then: reported and degraded to the same no-handler state an exception leaves behind,
             // rather than handed to whatever is applying the Log4j2 configuration, taking down more than
             // the one appender that cannot ship its logs
-            assertDoesNotThrow(appender::start);
-            assertEquals(1, errors.size(), "The startup failure should have been reported exactly once");
-            assertNull(appender.getLogDeliveryHandler());
+            assertThatNoException().isThrownBy(appender::start);
+            assertThat(errors).as("The startup failure should have been reported exactly once").hasSize(1);
+            assertThat(appender.getLogDeliveryHandler()).isNull();
 
             // cleanup
             appender.stop(0, MILLISECONDS);
@@ -1881,7 +1917,7 @@ class AbstractLogDeliveryAppenderTest {
             var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
             // then: nothing created yet, so nothing delivered
-            assertEquals(DeliveryHealth.Status.DOWN, appender.getHealth().status());
+            assertThat(appender.getHealth().status()).isEqualTo(DeliveryHealth.Status.DOWN);
 
             // when
             appender.start();
@@ -1889,13 +1925,14 @@ class AbstractLogDeliveryAppenderTest {
             when(appender.getLogDeliveryHandler().getHealth()).thenReturn(backingOff);
 
             // then
-            assertEquals(backingOff, appender.getHealth());
+            assertThat(appender.getHealth()).isEqualTo(backingOff);
 
             // when
             appender.stop();
 
             // then: down, since its last success still
-            assertEquals(new DeliveryHealth(DeliveryHealth.Status.DOWN, Duration.ofMinutes(2)), appender.getHealth());
+            assertThat(appender.getHealth())
+                    .isEqualTo(new DeliveryHealth(DeliveryHealth.Status.DOWN, Duration.ofMinutes(2)));
         }
 
         @Test
@@ -1922,14 +1959,14 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: no longer accepting events, as Log4j2 is told, rather than up for as long as the stop
             // takes, CloseTimeout by default
-            assertTrue(worker.isShutdown(), "The stop should have shut the worker down");
-            assertFalse(appender.isStarted(), "The appender should no longer report itself as started");
-            assertEquals(DeliveryHealth.Status.DOWN, appender.getHealth().status());
+            assertThat(worker.isShutdown()).as("The stop should have shut the worker down").isTrue();
+            assertThat(appender.isStarted()).as("The appender should no longer report itself as started").isFalse();
+            assertThat(appender.getHealth().status()).isEqualTo(DeliveryHealth.Status.DOWN);
 
             // cleanup
             releaseTask.countDown();
             stopping.join();
-            assertTrue(appender.isStopped(), "The appender should have finished stopping");
+            assertThat(appender.isStopped()).as("The appender should have finished stopping").isTrue();
         }
 
         @Test
@@ -1946,7 +1983,7 @@ class AbstractLogDeliveryAppenderTest {
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(LogDeliveryListener.NOOP);
 
             // then: nothing to report before the delivery exists
-            assertEquals(DeliveryMetrics.NONE, appender.getMetrics());
+            assertThat(appender.getMetrics()).isEqualTo(DeliveryMetrics.NONE);
 
             // when: A occupies the worker, B fills the queue, and C evicts B
             appender.start();
@@ -1956,7 +1993,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(mockLogEvent());
 
             // then: the queue and the event it discarded come on top of what the delivery reports
-            assertEquals(new DeliveryMetrics(1, 5, 500, 2, 40, 3, 8), appender.getMetrics());
+            assertThat(appender.getMetrics()).isEqualTo(new DeliveryMetrics(1, 5, 500, 2, 40, 3, 8));
 
             // cleanup
             releaseTask.countDown();
@@ -1979,7 +2016,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.start();
 
             // then: nothing queued yet
-            assertFalse(appender.isBackpressured());
+            assertThat(appender.isBackpressured()).isFalse();
 
             // when: A occupies the worker thread (blocked), B fills the one-slot queue
             appender.append(mockLogEvent());
@@ -1987,7 +2024,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(mockLogEvent());
 
             // then
-            assertTrue(appender.isBackpressured());
+            assertThat(appender.isBackpressured()).isTrue();
 
             // cleanup
             releaseTask.countDown();
@@ -2010,7 +2047,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.start();
 
             // then: nothing queued yet
-            assertEquals(0, appender.getQueuedEventCount());
+            assertThat(appender.getQueuedEventCount()).isZero();
 
             // when: the first event occupies the (blocked) worker thread, the next two sit in the queue
             appender.append(mockLogEvent());
@@ -2019,8 +2056,8 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(mockLogEvent());
 
             // then: a gauge worth alerting on well before documents actually start being discarded
-            assertEquals(2, appender.getQueuedEventCount());
-            assertFalse(appender.isBackpressured());
+            assertThat(appender.getQueuedEventCount()).isEqualTo(2);
+            assertThat(appender.isBackpressured()).isFalse();
 
             // cleanup
             releaseTask.countDown();
@@ -2051,8 +2088,8 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(2, SECONDS);
 
             // then
-            assertEquals(1, appender.getCountTaskExecuted().get());
-            assertFalse(errors.isEmpty(), "The exception thrown by the first task should have been reported");
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
+            assertThat(errors).as("The exception thrown by the first task should have been reported").isNotEmpty();
         }
 
         @Test
@@ -2087,20 +2124,24 @@ class AbstractLogDeliveryAppenderTest {
 
             // when / then
             appender.start();
-            assertDoesNotThrow(() -> appender.append(loggingEvent));
+            assertThatNoException().isThrownBy(() -> appender.append(loggingEvent));
             appender.append(mockLogEvent());
             appender.stop(2, SECONDS);
 
             // then the second (non-throwing) task creation was still processed by the background thread
-            assertEquals(1, appender.getCountTaskExecuted().get());
-            assertFalse(errors.isEmpty(), "The exception thrown while creating the task should have been reported");
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
+            assertThat(errors)
+                    .as("The exception thrown while creating the task should have been reported")
+                    .isNotEmpty();
 
             // then the event lost to the failed task creation was also reported through the listener,
             // exactly as any other event discarded before ever reaching the delivery would be, instead of
             // only ever reaching the ErrorHandler
-            assertEquals(1, dropped.size());
-            assertEquals("would have been dropped", dropped.get(0).get("logmessage"));
-            assertTrue(droppedReasons.get(0).contains("creation"), "Reason should mention task creation: " + droppedReasons.get(0));
+            assertThat(dropped).hasSize(1);
+            assertThat(dropped.get(0).get("logmessage")).isEqualTo("would have been dropped");
+            assertThat(droppedReasons.get(0))
+                    .as("Reason should mention task creation: " + droppedReasons.get(0))
+                    .contains("creation");
         }
 
         @Test
@@ -2125,7 +2166,7 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             configuration.broken.set(true);
-            assertDoesNotThrow(() -> appender.append(realLogEvent("delivered once")));
+            assertThatNoException().isThrownBy(() -> appender.append(realLogEvent("delivered once")));
             awaitSize(errors, 1);
             configuration.broken.set(false);
             appender.stop(2, SECONDS);
@@ -2133,9 +2174,9 @@ class AbstractLogDeliveryAppenderTest {
             // then: the failure is reported, but the event is not called dropped -- it reached the worker
             // and was delivered. onDocumentsDropped means "irrecoverably lost, your last chance to save it",
             // so a dead-letter sink would have filed a second copy of an event delivered normally
-            assertFalse(errors.isEmpty(), "The failure should still have been reported through the error handler");
-            assertEquals(1, appender.getCountTaskExecuted().get(), "The event should have been processed");
-            assertEquals(List.of(), dropped);
+            assertThat(errors).as("The failure should still have been reported through the error handler").isNotEmpty();
+            assertThat(appender.getCountTaskExecuted().get()).as("The event should have been processed").isEqualTo(1);
+            assertThat(dropped).isEmpty();
         }
 
     }

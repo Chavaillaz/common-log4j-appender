@@ -1,8 +1,8 @@
 package com.chavaillaz.appender;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 import java.util.List;
 import java.util.Map;
@@ -28,10 +28,11 @@ class LogDeliveryListenerTest {
         composed.onDocumentsDropped(List.of(Map.of("id", 1)), "reason");
 
         // then
-        assertEquals(List.of(
-                "first succeeded 3", "second succeeded 3",
-                "first failed 2", "second failed 2",
-                "first dropped 1", "second dropped 1"), calls);
+        assertThat(calls)
+                .containsExactly(
+                        "first succeeded 3", "second succeeded 3",
+                        "first failed 2", "second failed 2",
+                        "first dropped 1", "second dropped 1");
     }
 
     @Test
@@ -45,14 +46,14 @@ class LogDeliveryListenerTest {
                 new Failing(failure), new Recording("sink", calls), new Failing(secondFailure));
 
         // when
-        var thrown = assertThrows(IllegalStateException.class,
+        var thrown = catchThrowableOfType(IllegalStateException.class,
                 () -> composed.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
 
         // then: the documents still reached the sink, and the caller learns of the failure as of any listener,
         // without the second one being added to the first, which a listener may throw again every time
-        assertEquals(List.of("sink dropped 1"), calls);
-        assertSame(failure, thrown);
-        assertEquals(0, thrown.getSuppressed().length);
+        assertThat(calls).containsExactly("sink dropped 1");
+        assertThat(thrown).isSameAs(failure);
+        assertThat(thrown.getSuppressed()).isEmpty();
     }
 
     @Test
@@ -60,8 +61,8 @@ class LogDeliveryListenerTest {
     void testComposingNoneOrOneListener() {
         var listener = new Recording("only", new CopyOnWriteArrayList<>());
 
-        assertSame(LogDeliveryListener.NOOP, LogDeliveryListener.compose());
-        assertSame(listener, LogDeliveryListener.compose(listener));
+        assertThat(LogDeliveryListener.compose()).isSameAs(LogDeliveryListener.NOOP);
+        assertThat(LogDeliveryListener.compose(listener)).isSameAs(listener);
     }
 
     @Test
@@ -69,7 +70,7 @@ class LogDeliveryListenerTest {
     void testRejectsNullListeners() {
         var listener = new Recording("only", new CopyOnWriteArrayList<>());
 
-        assertThrows(NullPointerException.class, () -> LogDeliveryListener.compose(listener, null));
+        assertThatThrownBy(() -> LogDeliveryListener.compose(listener, null)).isInstanceOf(NullPointerException.class);
     }
 
     /**

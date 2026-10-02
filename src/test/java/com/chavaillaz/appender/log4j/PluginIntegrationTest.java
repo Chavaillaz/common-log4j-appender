@@ -1,7 +1,7 @@
 package com.chavaillaz.appender.log4j;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
@@ -51,10 +51,11 @@ class PluginIntegrationTest {
         // binding, and the append()/convert()/send() pipeline, asynchronously, exactly as a real
         // application's logging calls would, not injected directly by this test
         awaitAtLeastOneDocument();
-        assertEquals(1, PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.size());
-        assertEquals("hello from the real Log4j2 pipeline",
-                PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.get(0).get("logmessage"));
-        assertEquals("integration-test-app", PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.get(0).get("application"));
+        assertThat(PluginIntegrationTestAppender.RECEIVED_DOCUMENTS).hasSize(1);
+        assertThat(PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.get(0).get("logmessage"))
+                .isEqualTo("hello from the real Log4j2 pipeline");
+        assertThat(PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.get(0).get("application"))
+                .isEqualTo("integration-test-app");
     }
 
     @Test
@@ -72,7 +73,7 @@ class PluginIntegrationTest {
         context.stop();
 
         // then: the queue was processed and the batch flushed, rather than abandoned on the way out
-        assertEquals(2_000, PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.size());
+        assertThat(PluginIntegrationTestAppender.RECEIVED_DOCUMENTS).hasSize(2_000);
     }
 
     /**

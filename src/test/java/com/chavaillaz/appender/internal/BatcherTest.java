@@ -2,14 +2,9 @@ package com.chavaillaz.appender.internal;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -50,16 +45,16 @@ class BatcherTest {
     @Test
     @DisplayName("Rejects a non-positive maximum number of concurrent transmissions at construction")
     void testRejectsNonPositiveMaxConcurrentTransmissions() {
-        assertThrows(IllegalArgumentException.class, () -> Batcher.<String>builder()
+        assertThatThrownBy(() -> Batcher.<String>builder()
                 .maxConcurrentTransmissions(0)
                 .transport(elements -> completedFuture(TransmissionResult.success()))
-                .build());
+                .build()).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     @DisplayName("Rejects a missing transport function at construction")
     void testRejectsMissingTransport() {
-        assertThrows(NullPointerException.class, () -> Batcher.builder().build());
+        assertThatThrownBy(() -> Batcher.builder().build()).isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -73,12 +68,12 @@ class BatcherTest {
         }, BatcherListener.noop());
 
         // when
-        assertThrows(NullPointerException.class, () -> batcher.add(Arrays.asList("a", null)));
+        assertThatThrownBy(() -> batcher.add(Arrays.asList("a", null))).isInstanceOf(NullPointerException.class);
         batcher.add(List.of("b", "c"));
         batcher.awaitPendingTransmissions();
 
         // then: nothing of the rejected call was kept, the batch stacking none of the elements before the null
-        assertEquals(List.of(List.of("b", "c")), transmitted);
+        assertThat(transmitted).containsExactly(List.of("b", "c"));
     }
 
     @Test
@@ -105,8 +100,12 @@ class BatcherTest {
         // then: a transmission that never completes runs for good, and a context it took from that thread would
         // be kept alive as long, the class loader of an undeployed application included
         var context = transportContext.get(5, SECONDS);
-        assertNull(context.get(0), "The transmission should not see the inheritable thread-locals of that thread");
-        assertNotSame(requestClassLoader, context.get(1), "The transmission should not use the class loader of that thread");
+        assertThat(context.get(0))
+                .as("The transmission should not see the inheritable thread-locals of that thread")
+                .isNull();
+        assertThat(context.get(1))
+                .as("The transmission should not use the class loader of that thread")
+                .isNotSameAs(requestClassLoader);
         batcher.close();
     }
 
@@ -126,18 +125,18 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: threshold of 2 was reached by "a" + "b"
-        assertEquals(1, transmitted.size());
-        assertEquals(List.of("a", "b"), transmitted.get(0));
+        assertThat(transmitted).hasSize(1);
+        assertThat(transmitted.get(0)).containsExactly("a", "b");
 
         // when: "c" alone is below the threshold, so it stays pending until explicitly flushed
         batcher.add(List.of("c"));
-        assertEquals(1, transmitted.size());
+        assertThat(transmitted).hasSize(1);
         batcher.flush();
         batcher.awaitPendingTransmissions();
 
         // then
-        assertEquals(2, transmitted.size());
-        assertEquals(List.of("c"), transmitted.get(1));
+        assertThat(transmitted).hasSize(2);
+        assertThat(transmitted.get(1)).containsExactly("c");
     }
 
     @Test
@@ -162,7 +161,7 @@ class BatcherTest {
         // then: the first attempt failed and was requeued, the second (triggered by the explicit flush
         // above, since threshold 1 alone would otherwise not retry a failing batch on every new element)
         // succeeded
-        assertEquals(2, attempts.get());
+        assertThat(attempts.get()).isEqualTo(2);
     }
 
     @Test
@@ -176,7 +175,7 @@ class BatcherTest {
         long builtBy = System.nanoTime();
 
         // then: nothing attempted yet
-        assertEquals(DeliveryHealth.Status.UP, batcher.health().status());
+        assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.UP);
 
         // when: the only attempt so far fails
         batcher.add(List.of("poison"));
@@ -185,8 +184,8 @@ class BatcherTest {
         // then: retried at the next opportunity, without a success since the engine was built
         long checkedAfter = System.nanoTime();
         DeliveryHealth failing = batcher.health();
-        assertEquals(DeliveryHealth.Status.RETRYING, failing.status());
-        assertTrue(failing.sinceLastSuccess().toNanos() >= checkedAfter - builtBy);
+        assertThat(failing.status()).isEqualTo(DeliveryHealth.Status.RETRYING);
+        assertThat(failing.sinceLastSuccess().toNanos()).isGreaterThanOrEqualTo(checkedAfter - builtBy);
 
         // when: retried and this time succeeds
         succeeding.set(true);
@@ -196,14 +195,14 @@ class BatcherTest {
 
         // then: counted from that success
         DeliveryHealth recovered = batcher.health();
-        assertEquals(DeliveryHealth.Status.UP, recovered.status());
-        assertTrue(recovered.sinceLastSuccess().toNanos() <= System.nanoTime() - retriedAfter);
+        assertThat(recovered.status()).isEqualTo(DeliveryHealth.Status.UP);
+        assertThat(recovered.sinceLastSuccess().toNanos()).isLessThanOrEqualTo(System.nanoTime() - retriedAfter);
 
         // when
         batcher.close();
 
         // then
-        assertEquals(DeliveryHealth.Status.DOWN, batcher.health().status());
+        assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.DOWN);
     }
 
     @Test
@@ -235,7 +234,7 @@ class BatcherTest {
         }
 
         // then
-        assertEquals(List.of("poison"), dropped);
+        assertThat(dropped).containsExactly("poison");
     }
 
     @Test
@@ -260,7 +259,7 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: nothing sent yet
-        assertEquals(List.of(), transmitted);
+        assertThat(transmitted).isEmpty();
 
         // when: the limit is lowered (as if the overriding method started returning a smaller value) and
         // another element is accumulated
@@ -270,7 +269,7 @@ class BatcherTest {
 
         // then: the newly-lowered limit was honored immediately, without reconstructing the Batcher, the batch
         // filling up to it being sent
-        assertEquals(List.of(List.of("a", "b", "c", "d")), transmitted);
+        assertThat(transmitted).containsExactly(List.of("a", "b", "c", "d"));
     }
 
     @Test
@@ -302,15 +301,15 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: "a" and "c" were reported succeeded (2), only "b" is pending for retry
-        assertEquals(List.of(2), succeeded);
-        assertEquals(List.of(List.of("a", "b", "c")), attempts);
+        assertThat(succeeded).containsExactly(2);
+        assertThat(attempts).containsExactly(List.of("a", "b", "c"));
 
         // when: retried
         batcher.flush();
         batcher.awaitPendingTransmissions();
 
         // then: only "b" (not "a" or "c" again) was retried, and it still fails every time
-        assertEquals(List.of(List.of("a", "b", "c"), List.of("b")), attempts);
+        assertThat(attempts).containsExactly(List.of("a", "b", "c"), List.of("b"));
     }
 
     @Test
@@ -346,8 +345,10 @@ class BatcherTest {
 
         // then: "a" was retried (not lost after the very first malformed response) and eventually reported
         // dropped once MaxConsecutiveFailures was reached, instead of vanishing without a trace
-        assertTrue(attempts.get() >= 2, "The malformed chunk should have been retried, not discarded outright");
-        assertTrue(dropped.contains("a"), "\"a\" should have been reported dropped instead of lost silently");
+        assertThat(attempts.get())
+                .as("The malformed chunk should have been retried, not discarded outright")
+                .isGreaterThanOrEqualTo(2);
+        assertThat(dropped).as("\"a\" should have been reported dropped instead of lost silently").contains("a");
     }
 
     @Test
@@ -372,8 +373,10 @@ class BatcherTest {
         var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
         // then: add() returned promptly without waiting for the (still incomplete) transport future
-        assertTrue(elapsedMillis < 500, "add() should not block on an incomplete transport future, took " + elapsedMillis + "ms");
-        assertTrue(!transmitted.get(), "The transport should not have completed yet");
+        assertThat(elapsedMillis)
+                .as("add() should not block on an incomplete transport future, took " + elapsedMillis + "ms")
+                .isLessThan(500);
+        assertThat(transmitted.get()).as("The transport should not have completed yet").isFalse();
 
         // cleanup
         releaseTransport.complete(null);
@@ -411,8 +414,8 @@ class BatcherTest {
 
         // then: the client thread is free to serve its other requests while the listener still runs elsewhere
         client.join(SECONDS.toMillis(5));
-        assertFalse(client.isAlive(), "The client thread should not have waited for the listener");
-        assertNotSame(client, listenerThread.get(5, SECONDS));
+        assertThat(client.isAlive()).as("The client thread should not have waited for the listener").isFalse();
+        assertThat(listenerThread.get(5, SECONDS)).isNotSameAs(client);
 
         // cleanup
         releaseListener.countDown();
@@ -450,8 +453,8 @@ class BatcherTest {
 
         // then: the list the engine retries from was not the transport's to empty, so the elements were
         // retried, then given up on and reported, rather than lost after the first attempt without a trace
-        assertEquals(List.of(List.of("a", "b"), List.of("a", "b")), attempts);
-        assertEquals(List.of("a", "b"), dropped);
+        assertThat(attempts).containsExactly(List.of("a", "b"), List.of("a", "b"));
+        assertThat(dropped).containsExactly("a", "b");
     }
 
     @Test
@@ -479,8 +482,10 @@ class BatcherTest {
 
         // then: only the element genuinely dispatched is ever retried, the foreign one never making its way
         // into the pending batch (where it would be transmitted as if it were real data)
-        assertEquals(3, attempts.size());
-        assertTrue(attempts.stream().allMatch(List.of("a")::equals), "Attempts should only ever contain \"a\", but were " + attempts);
+        assertThat(attempts).hasSize(3);
+        assertThat(attempts)
+                .as("Attempts should only ever contain \"a\", but were " + attempts)
+                .allMatch(List.of("a")::equals);
     }
 
     @Test
@@ -505,7 +510,7 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: cut before the element that would have pushed a chunk over, never after
-        assertEquals(List.of(List.of("a", "b"), List.of("c", "d"), List.of("e")), attempts);
+        assertThat(attempts).containsExactly(List.of("a", "b"), List.of("c", "d"), List.of("e"));
     }
 
     @Test
@@ -531,7 +536,7 @@ class BatcherTest {
 
         // then: it goes out alone (for the transport to accept or reject on its own merits) instead of
         // stalling the batch behind an element no chunk can ever fit
-        assertEquals(List.of(List.of("a"), List.of("big"), List.of("b")), attempts);
+        assertThat(attempts).containsExactly(List.of("a"), List.of("big"), List.of("b"));
     }
 
     @Test
@@ -559,8 +564,8 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: each huge one alone, as any element heavier than a request, the small ones together
-        assertEquals(List.of(List.of("huge-1"), List.of("huge-2"), List.of("a", "b")), attempts);
-        assertEquals(2L * Integer.MAX_VALUE + 20, pendingBytes);
+        assertThat(attempts).containsExactly(List.of("huge-1"), List.of("huge-2"), List.of("a", "b"));
+        assertThat(pendingBytes).isEqualTo(2L * Integer.MAX_VALUE + 20);
     }
 
     @Test
@@ -589,8 +594,8 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: measured on the way in, then once more when split, an element starting a chunk included
-        assertEquals(List.of(List.of("a", "b"), List.of("c", "d"), List.of("e")), attempts);
-        assertEquals(List.of("a", "b", "c", "d", "e", "a", "b", "c", "d", "e"), measured);
+        assertThat(attempts).containsExactly(List.of("a", "b"), List.of("c", "d"), List.of("e"));
+        assertThat(measured).containsExactly("a", "b", "c", "d", "e", "a", "b", "c", "d", "e");
     }
 
     @Test
@@ -633,18 +638,18 @@ class BatcherTest {
 
         // then: the two oldest were discarded, leaving the batch back under the cap. Sorted, since each add()
         // above discarded one of them and notified it on a thread of its own, so they land in either order
-        assertEquals(List.of("a", "b"), dropped.stream().sorted().toList());
-        assertEquals(List.of("maximum pending bytes exceeded"), reasons.stream().distinct().toList());
+        assertThat(dropped.stream().sorted().toList()).containsExactly("a", "b");
+        assertThat(reasons.stream().distinct().toList()).containsExactly("maximum pending bytes exceeded");
 
         // and: handed over as the unmodifiable list this callback promises, like every other discard path,
         // rather than the working list this one used to expose to whatever the listener does with it
-        assertEquals(List.of(), mutableLists);
+        assertThat(mutableLists).isEmpty();
 
         // and: what is left is exactly what the cap allows to be kept
         failing.set(false);
         batcher.flush();
         batcher.awaitPendingTransmissions();
-        assertEquals(DeliveryHealth.Status.UP, batcher.health().status());
+        assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.UP);
     }
 
     @Test
@@ -668,7 +673,7 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: neither limit did anything, despite being far below what three elements would weigh
-        assertEquals(List.of(List.of("a", "b", "c")), transmitted);
+        assertThat(transmitted).containsExactly(List.of("a", "b", "c"));
     }
 
     @Test
@@ -694,7 +699,7 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: the byte limits simply go unenforced, rather than the elements being lost over a faulty estimate
-        assertEquals(List.of(List.of("a", "b")), transmitted);
+        assertThat(transmitted).containsExactly(List.of("a", "b"));
     }
 
     @Test
@@ -723,8 +728,8 @@ class BatcherTest {
         batcher.close();
 
         // then: a dead-letter sink gets its last chance at them
-        assertEquals(List.of("a", "b"), dropped);
-        assertEquals(List.of("still pending when closed"), reasons);
+        assertThat(dropped).containsExactly("a", "b");
+        assertThat(reasons).containsExactly("still pending when closed");
     }
 
     @Test
@@ -754,8 +759,10 @@ class BatcherTest {
         long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
         // then: both the element never handed to the stuck transport and the one it holds are reported
-        assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
-        assertEquals(List.of("pending", "stuck"), dropped);
+        assertThat(elapsedMillis)
+                .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
+                .isLessThan(5_000);
+        assertThat(dropped).containsExactly("pending", "stuck");
     }
 
     @Test
@@ -780,7 +787,7 @@ class BatcherTest {
         batcher.close(Duration.ZERO);
 
         // then: the batch is reported, nothing being left to wait for the outcome of its transmission
-        assertEquals(List.of("a", "b"), dropped);
+        assertThat(dropped).containsExactly("a", "b");
 
         // when: that transmission succeeds after all
         answer.complete(TransmissionResult.success());
@@ -788,8 +795,8 @@ class BatcherTest {
 
         // then: a zero budget only meant not waiting, the batch still going out on a permit already free
         // instead of being reported without an attempt, and its late success is not reported a second time
-        assertEquals(List.of(List.of("a", "b")), transmitted);
-        assertEquals(List.of("a", "b"), dropped);
+        assertThat(transmitted).containsExactly(List.of("a", "b"));
+        assertThat(dropped).containsExactly("a", "b");
     }
 
     @Test
@@ -820,7 +827,7 @@ class BatcherTest {
         adder.setDaemon(true);
         adder.start();
         Thread.sleep(300);
-        assertTrue(blocked.get(), "The second add() should be waiting for the only transmission permit");
+        assertThat(blocked.get()).as("The second add() should be waiting for the only transmission permit").isTrue();
 
         // when: closing with a budget, which the blocked caller must notice rather than wait out an
         // unbounded acquire it entered before the deadline existed
@@ -828,8 +835,8 @@ class BatcherTest {
 
         // then: it comes back instead of staying blocked for as long as the transport stays stuck
         adder.join(SECONDS.toMillis(10));
-        assertFalse(blocked.get(), "The blocked add() should have been released by the close");
-        assertFalse(adder.isAlive(), "The blocked add() should have returned");
+        assertThat(blocked.get()).as("The blocked add() should have been released by the close").isFalse();
+        assertThat(adder.isAlive()).as("The blocked add() should have returned").isFalse();
     }
 
     @Test
@@ -862,21 +869,21 @@ class BatcherTest {
         while (inFlight.isEmpty() && System.nanoTime() < deadlineNanos) {
             Thread.sleep(5);
         }
-        assertEquals(1, inFlight.size(), "The element should have been dispatched");
+        assertThat(inFlight).as("The element should have been dispatched").hasSize(1);
 
         // when: closing gives up on the transmission
         batcher.close(Duration.ofMillis(200));
 
         // then: its element gets its last chance right away, rather than with a transport that may never answer
-        assertEquals(List.of("stuck"), dropped);
-        assertEquals(List.of("still in flight when closed"), reasons);
+        assertThat(dropped).containsExactly("stuck");
+        assertThat(reasons).containsExactly("still in flight when closed");
 
         // when: the transmission finally fails and hands its element back
         inFlight.get(0).complete(TransmissionResult.failure(null));
         batcher.awaitPendingTransmissions();
 
         // then: it is not reported a second time
-        assertEquals(List.of("stuck"), dropped);
+        assertThat(dropped).containsExactly("stuck");
     }
 
     @Test
@@ -911,17 +918,17 @@ class BatcherTest {
                 })
                 .build();
         batcher.add(List.of("late"));
-        assertTrue(failing.await(2, SECONDS), "The transmission should have failed");
+        assertThat(failing.await(2, SECONDS)).as("The transmission should have failed").isTrue();
 
         // when: closing gives up waiting for the handling of that failure, which then puts the element back
         batcher.close(Duration.ofMillis(200));
-        assertTrue(dropped.isEmpty(), "The element is still held by the handling of its failure");
+        assertThat(dropped).as("The element is still held by the handling of its failure").isEmpty();
         resume.countDown();
         awaitDropped(dropped, 1);
 
         // then: it is reported rather than merged back into a batch nobody will ever look at again
-        assertEquals(List.of("late"), dropped);
-        assertEquals(List.of("still pending when closed"), reasons);
+        assertThat(dropped).containsExactly("late");
+        assertThat(reasons).containsExactly("still pending when closed");
     }
 
     @Test
@@ -945,8 +952,8 @@ class BatcherTest {
 
         // then: reported rather than stacked into a batch nothing will ever transmit, its dispatch being
         // rejected by the shut-down executor
-        assertEquals(List.of("late"), dropped);
-        assertEquals(List.of("submitted after close"), reasons);
+        assertThat(dropped).containsExactly("late");
+        assertThat(reasons).containsExactly("submitted after close");
     }
 
     @Test
@@ -966,11 +973,13 @@ class BatcherTest {
 
         // then: the close waits for that notification, which used to be left running, for the JVM exiting once
         // the appender stopped to cut short
-        assertTrue(closer.isAlive(), "close() should wait for the listener still notified of a dropped element");
+        assertThat(closer.isAlive())
+                .as("close() should wait for the listener still notified of a dropped element")
+                .isTrue();
         release.countDown();
         closer.join(SECONDS.toMillis(5));
-        assertFalse(closer.isAlive(), "close() should return once the listener did");
-        assertEquals(List.of("first", "second"), saved);
+        assertThat(closer.isAlive()).as("close() should return once the listener did").isFalse();
+        assertThat(saved).containsExactly("first", "second");
     }
 
     @Test
@@ -987,8 +996,10 @@ class BatcherTest {
         long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
         // then: the wait is bounded like any other of the close, which still reports what is pending
-        assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
-        assertEquals(List.of("second"), saved);
+        assertThat(elapsedMillis)
+                .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
+                .isLessThan(5_000);
+        assertThat(saved).containsExactly("second");
         release.countDown();
     }
 
@@ -1045,11 +1056,11 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: the next flush is held off rather than immediately hammering the failing transport again
-        assertEquals(1, attempts.get());
-        assertEquals(DeliveryHealth.Status.BACKING_OFF, batcher.health().status());
+        assertThat(attempts.get()).isEqualTo(1);
+        assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.BACKING_OFF);
         batcher.flush();
         batcher.awaitPendingTransmissions();
-        assertEquals(1, attempts.get(), "The retry should have been held off by the backoff");
+        assertThat(attempts.get()).as("The retry should have been held off by the backoff").isEqualTo(1);
 
         // when: the backoff elapses
         awaitBackoffElapsed(batcher);
@@ -1057,7 +1068,7 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: retrying resumes on its own, without any further prompting
-        assertEquals(2, attempts.get());
+        assertThat(attempts.get()).isEqualTo(2);
     }
 
     @Test
@@ -1076,14 +1087,14 @@ class BatcherTest {
         batcher.add(List.of("a"));
         batcher.flush();
         batcher.awaitPendingTransmissions();
-        assertEquals(DeliveryHealth.Status.BACKING_OFF, batcher.health().status());
+        assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.BACKING_OFF);
 
         // when
         batcher.close();
 
         // then: the second attempt happened despite the backoff, and succeeded
-        assertEquals(2, attempts.get());
-        assertEquals(1, batcher.metrics().transmittedElements());
+        assertThat(attempts.get()).isEqualTo(2);
+        assertThat(batcher.metrics().transmittedElements()).isEqualTo(1);
     }
 
     private static void awaitBackoffElapsed(Batcher<String> batcher) throws InterruptedException {
@@ -1144,8 +1155,9 @@ class BatcherTest {
             Thread.sleep(5);
         }
         Thread.sleep(200);
-        assertTrue(peak.get() <= 5,
-                "At most four notifications should be in flight, plus the one blocking the caller, but peaked at " + peak.get());
+        assertThat(peak.get())
+                .as("At most four notifications should be in flight, plus the one blocking the caller, but peaked at " + peak.get())
+                .isLessThanOrEqualTo(5);
 
         release.countDown();
         adder.join(SECONDS.toMillis(5));
@@ -1181,8 +1193,8 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: the Error was treated as an ordinary failure, so "a" was put back and went out with "b"
-        assertEquals(2, attempts.get());
-        assertEquals(List.of(List.of("a", "b")), transmitted);
+        assertThat(attempts.get()).isEqualTo(2);
+        assertThat(transmitted).containsExactly(List.of("a", "b"));
     }
 
     @Test
@@ -1202,12 +1214,12 @@ class BatcherTest {
                 .build();
 
         // when: the first element fails to start, the second one needs the very permit it took
-        assertDoesNotThrow(() -> batcher.add(List.of("a")));
-        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> batcher.add(List.of("b")));
+        assertThatNoException().isThrownBy(() -> batcher.add(List.of("a")));
+        assertThat(CompletableFuture.runAsync(() -> batcher.add(List.of("b")))).succeedsWithin(Duration.ofSeconds(5));
         batcher.awaitPendingTransmissions();
 
         // then: "a" was put back, and went out with "b" on the permit it gave back
-        assertEquals(List.of(List.of("a", "b")), transmitted);
+        assertThat(transmitted).containsExactly(List.of("a", "b"));
     }
 
     @Test
@@ -1232,10 +1244,10 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // when: the next element pushes the first one out of the batch
-        assertDoesNotThrow(() -> batcher.add(List.of("second")));
+        assertThatNoException().isThrownBy(() -> batcher.add(List.of("second")));
 
         // then: the listener was notified on the calling thread instead, rather than never
-        assertEquals(List.of("first"), dropped);
+        assertThat(dropped).containsExactly("first");
     }
 
     @Test
@@ -1261,7 +1273,7 @@ class BatcherTest {
                 .transport(elements -> completedFuture(TransmissionResult.success()))
                 .build();
         Thread adder = Thread.ofPlatform().daemon().start(() -> batcher.add(List.of("a")));
-        assertTrue(measuring.await(5, SECONDS), "The measurement should have started");
+        assertThat(measuring.await(5, SECONDS)).as("The measurement should have started").isTrue();
         int carriers = Integer.getInteger("jdk.virtualThreadScheduler.parallelism", Runtime.getRuntime().availableProcessors());
         var waiting = new ArrayList<Thread>();
         for (int i = 0; i < carriers; i++) {
@@ -1280,7 +1292,9 @@ class BatcherTest {
         }
 
         // then: it ran while the others waited, rather than once they were done
-        assertTrue(ranMeanwhile, "A virtual thread should have run while " + carriers + " others waited for the batch");
+        assertThat(ranMeanwhile)
+                .as("A virtual thread should have run while " + carriers + " others waited for the batch")
+                .isTrue();
     }
 
     /**
@@ -1342,7 +1356,7 @@ class BatcherTest {
         batcher.close();
 
         // then: the element was put back and reported on close, rather than vanishing with the notification
-        assertEquals(List.of("a"), dropped);
+        assertThat(dropped).containsExactly("a");
     }
 
     @Test
@@ -1370,7 +1384,7 @@ class BatcherTest {
         batcher.close();
 
         // then
-        assertEquals(List.of("a"), dropped);
+        assertThat(dropped).containsExactly("a");
     }
 
     @Test
@@ -1396,7 +1410,7 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: the byte limit simply goes unenforced, instead of the Error reaching whoever called add()
-        assertEquals(List.of(List.of("a", "b")), transmitted);
+        assertThat(transmitted).containsExactly(List.of("a", "b"));
     }
 
     private static Batcher<String> batcher(int flushThreshold,
@@ -1436,7 +1450,7 @@ class BatcherTest {
 
         // then: the chunking limit simply went unenforced and the batch went out whole, rather than being
         // carried off by the exception -- never transmitted, never put back, never reported
-        assertEquals(List.of(List.of("a", "b")), transmitted);
+        assertThat(transmitted).containsExactly(List.of("a", "b"));
     }
 
     @Test
@@ -1473,7 +1487,7 @@ class BatcherTest {
 
         // then: the element made it back into the batch and was reported on close, rather than being
         // dropped on the floor between the failure and the requeue
-        assertEquals(List.of("a"), dropped);
+        assertThat(dropped).containsExactly("a");
     }
 
     @Test
@@ -1510,7 +1524,7 @@ class BatcherTest {
 
         // then: only the elements that really did fail twice were given up on. The newer ones have a single
         // failure of their own, and used to be discarded alongside them on a streak they never earned
-        assertEquals(List.of("old-1", "old-2", "old-3"), dropped);
+        assertThat(dropped).containsExactly("old-1", "old-2", "old-3");
     }
 
     @Test
@@ -1540,14 +1554,14 @@ class BatcherTest {
 
         // then: only the element that failed twice was given up on. The newer one failed once, and used to
         // be discarded along with it, after a single attempt, on the streak of the batch it joined
-        assertEquals(List.of("old"), dropped);
+        assertThat(dropped).containsExactly("old");
 
         // when: the newer one fails a second time
         batcher.flush();
         batcher.awaitPendingTransmissions();
 
         // then: it is given up on in turn
-        assertEquals(List.of("old", "new"), dropped);
+        assertThat(dropped).containsExactly("old", "new");
     }
 
     @Test
@@ -1586,7 +1600,7 @@ class BatcherTest {
         batcher.awaitPendingTransmissions();
 
         // then: only the three that failed three times were given up on, whichever request carried them
-        assertEquals(Set.of("old-1", "old-2", "old-3"), Set.copyOf(dropped));
+        assertThat(Set.copyOf(dropped)).isEqualTo(Set.of("old-1", "old-2", "old-3"));
 
         // when: the two newer ones still rejected fail twice more
         for (int i = 0; i < 2; i++) {
@@ -1595,8 +1609,8 @@ class BatcherTest {
         }
 
         // then: they are given up on in turn, the accepted one never being
-        assertEquals(Set.of("old-1", "old-2", "old-3", "fresh-2", "fresh-3"), Set.copyOf(dropped));
-        assertEquals(5, dropped.size());
+        assertThat(Set.copyOf(dropped)).isEqualTo(Set.of("old-1", "old-2", "old-3", "fresh-2", "fresh-3"));
+        assertThat(dropped).hasSize(5);
     }
 
     @Test
@@ -1630,8 +1644,8 @@ class BatcherTest {
 
         // then: both were reported as discarded, and nothing was sent on behalf of the emptied batch
         awaitDropped(dropped, 2);
-        assertEquals(List.of("a", "b"), dropped);
-        assertEquals(List.of(List.of("a")), transmitted);
+        assertThat(dropped).containsExactly("a", "b");
+        assertThat(transmitted).containsExactly(List.of("a"));
     }
 
     @Test
@@ -1641,17 +1655,17 @@ class BatcherTest {
         long oneYearMillis = Duration.ofDays(365).toMillis();
 
         // then: only an absent timeout means "wait indefinitely"
-        assertNull(Batcher.toMillis(null));
-        assertEquals(0L, Batcher.toMillis(Duration.ofSeconds(-1)));
-        assertEquals(1_000L, Batcher.toMillis(Duration.ofSeconds(1)));
-        assertEquals(oneYearMillis, Batcher.toMillis(Duration.ofDays(1_000)));
+        assertThat(Batcher.toMillis(null)).isNull();
+        assertThat(Batcher.toMillis(Duration.ofSeconds(-1))).isZero();
+        assertThat(Batcher.toMillis(Duration.ofSeconds(1))).isEqualTo(1_000L);
+        assertThat(Batcher.toMillis(Duration.ofDays(1_000))).isEqualTo(oneYearMillis);
 
         // and: a duration too large for Duration#toMillis() to express at all is past that cap too, rather
         // than the one value that leaves close() with no deadline in effect and therefore never times out
-        assertEquals(oneYearMillis, Batcher.toMillis(Duration.ofSeconds(Long.MAX_VALUE)));
+        assertThat(Batcher.toMillis(Duration.ofSeconds(Long.MAX_VALUE))).isEqualTo(oneYearMillis);
 
         // and: one as far below zero does not wait at all, as any negative timeout
-        assertEquals(0L, Batcher.toMillis(Duration.ofSeconds(Long.MIN_VALUE)));
+        assertThat(Batcher.toMillis(Duration.ofSeconds(Long.MIN_VALUE))).isZero();
     }
 
     @Test
@@ -1699,8 +1713,9 @@ class BatcherTest {
         }
 
         // then
-        assertTrue(statusMessages.stream().anyMatch(message -> message.contains("maximum pending element")),
-                "Expected the discard on the status channel, got: " + statusMessages);
+        assertThat(statusMessages)
+                .as("Expected the discard on the status channel, got: " + statusMessages)
+                .anyMatch(message -> message.contains("maximum pending element"));
     }
 
     @Test
@@ -1723,16 +1738,16 @@ class BatcherTest {
         batcher.add(List.of("a", "b"));
 
         // then
-        assertEquals(new Batcher.Metrics(2, 20, 0, 0, 0, 0), batcher.metrics());
+        assertThat(batcher.metrics()).isEqualTo(new Batcher.Metrics(2, 20, 0, 0, 0, 0));
 
         // when: they are sent, the request left unanswered, then answered
         batcher.flush();
-        assertEquals(new Batcher.Metrics(0, 0, 1, 0, 0, 0), batcher.metrics());
+        assertThat(batcher.metrics()).isEqualTo(new Batcher.Metrics(0, 0, 1, 0, 0, 0));
         unanswered.complete(TransmissionResult.success());
         batcher.awaitPendingTransmissions();
 
         // then
-        assertEquals(new Batcher.Metrics(0, 0, 0, 2, 0, 0), batcher.metrics());
+        assertThat(batcher.metrics()).isEqualTo(new Batcher.Metrics(0, 0, 0, 2, 0, 0));
 
         // when: four more fill the batch past its pending cap of three, which sends them, and fail once
         batcher.add(List.of("c", "d", "e", "f"));
@@ -1740,7 +1755,7 @@ class BatcherTest {
 
         // then: the three most recent are pending again, counted with the failed attempt and the oldest one,
         // discarded to put them back within the cap
-        assertEquals(new Batcher.Metrics(3, 30, 0, 2, 1, 1), batcher.metrics());
+        assertThat(batcher.metrics()).isEqualTo(new Batcher.Metrics(3, 30, 0, 2, 1, 1));
     }
 
     @Test
@@ -1762,8 +1777,9 @@ class BatcherTest {
         });
 
         // then: the outage shows from its first failure, with what caused it
-        assertTrue(statuses.stream().anyMatch(status -> status.getLevel() == Level.WARN && status.getThrowable() == cause),
-                "Expected a warning carrying the cause, got: " + statuses.stream().map(StatusData::getFormattedStatus).toList());
+        assertThat(statuses)
+                .as("Expected a warning carrying the cause, got: " + statuses.stream().map(StatusData::getFormattedStatus).toList())
+                .anyMatch(status -> status.getLevel() == Level.WARN && status.getThrowable() == cause);
     }
 
     @Test
@@ -1784,8 +1800,9 @@ class BatcherTest {
         });
 
         // then
-        assertTrue(statuses.stream().anyMatch(status -> status.getLevel() == Level.ERROR && status.getThrowable() == cause),
-                "Expected an error carrying the cause, got: " + statuses.stream().map(StatusData::getFormattedStatus).toList());
+        assertThat(statuses)
+                .as("Expected an error carrying the cause, got: " + statuses.stream().map(StatusData::getFormattedStatus).toList())
+                .anyMatch(status -> status.getLevel() == Level.ERROR && status.getThrowable() == cause);
     }
 
     /**

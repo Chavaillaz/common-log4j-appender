@@ -1,7 +1,6 @@
 package com.chavaillaz.appender.internal;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 
@@ -25,8 +24,8 @@ class BackoffPolicyTest {
     void testNoneNeverDelays() {
         BackoffPolicy policy = BackoffPolicy.none();
 
-        assertEquals(0, policy.delayMillis(1));
-        assertEquals(0, policy.delayMillis(100));
+        assertThat(policy.delayMillis(1)).isZero();
+        assertThat(policy.delayMillis(100)).isZero();
     }
 
     @ParameterizedTest
@@ -35,8 +34,8 @@ class BackoffPolicyTest {
     void testNonPositiveInitialDelayDisablesBackoff(int initialMillis) {
         BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofMillis(initialMillis), Duration.ofSeconds(30));
 
-        assertEquals(0, policy.delayMillis(1));
-        assertEquals(0, policy.delayMillis(5));
+        assertThat(policy.delayMillis(1)).isZero();
+        assertThat(policy.delayMillis(5)).isZero();
     }
 
     @Test
@@ -90,8 +89,12 @@ class BackoffPolicyTest {
             for (int i = 0; i < 200; i++) {
                 ceiling = Math.max(ceiling, policy.delayMillis(consecutiveFailures));
             }
-            assertTrue(ceiling > 0, "Delay for " + consecutiveFailures + " failures collapsed to no delay at all");
-            assertTrue(ceiling <= 30_000, "Delay for " + consecutiveFailures + " failures exceeded the cap: " + ceiling);
+            assertThat(ceiling)
+                    .as("Delay for " + consecutiveFailures + " failures collapsed to no delay at all")
+                    .isPositive();
+            assertThat(ceiling)
+                    .as("Delay for " + consecutiveFailures + " failures exceeded the cap: " + ceiling)
+                    .isLessThanOrEqualTo(30_000);
         }
     }
 
@@ -102,8 +105,8 @@ class BackoffPolicyTest {
         // must not propagate out of building a policy (nor overflow the jitter bound derived from it)
         BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofSeconds(Long.MAX_VALUE), Duration.ofSeconds(Long.MAX_VALUE));
 
-        assertTrue(policy.delayMillis(1) >= 0);
-        assertTrue(policy.delayMillis(Integer.MAX_VALUE) >= 0);
+        assertThat(policy.delayMillis(1)).isNotNegative();
+        assertThat(policy.delayMillis(Integer.MAX_VALUE)).isNotNegative();
     }
 
     @Test
@@ -113,8 +116,8 @@ class BackoffPolicyTest {
         BackoffPolicy policy = BackoffPolicy.exponential(Duration.ofSeconds(Long.MIN_VALUE), Duration.ofSeconds(30));
 
         // then: negative, so no backoff at all, rather than the year a large positive one is clamped to
-        assertEquals(0, policy.delayMillis(1));
-        assertEquals(0, policy.delayMillis(5));
+        assertThat(policy.delayMillis(1)).isZero();
+        assertThat(policy.delayMillis(5)).isZero();
     }
 
     @Test
@@ -122,8 +125,8 @@ class BackoffPolicyTest {
     void testNullInitialDelayDisablesBackoff() {
         BackoffPolicy policy = BackoffPolicy.exponential(null, Duration.ofSeconds(30));
 
-        assertEquals(0, policy.delayMillis(1));
-        assertEquals(0, policy.delayMillis(5));
+        assertThat(policy.delayMillis(1)).isZero();
+        assertThat(policy.delayMillis(5)).isZero();
     }
 
     @Test
@@ -165,13 +168,16 @@ class BackoffPolicyTest {
         long max = -1;
         for (int i = 0; i < 500; i++) {
             long delay = policy.delayMillis(consecutiveFailures);
-            assertTrue(delay >= 0 && delay <= ceiling,
-                    "Delay should be within [0, " + ceiling + "] but was " + delay);
+            assertThat(delay)
+                    .as("Delay should be within [0, " + ceiling + "] but was " + delay)
+                    .isBetween(0L, ceiling);
             max = Math.max(max, delay);
         }
         // Sampling 500 times, the odds of never exceeding half the ceiling by chance are negligible; this
         // catches a policy that silently degenerated to a constant (or a much smaller range) instead.
-        assertTrue(max > ceiling / 2, "Delays should be spread across the range up to " + ceiling + ", but never exceeded " + max);
+        assertThat(max)
+                .as("Delays should be spread across the range up to " + ceiling + ", but never exceeded " + max)
+                .isGreaterThan(ceiling / 2);
     }
 
 }

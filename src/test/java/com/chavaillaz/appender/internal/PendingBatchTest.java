@@ -1,9 +1,7 @@
 package com.chavaillaz.appender.internal;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -38,9 +36,9 @@ class PendingBatchTest {
         List<Chunk<String>> chunks = batch.split(0, 0);
 
         // Then: the element that never failed counts no streak
-        assertEquals(List.of(List.of("a", "b", "c")), elementsOf(chunks));
-        assertEquals(List.of(List.of(new FailureRun(2, 2), new FailureRun(0, 1))), runsOf(chunks));
-        assertEquals(0, batch.size());
+        assertThat(elementsOf(chunks)).containsExactly(List.of("a", "b", "c"));
+        assertThat(runsOf(chunks)).containsExactly(List.of(new FailureRun(2, 2), new FailureRun(0, 1)));
+        assertThat(batch.size()).isZero();
     }
 
     @Test
@@ -56,9 +54,9 @@ class PendingBatchTest {
         List<Chunk<String>> chunks = batch.split(0, 0);
 
         // Then: the oldest is discarded, and the streaks left describe the elements left
-        assertEquals(List.of("a"), discarded);
-        assertEquals(List.of(List.of("b", "c")), elementsOf(chunks));
-        assertEquals(List.of(List.of(new FailureRun(1, 1), new FailureRun(0, 1))), runsOf(chunks));
+        assertThat(discarded).containsExactly("a");
+        assertThat(elementsOf(chunks)).containsExactly(List.of("b", "c"));
+        assertThat(runsOf(chunks)).containsExactly(List.of(new FailureRun(1, 1), new FailureRun(0, 1)));
     }
 
     @Test
@@ -73,13 +71,14 @@ class PendingBatchTest {
         List<Chunk<String>> chunks = batch.split(0, 25);
 
         // Then
-        assertEquals(List.of(List.of("a", "b"), List.of("c", "d"), List.of("e")), elementsOf(chunks));
-        assertEquals(List.of(
-                List.of(new FailureRun(2, 2)),
-                List.of(new FailureRun(0, 2)),
-                List.of(new FailureRun(0, 1))), runsOf(chunks));
-        assertEquals(0, batch.size());
-        assertEquals(0, batch.bytes());
+        assertThat(elementsOf(chunks)).containsExactly(List.of("a", "b"), List.of("c", "d"), List.of("e"));
+        assertThat(runsOf(chunks))
+                .containsExactly(
+                        List.of(new FailureRun(2, 2)),
+                        List.of(new FailureRun(0, 2)),
+                        List.of(new FailureRun(0, 1)));
+        assertThat(batch.size()).isZero();
+        assertThat(batch.bytes()).isZero();
     }
 
     @Test
@@ -93,8 +92,9 @@ class PendingBatchTest {
         List<Chunk<String>> chunks = batch.split(2, 0);
 
         // Then
-        assertEquals(List.of(List.of("a", "b"), List.of("c")), elementsOf(chunks));
-        assertThrows(UnsupportedOperationException.class, () -> chunks.getFirst().elements().add("d"));
+        assertThat(elementsOf(chunks)).containsExactly(List.of("a", "b"), List.of("c"));
+        assertThatThrownBy(() -> chunks.getFirst().elements().add("d"))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
@@ -108,10 +108,10 @@ class PendingBatchTest {
         List<String> discarded = batch.trimToBytes(3);
 
         // Then
-        assertEquals(List.of("aaaa"), discarded);
-        assertEquals(2, batch.size());
-        assertEquals(3, batch.bytes());
-        assertNull(batch.trimToBytes(3));
+        assertThat(discarded).containsExactly("aaaa");
+        assertThat(batch.size()).isEqualTo(2);
+        assertThat(batch.bytes()).isEqualTo(3);
+        assertThat(batch.trimToBytes(3)).isNull();
     }
 
     @Test
@@ -130,10 +130,10 @@ class PendingBatchTest {
         List<String> discarded = batch.trimToCount(1);
 
         // Then: under-counted at worst, never below zero
-        assertEquals(List.of("a".repeat(100)), oversized);
-        assertEquals(0, bytesAfterTrimToBytes);
-        assertEquals(List.of("bbbbbb"), discarded);
-        assertEquals(0, batch.bytes());
+        assertThat(oversized).containsExactly("a".repeat(100));
+        assertThat(bytesAfterTrimToBytes).isZero();
+        assertThat(discarded).containsExactly("bbbbbb");
+        assertThat(batch.bytes()).isZero();
     }
 
     @Test
@@ -144,9 +144,9 @@ class PendingBatchTest {
         batch.append(List.of("aaaa", "bb"));
 
         // When / Then: neither the trim nor the split limit by size do anything
-        assertEquals(0, batch.bytes());
-        assertNull(batch.trimToBytes(1));
-        assertEquals(List.of(List.of("aaaa", "bb")), elementsOf(batch.split(0, 1)));
+        assertThat(batch.bytes()).isZero();
+        assertThat(batch.trimToBytes(1)).isNull();
+        assertThat(elementsOf(batch.split(0, 1))).containsExactly(List.of("aaaa", "bb"));
     }
 
     @Test
@@ -161,10 +161,10 @@ class PendingBatchTest {
         List<String> remaining = batch.drain();
 
         // Then: nothing left to send
-        assertEquals(List.of("a", "b"), remaining);
-        assertTrue(batch.isEmpty());
-        assertEquals(0, batch.bytes());
-        assertEquals(List.of(), batch.split(0, 0));
+        assertThat(remaining).containsExactly("a", "b");
+        assertThat(batch.isEmpty()).isTrue();
+        assertThat(batch.bytes()).isZero();
+        assertThat(batch.split(0, 0)).isEmpty();
     }
 
     @Test
@@ -174,9 +174,10 @@ class PendingBatchTest {
         List<FailureRun> runs = List.of(new FailureRun(2, 1), new FailureRun(1, 2));
 
         // When / Then
-        assertEquals(List.of(new FailureRun(2, 1), new FailureRun(1, 2), new FailureRun(0, 2)), FailureRun.slice(runs, 0, 5));
-        assertEquals(List.of(new FailureRun(1, 1)), FailureRun.slice(runs, 2, 3));
-        assertEquals(List.of(new FailureRun(0, 1)), FailureRun.slice(runs, 4, 5));
+        assertThat(FailureRun.slice(runs, 0, 5))
+                .containsExactly(new FailureRun(2, 1), new FailureRun(1, 2), new FailureRun(0, 2));
+        assertThat(FailureRun.slice(runs, 2, 3)).containsExactly(new FailureRun(1, 1));
+        assertThat(FailureRun.slice(runs, 4, 5)).containsExactly(new FailureRun(0, 1));
     }
 
     @Test
@@ -186,9 +187,9 @@ class PendingBatchTest {
         FailureRun.Streaks streaks = new FailureRun.Streaks(List.of(new FailureRun(3, 1)));
 
         // When / Then
-        assertEquals(3, streaks.next());
-        assertEquals(0, streaks.next());
-        assertEquals(0, streaks.next());
+        assertThat(streaks.next()).isEqualTo(3);
+        assertThat(streaks.next()).isZero();
+        assertThat(streaks.next()).isZero();
     }
 
 }

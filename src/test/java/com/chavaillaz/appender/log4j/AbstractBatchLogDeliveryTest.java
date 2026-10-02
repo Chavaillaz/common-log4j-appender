@@ -2,10 +2,7 @@ package com.chavaillaz.appender.log4j;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -72,7 +69,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(Map.of());
 
             // then
-            assertEquals(0, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isZero();
         }
 
         @Test
@@ -86,7 +83,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.flush();
 
             // then
-            assertEquals(0, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isZero();
         }
 
         @ParameterizedTest(name = "documents = {0}")
@@ -101,7 +98,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(documents);
 
             // then
-            assertEquals(0, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isZero();
         }
 
         @Test
@@ -116,7 +113,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(0, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isZero();
         }
 
         @Test
@@ -131,8 +128,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, logDelivery.countBulkSent.get());
-            assertEquals(List.of(Map.of("id", 1), Map.of("id", 2)), logDelivery.lastBulkDocuments);
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
+            assertThat(logDelivery.lastBulkDocuments).containsExactly(Map.of("id", 1), Map.of("id", 2));
         }
 
         @Test
@@ -147,7 +144,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(0, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isZero();
         }
 
     }
@@ -170,7 +167,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
         }
 
         @Test
@@ -185,8 +182,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, logDelivery.countBulkSent.get());
-            assertEquals(2, logDelivery.lastBulkSize.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
+            assertThat(logDelivery.lastBulkSize.get()).isEqualTo(2);
         }
 
         @Test
@@ -202,7 +199,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
         }
 
     }
@@ -227,8 +224,8 @@ class AbstractBatchLogDeliveryTest {
 
             // then: three requests of one document each, rather than one oversized request the downstream
             // system would reject outright on its content length
-            assertEquals(3, logDelivery.countBulkSent.get());
-            assertEquals(List.of(1, 1, 1), logDelivery.allBulkDocuments.stream().map(List::size).toList());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(3);
+            assertThat(logDelivery.allBulkDocuments.stream().map(List::size).toList()).containsExactly(1, 1, 1);
         }
 
         @Test
@@ -248,8 +245,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then: nothing held it off, so nothing had to wait, nor be discarded to bound what waits
-            assertEquals(List.of(List.of(Map.of("id", 1), Map.of("id", 2))), logDelivery.allBulkDocuments);
-            assertEquals(List.of(), listener.dropped);
+            assertThat(logDelivery.allBulkDocuments).containsExactly(List.of(Map.of("id", 1), Map.of("id", 2)));
+            assertThat(listener.dropped).isEmpty();
         }
 
         @Test
@@ -268,8 +265,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(List.of(List.of(Map.of("id", 1))), logDelivery.allBulkDocuments);
-            assertEquals(List.of(), listener.dropped);
+            assertThat(logDelivery.allBulkDocuments).containsExactly(List.of(Map.of("id", 1)));
+            assertThat(listener.dropped).isEmpty();
         }
 
         @Test
@@ -296,9 +293,9 @@ class AbstractBatchLogDeliveryTest {
             // thousand documents it is allowed; awaited rather than asserted immediately since a drop while
             // accumulating is intentionally not tracked by awaitPendingTransmissions() (see notifyDropped())
             awaitDropped(listener, 1);
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(first), listener.dropped.get(0).documents());
-            assertEquals("maximum pending bytes exceeded", listener.dropped.get(0).reason());
+            assertThat(listener.dropped).hasSize(1);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(first);
+            assertThat(listener.dropped.get(0).reason()).isEqualTo("maximum pending bytes exceeded");
         }
 
         @Test
@@ -322,7 +319,7 @@ class AbstractBatchLogDeliveryTest {
 
             // then: the batch goes out, far below the flush threshold, rather than the limit quietly enforcing
             // nothing because the measurement it needs was decided against once, from the configuration
-            assertEquals(List.of(List.of(Map.of("id", 1), Map.of("id", 2))), logDelivery.allBulkDocuments);
+            assertThat(logDelivery.allBulkDocuments).containsExactly(List.of(Map.of("id", 1), Map.of("id", 2)));
         }
 
         @Test
@@ -338,8 +335,8 @@ class AbstractBatchLogDeliveryTest {
 
             // then: measuring costs something per document, and a delivery with no size limit to enforce
             // must not pay it
-            assertEquals(0, logDelivery.timesMeasured.get());
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.timesMeasured.get()).isZero();
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
         }
 
     }
@@ -360,7 +357,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.close();
 
             // then (close() waits for the transmission it triggers to complete before returning)
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
         }
 
         @Test
@@ -383,9 +380,9 @@ class AbstractBatchLogDeliveryTest {
 
             // then: a dead-letter sink gets its last chance at them, rather than the pending batch simply
             // going away with the delivery
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(document), listener.dropped.get(0).documents());
-            assertEquals("still pending when closed", listener.dropped.get(0).reason());
+            assertThat(listener.dropped).hasSize(1);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(document);
+            assertThat(listener.dropped.get(0).reason()).isEqualTo("still pending when closed");
         }
 
         @Test
@@ -412,9 +409,9 @@ class AbstractBatchLogDeliveryTest {
 
             // then: the pending document still got its last chance, instead of being lost in silence by the
             // very call meant to save it -- and the batching engine was closed rather than left running
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(document), listener.dropped.get(0).documents());
-            assertEquals("still pending when closed", listener.dropped.get(0).reason());
+            assertThat(listener.dropped).hasSize(1);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(document);
+            assertThat(listener.dropped.get(0).reason()).isEqualTo("still pending when closed");
         }
 
         @Test
@@ -443,11 +440,13 @@ class AbstractBatchLogDeliveryTest {
             // then: an application's shutdown is not held hostage by a downstream system that never answers,
             // and both the document never dispatched and the one the stuck transmission holds get their last
             // chance, rather than the latter vanishing with it
-            assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
-            assertEquals(2, listener.dropped.size());
-            assertEquals(List.of(pending), listener.dropped.get(0).documents());
-            assertEquals(List.of(inFlight), listener.dropped.get(1).documents());
-            assertEquals("still in flight when closed", listener.dropped.get(1).reason());
+            assertThat(elapsedMillis)
+                    .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
+                    .isLessThan(5_000);
+            assertThat(listener.dropped).hasSize(2);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(pending);
+            assertThat(listener.dropped.get(1).documents()).containsExactly(inFlight);
+            assertThat(listener.dropped.get(1).reason()).isEqualTo("still in flight when closed");
         }
 
         @Test
@@ -474,10 +473,12 @@ class AbstractBatchLogDeliveryTest {
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then
-            assertTrue(elapsedMillis < 5_000, "close() should have given up quickly, but took " + elapsedMillis + "ms");
-            assertEquals(2, listener.dropped.size());
-            assertEquals(List.of(pending), listener.dropped.get(0).documents());
-            assertEquals(List.of(inFlight), listener.dropped.get(1).documents());
+            assertThat(elapsedMillis)
+                    .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
+                    .isLessThan(5_000);
+            assertThat(listener.dropped).hasSize(2);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(pending);
+            assertThat(listener.dropped.get(1).documents()).containsExactly(inFlight);
         }
 
         @Test
@@ -500,7 +501,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.close();
 
             // then
-            assertEquals(List.of(Duration.ofSeconds(3)), closedWithin);
+            assertThat(closedWithin).containsExactly(Duration.ofSeconds(3));
         }
 
     }
@@ -523,7 +524,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then (first attempt failed, documents are kept for a later retry)
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
 
             // when the periodic flush retries once the backend is available again
             logDelivery.bulkResult = true;
@@ -531,7 +532,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(2, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
         }
 
         @Test
@@ -551,7 +552,7 @@ class AbstractBatchLogDeliveryTest {
             }
 
             // then only the first attempt was made, avoiding hammering the downstream system on every message
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
 
             // when the periodic flush retries with all the accumulated documents
             logDelivery.bulkResult = true;
@@ -559,8 +560,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(2, logDelivery.countBulkSent.get());
-            assertEquals(22, logDelivery.lastBulkSize.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
+            assertThat(logDelivery.lastBulkSize.get()).isEqualTo(22);
         }
 
         @Test
@@ -578,7 +579,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(3, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(3);
         }
 
     }
@@ -595,7 +596,7 @@ class AbstractBatchLogDeliveryTest {
             var logDelivery = new TestLogDelivery(configuration);
 
             // then: nothing attempted yet
-            assertEquals(DeliveryHealth.Status.UP, logDelivery.getHealth().status());
+            assertThat(logDelivery.getHealth().status()).isEqualTo(DeliveryHealth.Status.UP);
 
             // when: the only attempt so far fails
             logDelivery.bulkResult = false;
@@ -604,7 +605,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then: retried at the next flush, the configuration having no retry backoff
-            assertEquals(DeliveryHealth.Status.RETRYING, logDelivery.getHealth().status());
+            assertThat(logDelivery.getHealth().status()).isEqualTo(DeliveryHealth.Status.RETRYING);
 
             // when: retried (via the next flush, since the documents are kept pending after the failure)
             // and this time succeeds
@@ -613,13 +614,13 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(DeliveryHealth.Status.UP, logDelivery.getHealth().status());
+            assertThat(logDelivery.getHealth().status()).isEqualTo(DeliveryHealth.Status.UP);
 
             // when
             logDelivery.close();
 
             // then
-            assertEquals(DeliveryHealth.Status.DOWN, logDelivery.getHealth().status());
+            assertThat(logDelivery.getHealth().status()).isEqualTo(DeliveryHealth.Status.DOWN);
         }
 
         @Test
@@ -636,14 +637,14 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(Map.of("id", 2));
 
             // then
-            assertEquals(new DeliveryMetrics(0, 2, 200, 0, 0, 0, 0), logDelivery.getMetrics());
+            assertThat(logDelivery.getMetrics()).isEqualTo(new DeliveryMetrics(0, 2, 200, 0, 0, 0, 0));
 
             // when
             logDelivery.flush();
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(new DeliveryMetrics(0, 0, 0, 0, 2, 0, 0), logDelivery.getMetrics());
+            assertThat(logDelivery.getMetrics()).isEqualTo(new DeliveryMetrics(0, 0, 0, 0, 2, 0, 0));
         }
 
     }
@@ -674,9 +675,9 @@ class AbstractBatchLogDeliveryTest {
 
             // then the oldest document (id=0) was discarded once the cap of 3 was exceeded, its actual
             // content was reported (not just a count), and the reason explains why
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(Map.of("id", 0)), listener.dropped.get(0).documents());
-            assertTrue(listener.dropped.get(0).reason().contains("pending documents"));
+            assertThat(listener.dropped).hasSize(1);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(Map.of("id", 0));
+            assertThat(listener.dropped.get(0).reason()).contains("pending documents");
 
             // when the backend recovers and the batch is retried
             logDelivery.bulkResult = true;
@@ -684,7 +685,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then only the 3 most recently received documents were ultimately sent
-            assertEquals(3, logDelivery.lastBulkSize.get());
+            assertThat(logDelivery.lastBulkSize.get()).isEqualTo(3);
         }
 
         @Test
@@ -705,8 +706,9 @@ class AbstractBatchLogDeliveryTest {
 
             // then: the first three went out once they filled the batch, rather than the oldest being
             // discarded for every new one while the downstream system accepts everything
-            assertEquals(List.of(List.of(Map.of("id", 0), Map.of("id", 1), Map.of("id", 2))), logDelivery.allBulkDocuments);
-            assertEquals(List.of(), listener.dropped);
+            assertThat(logDelivery.allBulkDocuments)
+                    .containsExactly(List.of(Map.of("id", 0), Map.of("id", 1), Map.of("id", 2)));
+            assertThat(listener.dropped).isEmpty();
         }
 
         @Test
@@ -733,11 +735,11 @@ class AbstractBatchLogDeliveryTest {
             // then the oldest document (id=0) was discarded once the cap of 3 was exceeded, with no attempt
             // since the failed one; awaited rather than asserted immediately since this particular notification
             // is intentionally not tracked by awaitPendingTransmissions() (see notifyDropped()'s documentation)
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
             awaitDropped(listener, 1);
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(Map.of("id", 0)), listener.dropped.get(0).documents());
-            assertTrue(listener.dropped.get(0).reason().contains("pending documents"));
+            assertThat(listener.dropped).hasSize(1);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(Map.of("id", 0));
+            assertThat(listener.dropped.get(0).reason()).contains("pending documents");
 
             // when the backend recovers and what remains is flushed
             logDelivery.bulkResult = true;
@@ -745,8 +747,9 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then only the 3 most recently received documents were sent
-            assertEquals(2, logDelivery.countBulkSent.get());
-            assertEquals(List.of(Map.of("id", 1), Map.of("id", 2), Map.of("id", 3)), logDelivery.lastBulkDocuments);
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
+            assertThat(logDelivery.lastBulkDocuments)
+                    .containsExactly(Map.of("id", 1), Map.of("id", 2), Map.of("id", 3));
         }
 
         @Test
@@ -769,10 +772,10 @@ class AbstractBatchLogDeliveryTest {
 
             // then it was attempted exactly the allowed number of times, then given up on and reported,
             // with the actual document handed over so it could still be saved through a fallback if needed
-            assertEquals(3, logDelivery.countBulkSent.get());
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(Map.of("id", "poison")), listener.dropped.get(0).documents());
-            assertTrue(listener.dropped.get(0).reason().contains("consecutive"));
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(3);
+            assertThat(listener.dropped).hasSize(1);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(Map.of("id", "poison"));
+            assertThat(listener.dropped.get(0).reason()).contains("consecutive");
 
             // when new documents arrive afterward
             logDelivery.bulkResult = true;
@@ -781,8 +784,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then the pipeline is not stuck: the new document is delivered normally
-            assertEquals(4, logDelivery.countBulkSent.get());
-            assertEquals(1, logDelivery.lastBulkSize.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(4);
+            assertThat(logDelivery.lastBulkSize.get()).isEqualTo(1);
         }
 
         @Test
@@ -804,8 +807,8 @@ class AbstractBatchLogDeliveryTest {
             }
 
             // then it was retried every single time instead of ever being given up on
-            assertEquals(10, logDelivery.countBulkSent.get());
-            assertEquals(0, listener.dropped.size());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(10);
+            assertThat(listener.dropped).isEmpty();
 
             // when the backend eventually recovers
             logDelivery.bulkResult = true;
@@ -813,8 +816,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then the original document is still delivered, having never been discarded
-            assertEquals(11, logDelivery.countBulkSent.get());
-            assertEquals(List.of(Map.of("id", "poison")), logDelivery.lastBulkDocuments);
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(11);
+            assertThat(logDelivery.lastBulkDocuments).containsExactly(Map.of("id", "poison"));
         }
 
         @Test
@@ -859,7 +862,9 @@ class AbstractBatchLogDeliveryTest {
                 } else {
                     logDelivery.flush(); // re-dispatches the poison document requeued after the previous round
                 }
-                assertTrue(poisonEntered.get().await(2, SECONDS), "Round " + round + ": poison should be in flight");
+                assertThat(poisonEntered.get().await(2, SECONDS))
+                        .as("Round " + round + ": poison should be in flight")
+                        .isTrue();
 
                 logDelivery.send(Map.of("clean", round));
                 awaitAtLeast(cleanSucceeded, round);
@@ -870,11 +875,11 @@ class AbstractBatchLogDeliveryTest {
 
             // then: despite as many unrelated concurrent successes as the failure limit itself, the poison
             // document was still given up on based purely on its own failure count
-            assertEquals(maxConsecutiveFailures, poisonAttempts.get());
-            assertEquals(maxConsecutiveFailures, cleanSucceeded.get());
-            assertEquals(1, listener.dropped.size());
-            assertEquals(List.of(Map.of("poison", true)), listener.dropped.get(0).documents());
-            assertTrue(listener.dropped.get(0).reason().contains("consecutive"));
+            assertThat(poisonAttempts.get()).isEqualTo(maxConsecutiveFailures);
+            assertThat(cleanSucceeded.get()).isEqualTo(maxConsecutiveFailures);
+            assertThat(listener.dropped).hasSize(1);
+            assertThat(listener.dropped.get(0).documents()).containsExactly(Map.of("poison", true));
+            assertThat(listener.dropped.get(0).reason()).contains("consecutive");
         }
 
         private void await(CountDownLatch latch) {
@@ -915,8 +920,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, logDelivery.countBulkSent.get());
-            assertEquals(20, logDelivery.lastBulkSize.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
+            assertThat(logDelivery.lastBulkSize.get()).isEqualTo(20);
         }
 
         @Test
@@ -937,9 +942,11 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then: split into 3 requests (4 + 4 + 2), none exceeding the configured limit
-            assertEquals(3, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(3);
             for (List<Map<String, Object>> chunk : logDelivery.allBulkDocuments) {
-                assertTrue(chunk.size() <= 4, "No chunk should exceed MaxRequestDocuments, was " + chunk.size());
+                assertThat(chunk.size())
+                        .as("No chunk should exceed MaxRequestDocuments, was " + chunk.size())
+                        .isLessThanOrEqualTo(4);
             }
 
             // then: every document was sent exactly once across the chunks (order between chunks is not
@@ -949,7 +956,7 @@ class AbstractBatchLogDeliveryTest {
                     .map(document -> (Integer) document.get("id"))
                     .sorted()
                     .toList();
-            assertEquals(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), sentIds);
+            assertThat(sentIds).containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
         }
 
         @Test
@@ -970,8 +977,10 @@ class AbstractBatchLogDeliveryTest {
             var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: sequential chunking would take at least 4 * 200ms = 800ms
-            assertEquals(4, logDelivery.countBulkSent.get());
-            assertTrue(elapsedMillis < 600, "Chunks should transmit concurrently, took " + elapsedMillis + "ms");
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(4);
+            assertThat(elapsedMillis)
+                    .as("Chunks should transmit concurrently, took " + elapsedMillis + "ms")
+                    .isLessThan(600);
         }
 
         @Test
@@ -996,7 +1005,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then: both chunks were attempted, exactly one of them failing
-            assertEquals(2, attempts.size());
+            assertThat(attempts).hasSize(2);
             List<Map<String, Object>> failedChunk = attempts.stream()
                     .filter(chunk -> chunk.stream().anyMatch(document -> document.get("id").equals(0)))
                     .findFirst()
@@ -1008,8 +1017,8 @@ class AbstractBatchLogDeliveryTest {
 
             // then only the previously failed chunk was retried, with its exact original content, not the
             // sibling that had already succeeded
-            assertEquals(3, attempts.size());
-            assertEquals(failedChunk, attempts.get(2));
+            assertThat(attempts).hasSize(3);
+            assertThat(attempts.get(2)).isEqualTo(failedChunk);
         }
 
         @Test
@@ -1038,18 +1047,18 @@ class AbstractBatchLogDeliveryTest {
 
             // then: the 2 accepted documents were reported succeeded and the 1 rejected one failed,
             // through two separate listener notifications rather than one all-or-nothing outcome
-            assertEquals(1, listener.succeeded.size());
-            assertEquals(2, listener.succeeded.get(0).documentCount());
-            assertEquals(1, listener.failed.size());
-            assertEquals(1, listener.failed.get(0).documentCount());
+            assertThat(listener.succeeded).hasSize(1);
+            assertThat(listener.succeeded.get(0).documentCount()).isEqualTo(2);
+            assertThat(listener.failed).hasSize(1);
+            assertThat(listener.failed.get(0).documentCount()).isEqualTo(1);
 
             // when retried
             logDelivery.flush();
             logDelivery.awaitPendingTransmissions();
 
             // then: only the rejected document (id=1) was retried, not the two already-accepted ones
-            assertEquals(2, attempts.size());
-            assertEquals(List.of(Map.of("id", 1)), attempts.get(1));
+            assertThat(attempts).hasSize(2);
+            assertThat(attempts.get(1)).containsExactly(Map.of("id", 1));
         }
 
     }
@@ -1072,9 +1081,9 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, listener.succeeded.size());
-            assertEquals(2, listener.succeeded.get(0).documentCount());
-            assertTrue(listener.failed.isEmpty());
+            assertThat(listener.succeeded).hasSize(1);
+            assertThat(listener.succeeded.get(0).documentCount()).isEqualTo(2);
+            assertThat(listener.failed).isEmpty();
         }
 
         @Test
@@ -1094,9 +1103,9 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertSame(replacement, logDelivery.getListener());
-            assertEquals(1, replacement.succeeded.size());
-            assertTrue(initial.succeeded.isEmpty());
+            assertThat(logDelivery.getListener()).isSameAs(replacement);
+            assertThat(replacement.succeeded).hasSize(1);
+            assertThat(initial.succeeded).isEmpty();
         }
 
         @Test
@@ -1113,9 +1122,9 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, listener.failed.size());
-            assertEquals(1, listener.failed.get(0).documentCount());
-            assertNull(listener.failed.get(0).cause());
+            assertThat(listener.failed).hasSize(1);
+            assertThat(listener.failed.get(0).documentCount()).isEqualTo(1);
+            assertThat(listener.failed.get(0).cause()).isNull();
         }
 
         @Test
@@ -1133,8 +1142,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(1, listener.failed.size());
-            assertSame(exception, listener.failed.get(0).cause());
+            assertThat(listener.failed).hasSize(1);
+            assertThat(listener.failed.get(0).cause()).isSameAs(exception);
         }
 
         @Test
@@ -1156,7 +1165,7 @@ class AbstractBatchLogDeliveryTest {
             // when the first attempt fails (the listener throwing must not prevent the requeue)
             logDelivery.send(Map.of("id", 1));
             logDelivery.awaitPendingTransmissions();
-            assertEquals(1, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
 
             // when the backend recovers and the batch is retried
             logDelivery.bulkResult = true;
@@ -1164,8 +1173,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then the document was not lost: it was requeued and eventually delivered
-            assertEquals(2, logDelivery.countBulkSent.get());
-            assertEquals(List.of(Map.of("id", 1)), logDelivery.lastBulkDocuments);
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
+            assertThat(logDelivery.lastBulkDocuments).containsExactly(Map.of("id", 1));
         }
 
         @Test
@@ -1188,7 +1197,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.awaitPendingTransmissions();
 
             // then both transmissions completed normally despite the listener throwing on each one
-            assertEquals(2, logDelivery.countBulkSent.get());
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
         }
 
     }
@@ -1219,15 +1228,15 @@ class AbstractBatchLogDeliveryTest {
                     }
                 });
             }
-            assertTrue(ready.await(5, SECONDS));
+            assertThat(ready.await(5, SECONDS)).isTrue();
             start.countDown();
             pool.shutdown();
-            assertTrue(pool.awaitTermination(5, SECONDS));
+            assertThat(pool.awaitTermination(5, SECONDS)).isTrue();
             logDelivery.flush();
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertEquals(threads * messagesPerThread, logDelivery.totalDocumentsSent.get());
+            assertThat(logDelivery.totalDocumentsSent.get()).isEqualTo(threads * messagesPerThread);
         }
 
         @Test
@@ -1246,8 +1255,8 @@ class AbstractBatchLogDeliveryTest {
             var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: sequential transmission would take at least 4 * 200ms = 800ms
-            assertEquals(4, logDelivery.countBulkSent.get());
-            assertTrue(elapsedMillis < 600, "Transmissions should overlap, took " + elapsedMillis + "ms");
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(4);
+            assertThat(elapsedMillis).as("Transmissions should overlap, took " + elapsedMillis + "ms").isLessThan(600);
         }
 
         @Test
@@ -1268,9 +1277,13 @@ class AbstractBatchLogDeliveryTest {
             // then: bounded to 4 concurrent transmissions means roughly 2 waves of 150ms are needed (~300ms),
             // well under a fully sequential execution (8 * 150ms = 1200ms) but above a single wave (150ms),
             // showing that concurrency is capped rather than unlimited
-            assertEquals(8, logDelivery.countBulkSent.get());
-            assertTrue(elapsedMillis >= 250, "Expected at least two waves given the concurrency bound, took " + elapsedMillis + "ms");
-            assertTrue(elapsedMillis < 1_000, "Transmissions within a wave should overlap, took " + elapsedMillis + "ms");
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(8);
+            assertThat(elapsedMillis)
+                    .as("Expected at least two waves given the concurrency bound, took " + elapsedMillis + "ms")
+                    .isGreaterThanOrEqualTo(250);
+            assertThat(elapsedMillis)
+                    .as("Transmissions within a wave should overlap, took " + elapsedMillis + "ms")
+                    .isLessThan(1_000);
         }
 
         @Test
@@ -1292,8 +1305,10 @@ class AbstractBatchLogDeliveryTest {
 
             // then: bounded to 2 concurrent transmissions means 2 waves of 150ms are needed (~300ms),
             // instead of the ~150ms a single wave would take with the default limit of 4
-            assertEquals(4, logDelivery.countBulkSent.get());
-            assertTrue(elapsedMillis >= 250, "Expected at least two waves given the configured limit of 2, took " + elapsedMillis + "ms");
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(4);
+            assertThat(elapsedMillis)
+                    .as("Expected at least two waves given the configured limit of 2, took " + elapsedMillis + "ms")
+                    .isGreaterThanOrEqualTo(250);
         }
 
         @Test
@@ -1322,14 +1337,16 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(Map.of("id", 1));
             logDelivery.awaitPendingTransmissions();
             logDelivery.send(Map.of("id", 2));
-            assertTrue(listenerEntered.await(2, SECONDS), "The listener should have been entered by now");
+            assertThat(listenerEntered.await(2, SECONDS)).as("The listener should have been entered by now").isTrue();
 
             // then: send() must still be able to accumulate a new document promptly, proving it does not
             // hold (or wait for) the same lock as the still-blocked listener call
             var start = System.nanoTime();
             logDelivery.send(Map.of("id", 3));
             var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
-            assertTrue(elapsedMillis < 500, "send() should not wait for the listener, took " + elapsedMillis + "ms");
+            assertThat(elapsedMillis)
+                    .as("send() should not wait for the listener, took " + elapsedMillis + "ms")
+                    .isLessThan(500);
 
             // cleanup
             releaseListener.countDown();
@@ -1364,8 +1381,10 @@ class AbstractBatchLogDeliveryTest {
             var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: send() returned promptly without waiting for the still-incomplete sendBulk() future
-            assertTrue(elapsedMillis < 500, "send() should not block on an incomplete sendBulk() future, took " + elapsedMillis + "ms");
-            assertTrue(!transmitted.get(), "The transport should not have completed yet");
+            assertThat(elapsedMillis)
+                    .as("send() should not block on an incomplete sendBulk() future, took " + elapsedMillis + "ms")
+                    .isLessThan(500);
+            assertThat(transmitted.get()).as("The transport should not have completed yet").isFalse();
 
             // cleanup
             releaseTransmission.complete(null);

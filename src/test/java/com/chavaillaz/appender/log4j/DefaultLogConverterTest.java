@@ -1,11 +1,8 @@
 package com.chavaillaz.appender.log4j;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -60,18 +57,18 @@ class DefaultLogConverterTest {
         var document = converter.convert(event);
 
         // then
-        assertEquals(Instant.ofEpochMilli(epochMilli).toString(), document.get("datetime"));
-        assertEquals("my-host", document.get("host"));
-        assertEquals("pre-production", document.get("environment"));
-        assertEquals("my-application", document.get("application"));
-        assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
-        assertEquals("ERROR", document.get("level"));
-        assertEquals("thread-name", document.get("thread"));
-        assertEquals("Correct horse battery staple", document.get("logmessage"));
-        assertEquals("mdc-value", document.get("mdc-key"));
-        assertEquals("java.lang.RuntimeException", document.get("class"));
+        assertThat(document.get("datetime")).isEqualTo(Instant.ofEpochMilli(epochMilli).toString());
+        assertThat(document.get("host")).isEqualTo("my-host");
+        assertThat(document.get("environment")).isEqualTo("pre-production");
+        assertThat(document.get("application")).isEqualTo("my-application");
+        assertThat(document.get("logger")).isEqualTo("com.chavaillaz.appender.log4j.MyClass");
+        assertThat(document.get("level")).isEqualTo("ERROR");
+        assertThat(document.get("thread")).isEqualTo("thread-name");
+        assertThat(document.get("logmessage")).isEqualTo("Correct horse battery staple");
+        assertThat(document.get("mdc-key")).isEqualTo("mdc-value");
+        assertThat(document.get("class")).isEqualTo("java.lang.RuntimeException");
         String stacktrace = document.get("stacktrace").toString();
-        assertTrue(stacktrace.contains("java.lang.RuntimeException: my-exception"));
+        assertThat(stacktrace).contains("java.lang.RuntimeException: my-exception");
     }
 
     @Nested
@@ -94,8 +91,8 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertFalse(document.containsKey("class"));
-            assertFalse(document.containsKey("stacktrace"));
+            assertThat(document).doesNotContainKey("class");
+            assertThat(document).doesNotContainKey("stacktrace");
         }
 
         @Test
@@ -111,7 +108,7 @@ class DefaultLogConverterTest {
                     .build();
 
             // when / then
-            assertDoesNotThrow(() -> converter.convert(event));
+            assertThatNoException().isThrownBy(() -> converter.convert(event));
         }
 
         @Test
@@ -132,7 +129,7 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertEquals("real-host", document.get("host"));
+            assertThat(document.get("host")).isEqualTo("real-host");
         }
 
         @Test
@@ -154,7 +151,7 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+            assertThat(document.get("logger")).isEqualTo("com.chavaillaz.appender.log4j.MyClass");
         }
 
         @Test
@@ -173,7 +170,7 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
+            assertThat(document.get("logger")).isEqualTo("com.chavaillaz.appender.log4j.MyClass");
         }
 
         @Test
@@ -190,14 +187,14 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertNull(document.get("logmessage"));
+            assertThat(document.get("logmessage")).isNull();
         }
 
         @Test
         @DisplayName("Cannot be built without a configuration, rather than converting without it")
         void testConverterRequiresAConfiguration() {
             // when / then: refused when built, where a converter without one used to omit the fields it provides
-            assertThrows(NullPointerException.class, () -> new DefaultLogConverter(null));
+            assertThatThrownBy(() -> new DefaultLogConverter(null)).isInstanceOf(NullPointerException.class);
         }
 
         @Test
@@ -221,7 +218,7 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then: truncated, and visibly so, rather than inflating the whole batch it travels in
-            assertEquals("0123456789... (truncated, 6 more characters)", document.get("logmessage"));
+            assertThat(document.get("logmessage")).isEqualTo("0123456789... (truncated, 6 more characters)");
         }
 
         @Test
@@ -246,7 +243,7 @@ class DefaultLogConverterTest {
 
             // then: the emoji is dropped whole instead of leaving its high half behind, which is not a
             // character at all and encodes to a replacement one in whatever request carries the document
-            assertEquals("ab... (truncated, 4 more characters)", document.get("logmessage"));
+            assertThat(document.get("logmessage")).isEqualTo("ab... (truncated, 4 more characters)");
         }
 
         @Test
@@ -264,7 +261,7 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertEquals("A perfectly ordinary log line", document.get("logmessage"));
+            assertThat(document.get("logmessage")).isEqualTo("A perfectly ordinary log line");
         }
 
         @ParameterizedTest
@@ -289,7 +286,7 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertEquals(message, document.get("logmessage"));
+            assertThat(document.get("logmessage")).isEqualTo(message);
         }
 
         @Test
@@ -316,7 +313,8 @@ class DefaultLogConverterTest {
             // then: the first characters of the stack trace, as printed in full
             var fullStackTrace = new StringWriter();
             exception.printStackTrace(new PrintWriter(fullStackTrace));
-            assertEquals(fullStackTrace.toString().substring(0, 50) + "... (truncated)", document.get("stacktrace"));
+            assertThat(document.get("stacktrace"))
+                    .isEqualTo(fullStackTrace.toString().substring(0, 50) + "... (truncated)");
         }
 
         @Test
@@ -346,8 +344,10 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then: only the causes that fit were printed, rather than all of them only to cut the rest
-            assertTrue(printed.get() < 100, "Only the causes within the limit should have been printed, but " + printed.get() + " were");
-            assertTrue(document.get("stacktrace").toString().endsWith("... (truncated)"));
+            assertThat(printed.get())
+                    .as("Only the causes within the limit should have been printed, but " + printed.get() + " were")
+                    .isLessThan(100);
+            assertThat(document.get("stacktrace").toString()).endsWith("... (truncated)");
         }
 
         @Test
@@ -371,7 +371,7 @@ class DefaultLogConverterTest {
             var document = converter.convert(event);
 
             // then
-            assertFalse(document.get("stacktrace").toString().contains("truncated"));
+            assertThat(document.get("stacktrace").toString()).doesNotContain("truncated");
         }
 
         @ParameterizedTest(name = "maxStackTraceLength = {0}")
@@ -402,8 +402,8 @@ class DefaultLogConverterTest {
 
             // then
             String stacktrace = document.get("stacktrace").toString();
-            assertFalse(stacktrace.contains("truncated"));
-            assertTrue(stacktrace.contains("innermost"), "The full (untruncated) cause chain should be present");
+            assertThat(stacktrace).doesNotContain("truncated");
+            assertThat(stacktrace).as("The full (untruncated) cause chain should be present").contains("innermost");
         }
 
         @Test
@@ -420,12 +420,12 @@ class DefaultLogConverterTest {
                     .build();
 
             // when
-            var document = assertDoesNotThrow(() -> converter.convert(event));
+            var document = converter.convert(event);
 
             // then
-            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
-            assertEquals("INFO", document.get("level"));
-            assertTrue(document.get("logmessage").toString().contains("unable to format message"));
+            assertThat(document.get("logger")).isEqualTo("com.chavaillaz.appender.log4j.MyClass");
+            assertThat(document.get("level")).isEqualTo("INFO");
+            assertThat(document.get("logmessage").toString()).contains("unable to format message");
         }
 
         @Test
@@ -443,11 +443,11 @@ class DefaultLogConverterTest {
                     .build();
 
             // when
-            var document = assertDoesNotThrow(() -> converter.convert(event));
+            var document = converter.convert(event);
 
             // then
-            assertEquals(ThrowingThrowable.class.getCanonicalName(), document.get("class"));
-            assertFalse(document.containsKey("stacktrace"));
+            assertThat(document.get("class")).isEqualTo(ThrowingThrowable.class.getCanonicalName());
+            assertThat(document).doesNotContainKey("stacktrace");
         }
 
         @Test
@@ -479,15 +479,17 @@ class DefaultLogConverterTest {
                     .build();
 
             // when
-            var document = assertDoesNotThrow(() -> converter.convert(event));
+            var document = converter.convert(event);
 
             // then: only the fields the configuration could not provide are omitted, instead of the whole
             // document -- the log message included -- being lost with it
-            assertEquals("Correct horse battery staple", document.get("logmessage"));
-            assertEquals("ERROR", document.get("level"));
-            assertEquals("my-host", document.get("host"), "The field read before the failure should be kept");
-            assertNull(document.get("environment"));
-            assertNull(document.get("application"));
+            assertThat(document.get("logmessage")).isEqualTo("Correct horse battery staple");
+            assertThat(document.get("level")).isEqualTo("ERROR");
+            assertThat(document.get("host"))
+                    .as("The field read before the failure should be kept")
+                    .isEqualTo("my-host");
+            assertThat(document.get("environment")).isNull();
+            assertThat(document.get("application")).isNull();
         }
 
         @Test
@@ -505,13 +507,13 @@ class DefaultLogConverterTest {
                     .build();
 
             // when
-            var document = assertDoesNotThrow(() -> converter.convert(event));
+            var document = converter.convert(event);
 
             // then: only the message it could not build was replaced, instead of the whole document being
             // lost along with every other field already written into it
-            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
-            assertEquals("INFO", document.get("level"));
-            assertTrue(document.get("logmessage").toString().contains("unable to format message"));
+            assertThat(document.get("logger")).isEqualTo("com.chavaillaz.appender.log4j.MyClass");
+            assertThat(document.get("level")).isEqualTo("INFO");
+            assertThat(document.get("logmessage").toString()).contains("unable to format message");
         }
 
         @Test
@@ -535,8 +537,10 @@ class DefaultLogConverterTest {
 
             // then: the one field saying what went wrong is filled in, where it used to come out null on
             // exactly the events most worth looking at
-            assertNull(thrown.getClass().getCanonicalName(), "This exception should have no canonical name");
-            assertEquals(thrown.getClass().getName(), document.get("class"));
+            assertThat(thrown.getClass().getCanonicalName())
+                    .as("This exception should have no canonical name")
+                    .isNull();
+            assertThat(document.get("class")).isEqualTo(thrown.getClass().getName());
         }
 
         @Test
@@ -555,11 +559,11 @@ class DefaultLogConverterTest {
                     .build();
 
             // when
-            var document = assertDoesNotThrow(() -> converter.convert(event));
+            var document = converter.convert(event);
 
             // then
-            assertEquals("com.chavaillaz.appender.log4j.MyClass", document.get("logger"));
-            assertEquals("INFO", document.get("level"));
+            assertThat(document.get("logger")).isEqualTo("com.chavaillaz.appender.log4j.MyClass");
+            assertThat(document.get("level")).isEqualTo("INFO");
         }
 
         @Test
@@ -586,10 +590,10 @@ class DefaultLogConverterTest {
                     .build();
 
             // when
-            var document = assertDoesNotThrow(() -> converter.convert(event));
+            var document = converter.convert(event);
 
             // then: sized for what it holds, rather than failing to size for a count no map can reach
-            assertEquals("Message", document.get("logmessage"));
+            assertThat(document.get("logmessage")).isEqualTo("Message");
         }
 
     }

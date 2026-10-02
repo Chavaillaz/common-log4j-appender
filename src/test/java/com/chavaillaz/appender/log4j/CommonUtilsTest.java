@@ -4,9 +4,7 @@ import static com.chavaillaz.appender.log4j.CommonUtils.await;
 import static com.chavaillaz.appender.log4j.CommonUtils.getInitialHostname;
 import static com.chavaillaz.appender.log4j.CommonUtils.getProperty;
 import static com.chavaillaz.appender.log4j.CommonUtils.start;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.net.InetAddress;
 import java.time.Duration;
@@ -38,7 +36,7 @@ class CommonUtilsTest {
         var value = getProperty("commonUtilsTest.unknownKey", defaultValue);
 
         // then
-        assertEquals(defaultValue, value);
+        assertThat(value).isEqualTo(defaultValue);
     }
 
     @Test
@@ -51,7 +49,7 @@ class CommonUtilsTest {
         var value = getProperty(TEST_KEY, "defaultValue");
 
         // then
-        assertEquals("systemValue", value);
+        assertThat(value).isEqualTo("systemValue");
     }
 
     @Test
@@ -61,14 +59,14 @@ class CommonUtilsTest {
         var hostname = getInitialHostname();
 
         // then
-        assertEquals(InetAddress.getLocalHost().getCanonicalHostName(), hostname);
+        assertThat(hostname).isEqualTo(InetAddress.getLocalHost().getCanonicalHostName());
     }
 
     @Test
     @DisplayName("Looks the host name up once, every later call sharing its result")
     void testHostnameIsLookedUpOnce() {
         // when / then: the result of the one lookup, whichever call asks for it
-        assertSame(getInitialHostname(), getInitialHostname());
+        assertThat(getInitialHostname()).isSameAs(getInitialHostname());
     }
 
     @Nested
@@ -82,7 +80,7 @@ class CommonUtilsTest {
             var result = await(start(() -> "fast-result"), Duration.ofSeconds(5));
 
             // then
-            assertEquals("fast-result", result);
+            assertThat(result).isEqualTo("fast-result");
         }
 
         @Test
@@ -100,8 +98,10 @@ class CommonUtilsTest {
             var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: the call returned close to the given timeout instead of waiting for the slow lookup
-            assertEquals("localhost", result);
-            assertTrue(elapsedMillis < 2_000, "Should not have waited for the slow lookup, took " + elapsedMillis + "ms");
+            assertThat(result).isEqualTo("localhost");
+            assertThat(elapsedMillis)
+                    .as("Should not have waited for the slow lookup, took " + elapsedMillis + "ms")
+                    .isLessThan(2_000);
         }
 
         @Test
@@ -114,8 +114,8 @@ class CommonUtilsTest {
             });
 
             // when / then: the first call gives up, the lookup going on for the next one
-            assertEquals("localhost", await(lookup, Duration.ofMillis(10)));
-            assertEquals("late-result", await(lookup, Duration.ofSeconds(5)));
+            assertThat(await(lookup, Duration.ofMillis(10))).isEqualTo("localhost");
+            assertThat(await(lookup, Duration.ofSeconds(5))).isEqualTo("late-result");
         }
 
         @Test
@@ -127,7 +127,7 @@ class CommonUtilsTest {
             }), Duration.ofSeconds(5));
 
             // then
-            assertEquals("localhost", result);
+            assertThat(result).isEqualTo("localhost");
         }
 
     }

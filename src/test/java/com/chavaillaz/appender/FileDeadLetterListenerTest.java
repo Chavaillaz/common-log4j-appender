@@ -2,10 +2,8 @@ package com.chavaillaz.appender;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 
 import java.io.FilterOutputStream;
 import java.io.IOException;
@@ -83,9 +81,10 @@ class FileDeadLetterListenerTest {
 
         // then: the document is wrapped, unmodified, with the reason and the instant it was dropped at
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(List.of("{\"reason\":\"maximum consecutive transmission failures exceeded\","
-                + "\"droppedAt\":\"2026-09-28T10:15:30Z\","
-                + "\"document\":{\"logmessage\":\"boom\",\"level\":\"ERROR\"}}"), lines);
+        assertThat(lines)
+                .containsExactly("{\"reason\":\"maximum consecutive transmission failures exceeded\","
+                        + "\"droppedAt\":\"2026-09-28T10:15:30Z\","
+                        + "\"document\":{\"logmessage\":\"boom\",\"level\":\"ERROR\"}}");
     }
 
     @Test
@@ -101,11 +100,11 @@ class FileDeadLetterListenerTest {
         listener.onDocumentsDropped(List.of(Map.of("id", 2)), "after midnight");
 
         // then: each went to the file of its own day, the one given never being written to itself
-        assertEquals(1, Files.readAllLines(tempDir.resolve("dead-letters-2026-09-28.ndjson"), UTF_8).size());
+        assertThat(Files.readAllLines(tempDir.resolve("dead-letters-2026-09-28.ndjson"), UTF_8)).hasSize(1);
         List<String> nextDay = Files.readAllLines(tempDir.resolve("dead-letters-2026-09-29.ndjson"), UTF_8);
-        assertEquals(1, nextDay.size());
-        assertTrue(nextDay.get(0).contains("\"reason\":\"after midnight\""), "Unexpected line: " + nextDay.get(0));
-        assertFalse(Files.exists(tempDir.resolve("dead-letters.ndjson")));
+        assertThat(nextDay).hasSize(1);
+        assertThat(nextDay.get(0)).as("Unexpected line: " + nextDay.get(0)).contains("\"reason\":\"after midnight\"");
+        assertThat(tempDir.resolve("dead-letters.ndjson")).doesNotExist();
     }
 
     @Test
@@ -120,7 +119,9 @@ class FileDeadLetterListenerTest {
 
         // then: filed on the day of the time zone, while the line keeps the instant itself
         List<String> lines = Files.readAllLines(tempDir.resolve("dead-letters-2026-09-29.ndjson"), UTF_8);
-        assertTrue(lines.get(0).contains("\"droppedAt\":\"2026-09-28T22:30:00Z\""), "Unexpected line: " + lines.get(0));
+        assertThat(lines.get(0))
+                .as("Unexpected line: " + lines.get(0))
+                .contains("\"droppedAt\":\"2026-09-28T22:30:00Z\"");
     }
 
     @Test
@@ -135,8 +136,8 @@ class FileDeadLetterListenerTest {
         hidden.onDocumentsDropped(List.of(Map.of("id", 2)), "reason");
 
         // then
-        assertTrue(Files.exists(tempDir.resolve("dead-letters-2026-09-28")));
-        assertTrue(Files.exists(tempDir.resolve(".dead-letters-2026-09-28")));
+        assertThat(tempDir.resolve("dead-letters-2026-09-28")).exists();
+        assertThat(tempDir.resolve(".dead-letters-2026-09-28")).exists();
     }
 
     @Test
@@ -152,9 +153,9 @@ class FileDeadLetterListenerTest {
 
         // then
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(2, lines.size());
-        assertTrue(lines.get(0).contains("\"reason\":\"reason-1\""), "Unexpected line: " + lines.get(0));
-        assertTrue(lines.get(1).contains("\"reason\":\"reason-2\""), "Unexpected line: " + lines.get(1));
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(0)).as("Unexpected line: " + lines.get(0)).contains("\"reason\":\"reason-1\"");
+        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).contains("\"reason\":\"reason-2\"");
     }
 
     @Test
@@ -170,9 +171,9 @@ class FileDeadLetterListenerTest {
 
         // then: the incomplete line costs only itself, the new one standing on a line of its own
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(2, lines.size(), "Unexpected lines: " + lines);
-        assertEquals("{\"reason\":\"cut\"", lines.get(0));
-        assertTrue(lines.get(1).startsWith("{\"reason\":\"reason\""), "Unexpected line: " + lines.get(1));
+        assertThat(lines).as("Unexpected lines: " + lines).hasSize(2);
+        assertThat(lines.get(0)).isEqualTo("{\"reason\":\"cut\"");
+        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).startsWith("{\"reason\":\"reason\"");
     }
 
     @Test
@@ -189,11 +190,11 @@ class FileDeadLetterListenerTest {
             listener.onDocumentsDropped(List.of(Map.of("id", 2)), "second");
         } finally {
             // then: still flagged, and cleared for the next tests
-            assertTrue(Thread.interrupted());
+            assertThat(Thread.interrupted()).isTrue();
         }
 
         // and: saved all the same
-        assertEquals(2, Files.readAllLines(file, UTF_8).size());
+        assertThat(Files.readAllLines(file, UTF_8)).hasSize(2);
     }
 
     @Test
@@ -225,11 +226,12 @@ class FileDeadLetterListenerTest {
 
         // then: every line is one complete document, the two writers only alternating between lines
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(1_000, lines.size());
+        assertThat(lines).hasSize(1_000);
         for (String line : lines) {
-            assertTrue(line.startsWith("{\"reason\":\"reason\"") && line.endsWith("\"}}")
-                    && (line.contains("a".repeat(5_000)) != line.contains("b".repeat(5_000))),
-                    "Corrupted line of " + line.length() + " characters");
+            assertThat(line.startsWith("{\"reason\":\"reason\"") && line.endsWith("\"}}")
+                    && (line.contains("a".repeat(5_000)) != line.contains("b".repeat(5_000))))
+                    .as("Corrupted line of " + line.length() + " characters")
+                    .isTrue();
         }
     }
 
@@ -245,7 +247,7 @@ class FileDeadLetterListenerTest {
 
         // then
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(2, lines.size());
+        assertThat(lines).hasSize(2);
     }
 
     @Test
@@ -262,8 +264,9 @@ class FileDeadLetterListenerTest {
 
         // then
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.contains("\"logmessage\":\"line one\\nline \\\"two\\\"\\\\three\\ttab\""),
-                "Unexpected line: " + line);
+        assertThat(line)
+                .as("Unexpected line: " + line)
+                .contains("\"logmessage\":\"line one\\nline \\\"two\\\"\\\\three\\ttab\"");
     }
 
     @Test
@@ -290,17 +293,17 @@ class FileDeadLetterListenerTest {
         listener.onDocumentsDropped(List.of(Map.of("logmessage", "next")), "next");
 
         // then: every document was saved, whatever the one character UTF-8 cannot encode
-        assertTrue(failures.isEmpty(), "No write should have failed: " + failures);
+        assertThat(failures).as("No write should have failed: " + failures).isEmpty();
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(4, lines.size(), "Unexpected lines: " + lines);
+        assertThat(lines).as("Unexpected lines: " + lines).hasSize(4);
 
         // and: each half is kept as the JSON escape for it, while a pair that is whole is written as is
-        assertTrue(lines.get(1).contains("\"logmessage\":\"cut \\ud83d\""), "Unexpected line: " + lines.get(1));
-        assertTrue(lines.get(1).contains("\"tail\":\"\\ude00 orphan\""), "Unexpected line: " + lines.get(1));
-        assertTrue(lines.get(1).contains("\"intact\":\"" + emoji + "\""), "Unexpected line: " + lines.get(1));
+        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).contains("\"logmessage\":\"cut \\ud83d\"");
+        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).contains("\"tail\":\"\\ude00 orphan\"");
+        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).contains("\"intact\":\"" + emoji + "\"");
 
         // and: the next batch starts a line of its own, instead of running into an unterminated one
-        assertTrue(lines.get(3).startsWith("{\"reason\":\"next\""), "Unexpected line: " + lines.get(3));
+        assertThat(lines.get(3)).as("Unexpected line: " + lines.get(3)).startsWith("{\"reason\":\"next\"");
     }
 
     @Test
@@ -323,9 +326,10 @@ class FileDeadLetterListenerTest {
 
         // then
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.endsWith(",\"document\":{\"count\":3,\"success\":false,\"missing\":null,"
-                        + "\"tags\":[\"a\",\"b\"],\"nested\":{\"code\":42}}}"),
-                "Unexpected line: " + line);
+        assertThat(line)
+                .as("Unexpected line: " + line)
+                .endsWith(",\"document\":{\"count\":3,\"success\":false,\"missing\":null,"
+                        + "\"tags\":[\"a\",\"b\"],\"nested\":{\"code\":42}}}");
     }
 
     @Test
@@ -344,8 +348,9 @@ class FileDeadLetterListenerTest {
 
         // then: their content is saved, where "[Ljava.lang.Object;@1b6d3586" saved nothing of it
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.endsWith(",\"document\":{\"parameters\":[\"a\",1,null],\"codes\":[4,2]}}"),
-                "Unexpected line: " + line);
+        assertThat(line)
+                .as("Unexpected line: " + line)
+                .endsWith(",\"document\":{\"parameters\":[\"a\",1,null],\"codes\":[4,2]}}");
     }
 
     @Test
@@ -366,9 +371,10 @@ class FileDeadLetterListenerTest {
 
         // then: the values are preserved, quoted, and the line as a whole stays readable
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.endsWith(",\"document\":{\"ratio\":\"NaN\",\"rate\":\"Infinity\","
-                        + "\"drift\":\"-Infinity\",\"count\":7}}"),
-                "Unexpected line: " + line);
+        assertThat(line)
+                .as("Unexpected line: " + line)
+                .endsWith(",\"document\":{\"ratio\":\"NaN\",\"rate\":\"Infinity\","
+                        + "\"drift\":\"-Infinity\",\"count\":7}}");
         assertBalancedJson(line);
     }
 
@@ -393,8 +399,9 @@ class FileDeadLetterListenerTest {
 
         // then
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.endsWith(",\"document\":{\"amount\":\"1,50 \\u20ac\"}}") || line.endsWith(",\"document\":{\"amount\":\"1,50 €\"}}"),
-                "Unexpected line: " + line);
+        assertThat(line.endsWith(",\"document\":{\"amount\":\"1,50 \\u20ac\"}}") || line.endsWith(",\"document\":{\"amount\":\"1,50 €\"}}"))
+                .as("Unexpected line: " + line)
+                .isTrue();
         assertBalancedJson(line);
     }
 
@@ -416,9 +423,10 @@ class FileDeadLetterListenerTest {
 
         // then: none of them are quoted, so a consumer still reads them back as numbers
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.endsWith(",\"document\":{\"integer\":42,\"negative\":-7,\"decimal\":1.5,"
-                        + "\"exponent\":1.0E20,\"big\":123.456}}"),
-                "Unexpected line: " + line);
+        assertThat(line)
+                .as("Unexpected line: " + line)
+                .endsWith(",\"document\":{\"integer\":42,\"negative\":-7,\"decimal\":1.5,"
+                        + "\"exponent\":1.0E20,\"big\":123.456}}");
     }
 
     @Test
@@ -435,11 +443,11 @@ class FileDeadLetterListenerTest {
         document.put("self", holder);
 
         // when
-        assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(document), "reason"));
+        assertThatNoException().isThrownBy(() -> listener.onDocumentsDropped(List.of(document), "reason"));
 
         // then: the line is still written, truncated where the cycle was cut, and still readable
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.contains("truncated: maximum nesting depth"), "Unexpected line: " + line);
+        assertThat(line).as("Unexpected line: " + line).contains("truncated: maximum nesting depth");
         assertBalancedJson(line);
     }
 
@@ -461,11 +469,11 @@ class FileDeadLetterListenerTest {
         document.put("chain", current);
 
         // when
-        assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(document), "reason"));
+        assertThatNoException().isThrownBy(() -> listener.onDocumentsDropped(List.of(document), "reason"));
 
         // then
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.contains("truncated: maximum nesting depth"), "Unexpected line: " + line);
+        assertThat(line).as("Unexpected line: " + line).contains("truncated: maximum nesting depth");
         assertBalancedJson(line);
     }
 
@@ -483,8 +491,10 @@ class FileDeadLetterListenerTest {
 
         // then
         String line = Files.readString(file, UTF_8).strip();
-        assertTrue(line.endsWith(",\"document\":{\"a\":{\"b\":{\"c\":{\"d\":\"leaf\"}}}}}"), "Unexpected line: " + line);
-        assertTrue(!line.contains("truncated"), "Should not have truncated: " + line);
+        assertThat(line)
+                .as("Unexpected line: " + line)
+                .endsWith(",\"document\":{\"a\":{\"b\":{\"c\":{\"d\":\"leaf\"}}}}}");
+        assertThat(line).as("Should not have truncated: " + line).doesNotContain("truncated");
     }
 
     /**
@@ -509,12 +519,13 @@ class FileDeadLetterListenerTest {
             } else if (!inString && (c == '}' || c == ']')) {
                 depth--;
             } else if (!inString && Character.isLetter(c)) {
-                assertTrue("true".indexOf(c) >= 0 || "false".indexOf(c) >= 0 || "null".indexOf(c) >= 0 || c == 'E' || c == 'e',
-                        "Bare token outside a string, the line is not valid JSON: " + line);
+                assertThat("true".indexOf(c) >= 0 || "false".indexOf(c) >= 0 || "null".indexOf(c) >= 0 || c == 'E' || c == 'e')
+                        .as("Bare token outside a string, the line is not valid JSON: " + line)
+                        .isTrue();
             }
         }
-        assertEquals(0, depth, "Unbalanced JSON: " + line);
-        assertTrue(!inString, "Unterminated string: " + line);
+        assertThat(depth).as("Unbalanced JSON: " + line).isZero();
+        assertThat(inString).as("Unterminated string: " + line).isFalse();
     }
 
     @Test
@@ -524,10 +535,10 @@ class FileDeadLetterListenerTest {
         var file = tempDir.resolve("nested/does/not/exist/dead-letters.ndjson");
 
         // when
-        assertDoesNotThrow(() -> new FileDeadLetterListener(file, CLOCK));
+        assertThatNoException().isThrownBy(() -> new FileDeadLetterListener(file, CLOCK));
 
         // then
-        assertTrue(Files.isDirectory(file.getParent()));
+        assertThat(file.getParent()).isDirectory();
     }
 
     @Test
@@ -556,23 +567,26 @@ class FileDeadLetterListenerTest {
         });
 
         // when: they are handed over in the middle of a batch, exactly as a pending batch would be
-        assertDoesNotThrow(() -> listener.onDocumentsDropped(
-                List.of(Map.of("logmessage", "first"), unrenderable, recursive, Map.of("logmessage", "second")),
-                "reason"));
+        assertThatNoException()
+                .isThrownBy(() -> listener.onDocumentsDropped(
+                        List.of(Map.of("logmessage", "first"), unrenderable, recursive, Map.of("logmessage", "second")),
+                        "reason"));
 
         // then: the documents around them were saved, instead of being discarded a second time by the
         // very sink meant to be their last resort
         List<String> lines = Files.readAllLines(file, UTF_8);
-        assertEquals(4, lines.size(), "Unexpected lines: " + lines);
-        assertTrue(lines.get(0).contains("\"logmessage\":\"first\""), "Unexpected line: " + lines.get(0));
-        assertTrue(lines.get(3).contains("\"logmessage\":\"second\""), "Unexpected line: " + lines.get(3));
+        assertThat(lines).as("Unexpected lines: " + lines).hasSize(4);
+        assertThat(lines.get(0)).as("Unexpected line: " + lines.get(0)).contains("\"logmessage\":\"first\"");
+        assertThat(lines.get(3)).as("Unexpected line: " + lines.get(3)).contains("\"logmessage\":\"second\"");
 
         // and: each one that could not be rendered still leaves a line saying so, rather than nothing at all
-        assertTrue(lines.get(1).contains("\"unrenderable\":\"java.lang.IllegalStateException\""),
-                "Unexpected line: " + lines.get(1));
-        assertTrue(lines.get(1).contains("\"reason\":\"reason\""), "Unexpected line: " + lines.get(1));
-        assertTrue(lines.get(2).contains("\"unrenderable\":\"java.lang.StackOverflowError\""),
-                "Unexpected line: " + lines.get(2));
+        assertThat(lines.get(1))
+                .as("Unexpected line: " + lines.get(1))
+                .contains("\"unrenderable\":\"java.lang.IllegalStateException\"");
+        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).contains("\"reason\":\"reason\"");
+        assertThat(lines.get(2))
+                .as("Unexpected line: " + lines.get(2))
+                .contains("\"unrenderable\":\"java.lang.StackOverflowError\"");
     }
 
     @Test
@@ -592,9 +606,9 @@ class FileDeadLetterListenerTest {
         };
 
         // when / then
-        assertDoesNotThrow(() -> listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
-        assertEquals(List.of("reason"), failures);
-        assertEquals(List.of(file), failedFiles);
+        assertThatNoException().isThrownBy(() -> listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
+        assertThat(failures).containsExactly("reason");
+        assertThat(failedFiles).containsExactly(file);
     }
 
     @Test
@@ -635,9 +649,11 @@ class FileDeadLetterListenerTest {
         // then: the lines of the first write stay in the file, and only the others are handed over, rather than
         // every document, which a fallback sink would then hold twice
         int appended = Files.readAllLines(file, UTF_8).size();
-        assertTrue(appended > 0 && appended < documents.size(), "Unexpected number of lines appended: " + appended);
-        assertEquals(IntStream.range(appended, documents.size()).boxed().toList(),
-                failed.stream().map(document -> document.get("id")).toList());
+        assertThat(appended)
+                .as("Unexpected number of lines appended: " + appended)
+                .isStrictlyBetween(0, documents.size());
+        assertThat(failed.stream().map(document -> document.get("id")).toList())
+                .isEqualTo(IntStream.range(appended, documents.size()).boxed().toList());
     }
 
     @Test
@@ -651,7 +667,7 @@ class FileDeadLetterListenerTest {
         listener.onDocumentsDropped(List.of(), "nothing was actually dropped");
 
         // then: no file, since one sitting next to an application reads as "logs were lost here"
-        assertFalse(Files.exists(file));
+        assertThat(file).doesNotExist();
     }
 
     @Test
@@ -685,8 +701,8 @@ class FileDeadLetterListenerTest {
         }
 
         // then: the rest of the application kept running meanwhile, and every writer still got its line in
-        assertTrue(othersRan, "An unrelated virtual thread should have run while the writers were waiting");
-        assertEquals(carriers, Files.readAllLines(file, UTF_8).size());
+        assertThat(othersRan).as("An unrelated virtual thread should have run while the writers were waiting").isTrue();
+        assertThat(Files.readAllLines(file, UTF_8)).hasSize(carriers);
     }
 
     /**

@@ -1,11 +1,7 @@
 package com.chavaillaz.appender;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import java.time.Duration;
@@ -33,17 +29,17 @@ class DeliveryOptionsTest {
     void testDefaults() {
         DeliveryOptions options = DeliveryOptions.defaults();
 
-        assertEquals(1, options.flushThreshold());
-        assertEquals(Duration.ofSeconds(5), options.flushInterval());
-        assertNull(options.flushLevel());
-        assertEquals(4, options.maxConcurrentTransmissions());
-        assertEquals(10_000, options.maxPendingDocuments());
-        assertEquals(Integer.MAX_VALUE, options.maxRequestDocuments());
-        assertEquals(5, options.maxConsecutiveFailures());
-        assertEquals(10_000, options.maxQueuedEvents());
-        assertEquals(Duration.ofSeconds(1), options.retryBackoff());
-        assertEquals(Duration.ofSeconds(30), options.maxRetryBackoff());
-        assertEquals(Duration.ofSeconds(30), options.closeTimeout());
+        assertThat(options.flushThreshold()).isEqualTo(1);
+        assertThat(options.flushInterval()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(options.flushLevel()).isNull();
+        assertThat(options.maxConcurrentTransmissions()).isEqualTo(4);
+        assertThat(options.maxPendingDocuments()).isEqualTo(10_000);
+        assertThat(options.maxRequestDocuments()).isEqualTo(Integer.MAX_VALUE);
+        assertThat(options.maxConsecutiveFailures()).isEqualTo(5);
+        assertThat(options.maxQueuedEvents()).isEqualTo(10_000);
+        assertThat(options.retryBackoff()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(options.maxRetryBackoff()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(options.closeTimeout()).isEqualTo(Duration.ofSeconds(30));
     }
 
     @Test
@@ -70,11 +66,11 @@ class DeliveryOptionsTest {
         };
 
         // then
-        assertEquals(DeliveryOptions.defaults(), configuration.getDeliveryOptions());
+        assertThat(configuration.getDeliveryOptions()).isEqualTo(DeliveryOptions.defaults());
 
         // and: the same instance on every read, since it is read several times per document and the
         // interface asks implementations not to build a new one each time -- its own default included
-        assertSame(configuration.getDeliveryOptions(), configuration.getDeliveryOptions());
+        assertThat(configuration.getDeliveryOptions()).isSameAs(configuration.getDeliveryOptions());
     }
 
     @Test
@@ -92,12 +88,12 @@ class DeliveryOptionsTest {
         DeliveryOptions derived = original.with().maxPendingDocuments(50_000).build();
 
         // then: only the overridden setting differs, the rest (including a deliberately null one) is kept
-        assertEquals(50_000, derived.maxPendingDocuments());
-        assertEquals(500, derived.flushThreshold());
-        assertEquals(Level.WARN, derived.flushLevel());
-        assertNull(derived.closeTimeout());
-        assertEquals(original, derived.with().maxPendingDocuments(1_000).build());
-        assertNotSame(original, derived);
+        assertThat(derived.maxPendingDocuments()).isEqualTo(50_000);
+        assertThat(derived.flushThreshold()).isEqualTo(500);
+        assertThat(derived.flushLevel()).isEqualTo(Level.WARN);
+        assertThat(derived.closeTimeout()).isNull();
+        assertThat(derived.with().maxPendingDocuments(1_000).build()).isEqualTo(original);
+        assertThat(derived).isNotSameAs(original);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -108,10 +104,10 @@ class DeliveryOptionsTest {
         var builder = misconfiguration.apply(DeliveryOptions.builder());
 
         // when
-        var exception = assertThrows(IllegalArgumentException.class, builder::build);
+        var exception = catchThrowable(builder::build);
 
         // then: a configuration naming it fails to load, rather than a delivery misbehaving once it runs
-        assertTrue(exception.getMessage().startsWith(setting), "Unexpected message: " + exception.getMessage());
+        assertThat(exception).isInstanceOf(IllegalArgumentException.class).hasMessageStartingWith(setting);
     }
 
     static Stream<Arguments> outOfRangeSettings() {
@@ -140,10 +136,10 @@ class DeliveryOptionsTest {
         var builder = misconfiguration.apply(DeliveryOptions.builder());
 
         // when
-        var exception = assertThrows(NullPointerException.class, builder::build);
+        var exception = catchThrowable(builder::build);
 
         // then
-        assertTrue(exception.getMessage().startsWith(setting), "Unexpected message: " + exception.getMessage());
+        assertThat(exception).isInstanceOf(NullPointerException.class).hasMessageStartingWith(setting);
     }
 
     static Stream<Arguments> missingSettings() {
@@ -180,8 +176,8 @@ class DeliveryOptionsTest {
                 .build();
 
         // then
-        assertEquals(Duration.ZERO, smallest.closeTimeout());
-        assertNull(largest.closeTimeout());
+        assertThat(smallest.closeTimeout()).isEqualTo(Duration.ZERO);
+        assertThat(largest.closeTimeout()).isNull();
     }
 
     /**

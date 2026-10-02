@@ -1,8 +1,7 @@
 package com.chavaillaz.appender.internal;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -72,8 +71,10 @@ class BatcherFuzzTest {
     @AfterEach
     void restoreUncaughtExceptionHandler() {
         Thread.setDefaultUncaughtExceptionHandler(previousHandler);
-        assertTrue(uncaughtExceptions.isEmpty(), "No exception should ever escape to a thread's default "
-                + "handler, but got: " + uncaughtExceptions);
+        assertThat(uncaughtExceptions)
+                .as("No exception should ever escape to a thread's default "
+                        + "handler, but got: " + uncaughtExceptions)
+                .isEmpty();
     }
 
     @RepeatedTest(200)
@@ -134,15 +135,18 @@ class BatcherFuzzTest {
         Set<Elem> droppedIdentity = Collections.newSetFromMap(new IdentityHashMap<>());
         droppedIdentity.addAll(dropped);
         unaccountedFor.removeAll(droppedIdentity);
-        assertTrue(unaccountedFor.isEmpty(), seedMessage + ": elements neither accepted nor dropped: " + unaccountedFor);
+        assertThat(unaccountedFor)
+                .as(seedMessage + ": elements neither accepted nor dropped: " + unaccountedFor)
+                .isEmpty();
 
         // and: the batch actually drained, instead of an element being stuck in limbo forever, retried but
         // never making progress towards either outcome
         int transmitCountBeforeFinalFlush = transmitCount.get();
         batcher.flush();
         batcher.awaitPendingTransmissions();
-        assertEquals(transmitCountBeforeFinalFlush, transmitCount.get(),
-                seedMessage + ": an extra flush() should not trigger another transmission once everything settled");
+        assertThat(transmitCount.get())
+                .as(seedMessage + ": an extra flush() should not trigger another transmission once everything settled")
+                .isEqualTo(transmitCountBeforeFinalFlush);
     }
 
     /**

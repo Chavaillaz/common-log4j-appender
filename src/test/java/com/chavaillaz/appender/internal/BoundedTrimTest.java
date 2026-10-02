@@ -1,8 +1,7 @@
 package com.chavaillaz.appender.internal;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayDeque;
 import java.util.List;
@@ -25,8 +24,8 @@ class BoundedTrimTest {
     void testUnderCapKeepsEverything() {
         Queue<String> elements = mutable("a", "b");
 
-        assertNull(BoundedTrim.trim(elements, 5));
-        assertEquals(List.of("a", "b"), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, 5)).isNull();
+        assertThat(List.copyOf(elements)).containsExactly("a", "b");
     }
 
     @Test
@@ -34,8 +33,8 @@ class BoundedTrimTest {
     void testExactlyAtCapKeepsEverything() {
         Queue<String> elements = mutable("a", "b", "c");
 
-        assertNull(BoundedTrim.trim(elements, 3));
-        assertEquals(List.of("a", "b", "c"), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, 3)).isNull();
+        assertThat(List.copyOf(elements)).containsExactly("a", "b", "c");
     }
 
     @Test
@@ -43,8 +42,8 @@ class BoundedTrimTest {
     void testSingleOverflowDiscardsOldest() {
         Queue<String> elements = mutable("a", "b", "c");
 
-        assertEquals(List.of("a"), BoundedTrim.trim(elements, 2));
-        assertEquals(List.of("b", "c"), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, 2)).containsExactly("a");
+        assertThat(List.copyOf(elements)).containsExactly("b", "c");
     }
 
     @Test
@@ -52,8 +51,8 @@ class BoundedTrimTest {
     void testBulkOverflowDiscardsOldestElements() {
         Queue<String> elements = mutable("a", "b", "c", "d", "e");
 
-        assertEquals(List.of("a", "b", "c"), BoundedTrim.trim(elements, 2));
-        assertEquals(List.of("d", "e"), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, 2)).containsExactly("a", "b", "c");
+        assertThat(List.copyOf(elements)).containsExactly("d", "e");
     }
 
     @Test
@@ -61,8 +60,8 @@ class BoundedTrimTest {
     void testZeroCapDiscardsEverything() {
         Queue<String> elements = mutable("a", "b");
 
-        assertEquals(List.of("a", "b"), BoundedTrim.trim(elements, 0));
-        assertEquals(List.of(), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, 0)).containsExactly("a", "b");
+        assertThat(List.copyOf(elements)).isEmpty();
     }
 
     // Integer.MIN_VALUE is not just a bigger negative: it used to make size - maxSize overflow back into a
@@ -73,8 +72,8 @@ class BoundedTrimTest {
     void testNegativeCapDiscardsEverythingWithoutThrowing(int maxSize) {
         Queue<String> elements = mutable("a", "b");
 
-        assertEquals(List.of("a", "b"), BoundedTrim.trim(elements, maxSize));
-        assertEquals(List.of(), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, maxSize)).containsExactly("a", "b");
+        assertThat(List.copyOf(elements)).isEmpty();
     }
 
     @Test
@@ -82,8 +81,8 @@ class BoundedTrimTest {
     void testEmptyQueueDoesNotThrow() {
         Queue<String> elements = mutable();
 
-        assertNull(BoundedTrim.trim(elements, 3));
-        assertEquals(List.of(), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, 3)).isNull();
+        assertThat(List.copyOf(elements)).isEmpty();
     }
 
     @Test
@@ -91,8 +90,8 @@ class BoundedTrimTest {
     void testCapLargerThanQueueDoesNotThrow() {
         Queue<String> elements = mutable("a");
 
-        assertNull(BoundedTrim.trim(elements, 1_000_000));
-        assertEquals(List.of("a"), List.copyOf(elements));
+        assertThat(BoundedTrim.trim(elements, 1_000_000)).isNull();
+        assertThat(List.copyOf(elements)).containsExactly("a");
     }
 
     @Test
@@ -102,8 +101,8 @@ class BoundedTrimTest {
         // be a view of, or share anything with, the batch that keeps being trimmed behind its back
         List<String> discarded = BoundedTrim.trim(mutable("a", "b", "c"), 1);
 
-        assertEquals(List.of("a", "b"), discarded);
-        assertThrows(UnsupportedOperationException.class, () -> discarded.add("d"));
+        assertThat(discarded).containsExactly("a", "b");
+        assertThatThrownBy(() -> discarded.add("d")).isInstanceOf(UnsupportedOperationException.class);
     }
 
 }
