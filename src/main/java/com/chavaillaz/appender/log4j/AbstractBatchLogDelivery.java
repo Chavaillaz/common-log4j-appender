@@ -88,7 +88,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         DeliveryOptions options = configuration.getDeliveryOptions();
         this.initialCloseTimeout = options.closeTimeout();
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
-        Batcher.Builder<Map<String, Object>> batcherBuilder = Batcher.<Map<String, Object>>builder()
+        this.batcher = Batcher.<Map<String, Object>>builder()
                 // Read again on every call, so that a limit varied at runtime is honored
                 .flushThreshold(() -> configuration.getDeliveryOptions().flushThreshold())
                 .maxPendingElements(this::getMaxPendingDocuments)
@@ -96,6 +96,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                 .maxConsecutiveFailures(this::getMaxConsecutiveFailures)
                 .maxPendingBytes(this::getMaxPendingBytes)
                 .maxRequestBytes(this::getMaxRequestBytes)
+                // Always wired in, measuring only while a byte limit is in effect, so that the overridable
+                // getters of both limits can turn them on at any time
+                .elementSize(this::measureIfBounded)
                 // Fixed once, unlike the limits above
                 .maxConcurrentTransmissions(options.maxConcurrentTransmissions())
                 .backoff(BackoffPolicy.exponential(options.retryBackoff(), options.maxRetryBackoff()))
@@ -117,12 +120,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     public void onDropped(List<Map<String, Object>> dropped, String reason) {
                         AbstractBatchLogDelivery.this.listener.onDocumentsDropped(dropped, reason);
                     }
-                });
-
-        // Always wired in, measuring only while a byte limit is in effect, so that the overridable getters of
-        // both limits can turn them on at any time
-        batcherBuilder.elementSize(this::measureIfBounded);
-        this.batcher = batcherBuilder.build();
+                })
+                .build();
     }
 
     /**
