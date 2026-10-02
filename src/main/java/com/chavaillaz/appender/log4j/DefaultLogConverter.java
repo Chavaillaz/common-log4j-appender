@@ -224,11 +224,12 @@ public class DefaultLogConverter implements LogConverter {
      * @param event    The logging event
      */
     protected void writeMDC(Map<String, Object> document, LogEvent event) {
-        if (event.getContextData() == null) {
+        ReadOnlyStringMap contextData = event.getContextData();
+        if (contextData == null) {
             return;
         }
         try {
-            event.getContextData().forEach(document::putIfAbsent);
+            contextData.forEach(document::putIfAbsent);
         } catch (Throwable e) {
             // Throwable, iterating a custom context data running code of the application
             log.warn("Unable to read the MDC context data of a logging event, it will be omitted", e);
