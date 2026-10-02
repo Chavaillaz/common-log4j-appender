@@ -35,9 +35,10 @@ public interface BatcherListener<T> {
     };
 
     /**
-     * Called after a batch of elements has been transmitted successfully.
+     * Called after a request was accepted, in whole, or in part for a partial failure, which calls
+     * {@link #onFailed(int, Throwable)} for the rest.
      *
-     * @param count          The number of elements in the batch
+     * @param count          The number of elements accepted
      * @param durationMillis The time taken by the transmission, in milliseconds
      */
     default void onSucceeded(int count, long durationMillis) {
@@ -45,11 +46,12 @@ public interface BatcherListener<T> {
     }
 
     /**
-     * Called after a batch of elements failed to be transmitted. Not necessarily lost: unless
+     * Called after a request failed, in whole, or in part for a partial failure, which calls
+     * {@link #onSucceeded(int, long)} for the elements accepted. Not necessarily lost: unless
      * {@link #onDropped(List, String)} is also called for the same elements, they were kept for a later
      * retry.
      *
-     * @param count The number of elements in the batch
+     * @param count The number of elements that failed
      * @param cause The exception responsible for the failure, or {@code null} if none
      */
     default void onFailed(int count, @Nullable Throwable cause) {

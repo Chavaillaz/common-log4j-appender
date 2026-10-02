@@ -43,9 +43,11 @@ public interface LogDeliveryListener {
     }
 
     /**
-     * Called after a batch of documents has been transmitted successfully.
+     * Called after a request was accepted, in whole, or in part for a partial failure (see
+     * {@link TransmissionResult#partialFailure(List, Throwable)}), which calls
+     * {@link #onTransmissionFailed(int, Throwable)} for the rest.
      *
-     * @param documentCount  The number of documents in the batch
+     * @param documentCount  The number of documents accepted
      * @param durationMillis The time taken by the transmission, in milliseconds
      */
     default void onTransmissionSucceeded(int documentCount, long durationMillis) {
@@ -53,11 +55,12 @@ public interface LogDeliveryListener {
     }
 
     /**
-     * Called after a batch of documents failed to be transmitted. Not necessarily lost: unless
+     * Called after a request failed, in whole, or in part for a partial failure, which calls
+     * {@link #onTransmissionSucceeded(int, long)} for the documents accepted. Not necessarily lost: unless
      * {@link #onDocumentsDropped(List, String)} is also called for the same documents, they were kept for a
      * later retry.
      *
-     * @param documentCount The number of documents in the batch
+     * @param documentCount The number of documents that failed
      * @param cause         The exception responsible for the failure, or {@code null} if the transmission
      *                      reported a failure without one
      */
