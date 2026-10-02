@@ -376,6 +376,81 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Keeps a single periodic flush in a queue backlogged for many periods")
+        void testBackloggedQueueHoldsASingleFlush() throws Exception {
+            // given: a flush requested every millisecond, and a worker taking longer than that for each event, so
+            // that it runs the flush right after an event, long before the task requesting it comes up
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(1)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, configuration) {
+                @Override
+                protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                    return () -> {
+                        try {
+                            sleep(5);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    };
+                }
+            };
+            appender.start();
+            var queue = workerExecutorOf(appender).getQueue();
+
+            // when: a backlog the worker takes a few hundred periods to process
+            for (int i = 0; i < 50; i++) {
+                appender.append(mockLogEvent());
+            }
+
+            // then: a single flush task in the queue at most, where every period used to queue one more, each
+            // taking the place of an event
+            int mostFlushTasks = 0;
+            while (!queue.isEmpty()) {
+                int flushTasks = (int) queue.stream()
+                        .filter(task -> !"EventTask".equals(task.getClass().getSimpleName()))
+                        .count();
+                mostFlushTasks = Math.max(mostFlushTasks, flushTasks);
+                sleep(1);
+            }
+            assertTrue(mostFlushTasks <= 1, "At most one flush should have been queued at a time, got " + mostFlushTasks);
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Keeps flushing periodically once an event evicted the queued flush from a full queue")
+        void testPeriodicFlushSurvivesItsEviction() throws Exception {
+            // given: a queue of a single entry, taken by a flush while a first event holds up the worker, and a
+            // second event evicting that flush to make room
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(50))
+                    .maxQueuedEvents(1).build();
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new RecordingBlockingLogDeliveryAppender<>("appender-name", null, configuration, releaseFirstTask);
+            appender.start();
+            appender.append(realLogEvent("first"));
+            awaitEmptyQueue(appender);
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+            while (appender.getQueuedEventCount() == 0 && System.nanoTime() < deadlineNanos) {
+                sleep(1);
+            }
+            appender.append(realLogEvent("second"));
+
+            // when
+            releaseFirstTask.countDown();
+
+            // then: the worker, idle once both events are processed, still flushes every period, where the
+            // evicted flush kept counting as queued and none was ever queued again
+            verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeast(4)).flush();
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        @Test
         @DisplayName("Runs a periodic flush the full queue had no room for even while the options cannot be read")
         void testPeriodicFlushIsNotLostToUnreadableOptions() throws Exception {
             // given: the test above, with delivery options that stop resolving once the flush is requested,

@@ -118,6 +118,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 if (evicted instanceof EventTask evictedTask) {
                     error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
                     discard(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
+                } else if (evicted == flushTask) {
+                    // The flush it requested is left to the next event, and the next one requested queued again
+                    flushTaskQueued.set(false);
                 }
                 if (!queued) {
                     // Another event took the freed slot first, so this one is discarded instead
@@ -201,6 +204,19 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * long as the application keeps logging faster than the delivery keeps up.
      */
     private final AtomicBoolean flushRequested = new AtomicBoolean();
+
+    /**
+     * Whether {@link #flushTask} sits in the queue, so that a single one does at a time: the background thread
+     * running the flush after an event leaves it there, and a backlogged queue would otherwise take one more
+     * every period, each in the place of an event.
+     */
+    private final AtomicBoolean flushTaskQueued = new AtomicBoolean();
+
+    /**
+     * The task running a requested flush while the background thread is idle, a single instance so that
+     * {@link DiscardOldestEventPolicy} can tell it was evicted.
+     */
+    private final Runnable flushTask = this::flushIfRequested;
 
     /**
      * Events discarded before reaching the delivery, reported or not, for {@link #getMetrics()}.
@@ -309,22 +325,24 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Requests a flush from {@link #flushScheduler}, queued on {@link #workerExecutor} so that it runs on the
-     * background thread like everything else. A full queue leaves it to the next event processed (see
-     * {@link #flushRequested}).
+     * Requests a flush from {@link #flushScheduler}, run on the background thread like everything else: after
+     * its current event (see {@link #flushRequested}), or by {@link #flushTask} once idle, queued unless one
+     * already is. A full queue leaves it to the next event processed.
      */
     private void requestFlush() {
-        if (!flushRequested.compareAndSet(false, true)) {
-            // Still waiting for the background thread, which runs one flush for both
+        if (flushRequested.getAndSet(true) || !flushTaskQueued.compareAndSet(false, true)) {
+            // Still waiting for the background thread, or for the task queued earlier, which runs it
             return;
         }
         try {
-            workerExecutor.execute(this::flushIfRequested);
+            workerExecutor.execute(flushTask);
         } catch (RejectedExecutionException e) {
             // A full queue, whose next event runs it, or a worker shutting down, whose stop flushes anyway
+            flushTaskQueued.set(false);
         } catch (Throwable e) {
             // Throwable: an Error escaping the periodic flush, the heap running out say, cancels all its later
             // runs. Withdrawn, the next run requesting it again rather than waiting for an event that may not come
+            flushTaskQueued.set(false);
             flushRequested.set(false);
             error("Unable to queue a flush, the next one will send what is pending", e);
         }
@@ -334,6 +352,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Runs the flush {@link #requestFlush()} requested, unless the background thread ran it already.
      */
     private void flushIfRequested() {
+        // Lowered first, so that a flush requested from now on queues a task of its own
+        flushTaskQueued.set(false);
         if (flushRequested.compareAndSet(true, false)) {
             executeLogDeliveryTask(this::flushLogDeliveryHandler);
         }
@@ -675,8 +695,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * How many entries the queue feeding the background thread holds, out of
      * {@link DeliveryOptions#maxQueuedEvents()}: the graduated counterpart of {@link #isBackpressured()},
-     * showing a queue trending towards full. A queued flush takes an entry too, so this measures the pressure
-     * on the queue rather than exactly counting events.
+     * showing a queue trending towards full. A queued flush takes an entry too, one at most, so this measures
+     * the pressure on the queue rather than exactly counting events.
      *
      * @return The number of entries currently queued
      */
