@@ -406,7 +406,8 @@ class AbstractLogDeliveryAppenderTest {
             // then: a single flush task in the queue at most, where every period used to queue one more, each
             // taking the place of an event
             int mostFlushTasks = 0;
-            while (!queue.isEmpty()) {
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(10);
+            while (!queue.isEmpty() && System.nanoTime() < deadlineNanos) {
                 int flushTasks = (int) queue.stream()
                         .filter(task -> !"EventTask".equals(task.getClass().getSimpleName()))
                         .count();
