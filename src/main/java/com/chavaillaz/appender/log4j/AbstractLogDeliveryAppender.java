@@ -53,8 +53,9 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * they are processed, while every transmission slot is stuck on an unresponsive downstream system for
  * instance, cannot grow memory without bound. Once full, the oldest event is discarded to make room, and
  * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)} on a virtual thread, so that a
- * slow listener never holds up the application: once as many discards wait for it as the queue holds, the next
- * ones are only logged.
+ * slow listener never holds up the application. At most as many discards as the queue holds wait to be
+ * reported: a burst discarding events faster than they are reported leaves the next ones only counted, in
+ * {@link #getMetrics()}, and logged.
  * <p>
  * An event at least as severe as {@link DeliveryOptions#flushLevel()} flushes the batch right after it, so
  * that it is not held back by settings favoring throughput.
@@ -180,7 +181,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * The events discarded before reaching the delivery, waiting for {@link #discardReporter} to report them, so
      * that converting them and calling the listener never holds up the thread logging, nor the worker. Bounded
-     * like the queue, a discard past it being logged rather than waited for.
+     * like the queue, a discard past it being counted and logged rather than waited for.
      */
     private final BlockingQueue<Discard> pendingDiscards;
 
@@ -539,7 +540,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private void discard(LogEvent event, String reason) {
         discardedEvents.increment();
         if (!pendingDiscards.offer(new Discard(event, reason))) {
-            // The listener cannot keep up with the discards, which waiting for it would pass on to the application
+            // The report falls behind the discards, which waiting for it would pass on to the application
             error("Unable to report a discarded logging event, " + pendingDiscards.size()
                     + " are already waiting for the delivery listener");
             return;

@@ -19,7 +19,7 @@ import java.util.List;
  * @param droppedDocuments      Documents irrecoverably discarded, whatever the reason, those of the events the
  *                              appender discarded included: each reported through
  *                              {@link LogDeliveryListener#onDocumentsDropped(List, String)}, unless too many were
- *                              already waiting for the listener, or the appender has no delivery to report to
+ *                              already waiting to be reported, or the appender has no delivery to report to
  */
 public record DeliveryMetrics(
         int queuedEvents,
