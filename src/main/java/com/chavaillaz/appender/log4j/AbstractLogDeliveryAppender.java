@@ -170,7 +170,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final C logConfiguration;
 
     /**
-     * The logs delivery handler, or {@code null} before {@link #start()}, or if it could not be created.
+     * The delivery, or {@code null} before {@link #start()}, or if it could not be created.
      * Volatile, being written by the thread starting the appender and read by every thread logging.
      */
     private volatile @Nullable LogDelivery logDeliveryHandler;
@@ -246,7 +246,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      *
      * @param name          The appender name
      * @param filter        The filter to associate with the appender, or {@code null} for none
-     * @param configuration The log transmission configuration
+     * @param configuration The configuration of the appender and of its delivery
      */
     protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration) {
         super(name, filter, null, true, Property.EMPTY_ARRAY);
@@ -394,8 +394,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Starts the client for logs transmission, reporting a failure through the {@code ErrorHandler} of this
-     * appender rather than throwing it out of {@link #start()}, the appender then discarding every event.
+     * Creates the delivery, reporting a failure through the {@code ErrorHandler} of this appender rather
+     * than throwing it out of {@link #start()}, the appender then discarding every event.
      */
     private void startLogDeliveryHandler() {
         try {
@@ -412,10 +412,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Creates the client for logs transmission, once, when the appender starts: it closes that one when it
-     * stops.
+     * Creates the delivery, once, when the appender starts: the appender closes it when it stops.
      *
-     * @return The logs delivery handler
+     * @return The delivery
      */
     protected abstract LogDelivery createLogDeliveryHandler();
 
@@ -841,7 +840,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Stops the client for logs transmission.
+     * Closes the delivery.
      *
      * @param timeout The maximum time closing it may take, or {@code null} to wait indefinitely
      */

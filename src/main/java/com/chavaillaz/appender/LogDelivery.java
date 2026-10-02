@@ -7,29 +7,29 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Transmission of logs to an external monitoring system.
+ * Transmits the documents converted from logging events to an external system.
  */
 public interface LogDelivery extends AutoCloseable {
 
     /**
-     * Sends the given record data, or does nothing for {@code null}, which a
+     * Sends the given document, or does nothing for {@code null}, which a
      * {@link com.chavaillaz.appender.log4j.LogConverter} returns to skip an event.
      *
-     * @param document The record data, or {@code null} to skip this event
+     * @param document The document, or {@code null} to skip this event
      */
     void send(@Nullable Map<String, Object> document);
 
     /**
-     * Sends the given list of record data, doing nothing for {@code null} and skipping its {@code null}
-     * elements, as {@link #send(Map)} does.
+     * Sends the given documents, skipping the {@code null} ones as {@link #send(Map)} does, and doing nothing
+     * for a {@code null} list.
      *
-     * @param documents The list of record data
+     * @param documents The documents, or {@code null}
      */
     void send(@Nullable List<@Nullable Map<String, Object>> documents);
 
     /**
-     * Sends the pending records (a partially filled batch). Intended to be called periodically to clean out
-     * pending messages.
+     * Sends the pending documents, a batch under its threshold included, rather than leaving them waiting for the
+     * next document: the appender calls it periodically (see {@link DeliveryOptions#flushInterval()}).
      */
     void flush();
 

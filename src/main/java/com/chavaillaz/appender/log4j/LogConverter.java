@@ -10,7 +10,7 @@ import org.jspecify.annotations.Nullable;
 import com.chavaillaz.appender.LogConfiguration;
 
 /**
- * Conversion of events to records for logs transmission.
+ * Converts a logging event into the document a {@link com.chavaillaz.appender.LogDelivery} sends.
  * <p>
  * A converter is given whatever configuration it needs when built, through its constructor, so that none can
  * be used before it is configured: {@link #newInstance(String, LogConfiguration)} creates one an appender
@@ -20,10 +20,10 @@ import com.chavaillaz.appender.LogConfiguration;
 public interface LogConverter {
 
     /**
-     * Converts a logging event into properties (key/value) to log.
+     * Converts a logging event into the document to send.
      *
      * @param event The logging event
-     * @return The properties to send, or {@code null} to skip this event (see
+     * @return The document to send, or {@code null} to skip this event (see
      *         {@link com.chavaillaz.appender.LogDelivery#send(Map)})
      */
     @Nullable Map<String, Object> convert(LogEvent event);

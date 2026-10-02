@@ -81,7 +81,7 @@ public class DefaultLogConverter implements LogConverter {
      * {@inheritDoc}
      *
      * @param event The logging event
-     * @return The properties to send (never {@code null})
+     * @return The document to send, never {@code null}
      */
     @Override
     public Map<String, Object> convert(LogEvent event) {

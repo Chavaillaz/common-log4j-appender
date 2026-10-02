@@ -1,5 +1,6 @@
 /**
- * Common types shared by every logs delivery mechanism, regardless of the underlying Log4j2 appender.
+ * The contracts of a delivery, with its options, listeners and metrics, shared by every appender built on this
+ * library.
  */
 @NullMarked
 package com.chavaillaz.appender;

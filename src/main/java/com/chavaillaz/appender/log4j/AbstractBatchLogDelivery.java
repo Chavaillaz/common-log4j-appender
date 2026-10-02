@@ -68,7 +68,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     private final @Nullable Duration initialCloseTimeout;
 
     /**
-     * Creates a new logs delivery handler sending them by batches.
+     * Creates a delivery sending documents by batches.
      *
      * @param configuration The configuration to use
      */
@@ -77,7 +77,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Creates a new logs delivery handler sending them by batches.
+     * Creates a delivery sending documents by batches.
      *
      * @param configuration The configuration to use
      * @param listener      The listener to notify of the outcome of every transmission attempt, or
@@ -248,7 +248,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     /**
      * {@inheritDoc}
      *
-     * @param document The record data, or {@code null} to skip this event
+     * @param document The document, or {@code null} to skip this event
      */
     @Override
     public void send(@Nullable Map<String, Object> document) {
@@ -260,7 +260,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     /**
      * {@inheritDoc}
      *
-     * @param documents The list of record data
+     * @param documents The documents, or {@code null}
      */
     @Override
     public void send(@Nullable List<@Nullable Map<String, Object>> documents) {
