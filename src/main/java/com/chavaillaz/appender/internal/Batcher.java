@@ -457,10 +457,11 @@ public class Batcher<T> {
         }
 
         /**
-         * Sets the transport function, called with a batch (or chunk) to transmit, as an unmodifiable list;
-         * it may complete the returned future synchronously or asynchronously, and is not expected to block
-         * the calling thread either way. A future completed later is handled on a virtual thread of this
-         * engine, never on the thread completing it. Required, having no sensible default.
+         * Sets the transport function, called on a virtual thread of its own with a batch (or chunk) to
+         * transmit, as an unmodifiable list. It may complete the returned future before returning, blocking
+         * that thread only, or later, the result then being handled on a virtual thread of this engine rather
+         * than on the thread completing it. A future never completed keeps its transmission permit until
+         * {@link Batcher#close(Duration)} gives up on it. Required, having no sensible default.
          *
          * @param transport The transport function
          * @return This builder

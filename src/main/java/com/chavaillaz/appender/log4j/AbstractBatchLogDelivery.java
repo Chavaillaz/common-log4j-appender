@@ -341,12 +341,17 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Sends the given documents, called concurrently from the virtual threads transmitting.
+     * Sends the given documents, called on a virtual thread of its own, concurrently with the other
+     * transmissions.
      * <p>
-     * The returned future may be completed right away or later, from another thread, by an asynchronous
-     * client, this method not being expected to block on the transmission. Its result is then handled on a
-     * thread of this delivery, never on the one of the client completing it. It completes with
-     * {@link TransmissionResult#success()} when every document was accepted,
+     * The returned future may be completed before this method returns, by a blocking client holding only that
+     * thread, or later by an asynchronous one, its result being handled on a thread of this delivery rather
+     * than on the one of the client. Either way it must complete: until it does, the transmission holds one of
+     * the {@link DeliveryOptions#maxConcurrentTransmissions()} slots, and requests never answered, once they
+     * hold them all, leave the next batch waiting for a slot until this delivery closes. Give the client a
+     * timeout.
+     * <p>
+     * It completes with {@link TransmissionResult#success()} when every document was accepted,
      * {@link TransmissionResult#failure(Throwable)} when none was, or
      * {@link TransmissionResult#partialFailure(List, Throwable)} when only some were rejected, a malformed
      * document in a bulk response for instance, so that only those are retried. An exception thrown, a future

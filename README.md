@@ -142,10 +142,10 @@ the rest. A few settings are read once all the same, when the appender or its de
 ### 2. Delivery
 
 Extend `AbstractBatchLogDelivery` and implement `sendBulk(List<Map<String, Object>>)`, returning a
-`CompletableFuture<TransmissionResult<Map<String, Object>>>` completed with the outcome. The future may be
-completed synchronously (as below) or later from another thread by an asynchronous client, without
-blocking the caller either way. The outcome is handled on a thread of the library, never on the one of the
-client completing the future, whose I/O the listener or a retry therefore never holds up:
+`CompletableFuture<TransmissionResult<Map<String, Object>>>` completed with the outcome. Each call runs on a
+virtual thread of its own, so the future may be completed synchronously by a blocking client (as below), or
+later from another thread by an asynchronous one. The outcome is handled on a thread of the library, never on
+the one of the client completing the future, whose I/O the listener or a retry therefore never holds up:
 
 ```java
 public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
@@ -166,6 +166,10 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
     }
 }
 ```
+
+Either way the future must complete: a transmission holds one of the `MaxConcurrentTransmissions` slots until
+it does, and requests never answered, once they hold them all, stall the pipeline until the appender stops,
+its queue discarding the oldest events meanwhile. Give your client a request timeout.
 
 Every failed attempt is logged with its cause on Log4j2's status logger (see
 [Shutdown and failure handling](#shutdown-and-failure-handling)), so there is no need to log it again. A
