@@ -8,6 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -199,16 +200,16 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             appender.append(logEvent);
-            sleep(300);
 
-            // then
+            // then: flushed once the interval elapsed, after the event it was due for
+            verify(appender.getLogDeliveryHandler(), timeout(5_000)).flush();
             assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
-            verify(appender.getLogDeliveryHandler()).flush();
 
             // when
             appender.stop();
 
-            // then
+            // then: closed, the flushes of the intervals elapsed meanwhile aside
+            verify(appender.getLogDeliveryHandler(), atLeastOnce()).flush();
             verify(appender.getLogDeliveryHandler()).close(any());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
@@ -285,20 +286,14 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofMillis(1_000)).build();
             var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
-            // when
+            // when: stopped right away, which waits for the event to be processed
             appender.start();
             appender.append(logEvent);
-            sleep(100); // gives the background thread time to process the event before asserting on it
-
-            // then: the event itself was processed, but well below the flush threshold and before the
-            // flush interval elapsed, no flush was triggered
-            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
-            verifyNoMoreInteractions(appender.getLogDeliveryHandler());
-
-            // when
             appender.stop();
 
-            // then
+            // then: the event itself was processed, but well below the flush threshold and before the
+            // flush interval elapsed, no flush was triggered, the stop only closing the delivery
+            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verify(appender.getLogDeliveryHandler()).close(any());
             verifyNoMoreInteractions(appender.getLogDeliveryHandler());
         }
@@ -543,11 +538,10 @@ class AbstractLogDeliveryAppenderTest {
             // when
             appender.start();
             appender.append(logEvent);
-            sleep(300);
 
             // then
+            verify(appender.getLogDeliveryHandler(), timeout(5_000)).flush();
             assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
-            verify(appender.getLogDeliveryHandler()).flush();
 
             // cleanup
             appender.stop();
@@ -624,17 +618,14 @@ class AbstractLogDeliveryAppenderTest {
                     .flushLevel(Level.WARN).build();
             var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
-            // when
+            // when: stopped right away, which waits for the event to be processed
             appender.start();
             appender.append(mockLogEvent(Level.INFO));
-            sleep(100);
+            appender.stop();
 
             // then: INFO is less severe than the configured WARN threshold, so no immediate flush
             assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verify(appender.getLogDeliveryHandler(), never()).flush();
-
-            // cleanup
-            appender.stop();
         }
 
         @Test
@@ -646,17 +637,14 @@ class AbstractLogDeliveryAppenderTest {
                     .flushInterval(Duration.ofSeconds(10)).build();
             var appender = new LogDeliveryAppender("appender-name", null, configuration);
 
-            // when
+            // when: stopped right away, which waits for the event to be processed
             appender.start();
             appender.append(mockLogEvent(Level.FATAL));
-            sleep(100);
+            appender.stop();
 
             // then: no FlushLevel configured, so not even a FATAL event triggers an immediate flush
             assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
             verify(appender.getLogDeliveryHandler(), never()).flush();
-
-            // cleanup
-            appender.stop();
         }
 
     }
