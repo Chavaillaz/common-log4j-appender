@@ -13,9 +13,9 @@ import org.jspecify.annotations.Nullable;
  * holds and what it puts in one request by size (see {@link DeliveryOptions#maxPendingBytes()} and
  * {@link DeliveryOptions#maxRequestBytes()}).
  * <p>
- * An approximation rather than a measurement, serializing every document to measure it costing more than the
- * limits save: the size of a compact UTF-8 JSON rendering of the document, the right order of magnitude for any
- * JSON transport. A transport knowing its own encoding overrides
+ * It approximates the size of a compact UTF-8 JSON rendering of the document, the right order of magnitude for
+ * any JSON transport, where serializing every document to measure it would cost more than the limits save. A
+ * transport knowing its own encoding overrides
  * {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)} instead.
  * <p>
  * {@code null}, {@link Boolean}, {@link Number}, {@link Map}, {@link Iterable} and array values count as their

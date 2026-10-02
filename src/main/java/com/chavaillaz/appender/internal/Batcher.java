@@ -657,8 +657,9 @@ public class Batcher<T> {
     }
 
     /**
-     * Sends the pending elements (a partially filled batch). Intended to be called periodically to clean
-     * out pending elements. Does nothing while a backoff delay is in effect (see {@link #health()}).
+     * Sends the pending elements, a batch under its threshold included, unless a backoff delay holds
+     * transmissions off after a failure. Meant to be called periodically, so that no element waits for the next
+     * one for long.
      */
     public void flush() {
         flush(false);
@@ -1395,8 +1396,8 @@ public class Batcher<T> {
     }
 
     /**
-     * Waits, indefinitely, until every transmission dispatched so far has completed, so that the resources of
-     * the transport function can be released right after.
+     * Waits, indefinitely, until every transmission dispatched so far has completed and its result was handled,
+     * for a test to check what came of it: {@link #close(Duration)} bounds the same wait.
      *
      * @throws InterruptedException If the current thread is interrupted while waiting
      */

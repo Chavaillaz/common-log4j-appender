@@ -4,8 +4,8 @@ package com.chavaillaz.appender;
  * Identifies the application whose logs are transmitted, and carries the settings governing how they are
  * transmitted (see {@link DeliveryOptions}).
  * <p>
- * The three fields below are what only the application can answer and what ends up in every document, where
- * {@link DeliveryOptions} is pipeline tuning meaning the same for every appender built on this library.
+ * The application, host and environment are what only the application can tell, and end up in every document,
+ * where {@link DeliveryOptions} tunes the pipeline the same way for every appender built on this library.
  * <p>
  * Read repeatedly from background threads without synchronization: an implementation is expected to be
  * immutable, as the {@code build()} of a Log4j2 {@code @PluginBuilderFactory} builder produces it, or else to
