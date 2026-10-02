@@ -542,6 +542,24 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Creates the parent directory again once removed, as a cleaner of old files does")
+    void testCreatesTheParentDirectoryAgainOnceRemoved(@TempDir Path tempDir) throws Exception {
+        // given: the directory of the listener, empty since it was created, removed by a cleaner of old files
+        var directory = tempDir.resolve("dead-letters");
+        var listener = new FileDeadLetterListener(directory.resolve("dead-letters.ndjson"), CLOCK);
+        Files.delete(directory);
+
+        // when
+        listener.onDocumentsDropped(List.of(Map.of("logmessage", "boom")), "reason");
+
+        // then: saved, rather than handed to onWriteFailure, which only logs it
+        assertThat(Files.readAllLines(directory.resolve("dead-letters-2026-09-28.ndjson"), UTF_8))
+                .singleElement()
+                .asString()
+                .contains("\"logmessage\":\"boom\"");
+    }
+
+    @Test
     @DisplayName("Saves the rest of a batch when one of its documents cannot be rendered at all")
     void testUnrenderableDocumentOnlyCostsItsOwnLine(@TempDir Path tempDir) throws Exception {
         // given: a document holding a value whose toString() throws, as any application object put into a

@@ -135,7 +135,8 @@ public class FileDeadLetterListener implements LogDeliveryListener {
 
     /**
      * Creates a new dead-letter listener, creating the parent directory of the given file right away, so that
-     * a misconfiguration shows at startup rather than when something needs saving.
+     * a misconfiguration shows at startup rather than when something needs saving. It is created again if it is
+     * removed later on.
      *
      * @param file  The file the name of the file of each day is derived from, in the same directory: each is
      *              created if it does not exist yet, or appended to if it does
@@ -183,7 +184,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         int appended = 0;
         try {
             writeLock.lock();
-            try (OutputStream out = openForAppend(target)) {
+            try (OutputStream out = open(target)) {
                 if (endsWithPartialLine(target)) {
                     // A write cut short, by a crash or a full disk, would otherwise swallow the first line
                     out.write(LINE_SEPARATOR);
@@ -196,6 +197,29 @@ public class FileDeadLetterListener implements LogDeliveryListener {
             }
         } catch (IOException e) {
             onWriteFailure(target, documents.subList(appended, documents.size()), reason, e);
+        }
+    }
+
+    /**
+     * Opens the given file for appending, creating its directory again if it was removed since this listener
+     * was created: a cleaner of old files, such as the one of {@code /tmp}, removes a directory left empty for
+     * days, as a dead-letter directory normally is, and would leave nothing saved at the next outage.
+     *
+     * @param file The file to append to
+     * @return A stream appending to it
+     * @throws IOException If the file cannot be opened
+     */
+    private OutputStream open(Path file) throws IOException {
+        try {
+            return openForAppend(file);
+        } catch (NoSuchFileException e) {
+            Path directory = file.toAbsolutePath().getParent();
+            if (directory == null) {
+                throw e;
+            }
+            log.warn("Creating the directory {} again, removed since the dead-letter listener was created", directory);
+            Files.createDirectories(directory);
+            return openForAppend(file);
         }
     }
 
