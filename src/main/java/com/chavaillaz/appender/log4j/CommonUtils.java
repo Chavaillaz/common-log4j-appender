@@ -3,7 +3,6 @@ package com.chavaillaz.appender.log4j;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
@@ -37,7 +36,8 @@ public final class CommonUtils {
      * @return The value found, the given default, or {@code null} if neither is found
      */
     public static @Nullable String getProperty(String key, @Nullable String defaultValue) {
-        return Optional.ofNullable(System.getenv(key)).orElse(System.getProperty(key, defaultValue));
+        String variable = System.getenv(key);
+        return variable != null ? variable : System.getProperty(key, defaultValue);
     }
 
     /**
