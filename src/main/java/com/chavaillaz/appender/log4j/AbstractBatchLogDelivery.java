@@ -380,6 +380,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * What is still pending once that wait is over, the documents of a transmission still in flight included,
      * is reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}, giving a dead-letter sink
      * a last chance: a transmission answering after that may still deliver them.
+     * <p>
+     * Only the first call closes: a later one, an appender stopped twice for instance, waits for it to be over,
+     * within its own timeout, rather than waiting again for the transmissions it gave up on.
      *
      * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
      * @throws Exception Never thrown by this implementation (an interruption while waiting is caught,

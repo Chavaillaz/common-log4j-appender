@@ -933,6 +933,72 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Returns at once when closed again, rather than waiting again for a transmission it gave up on")
+    void testClosingAgainDoesNotWaitAgain() {
+        // given: a transmission that never completes, which a first close gave up on and reported
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = batcherNeverAnswering(dropped);
+        batcher.add(List.of("stuck"));
+        batcher.close(Duration.ofMillis(200));
+
+        // when: closed again, as an appender stopped twice closes its delivery twice
+        long start = System.nanoTime();
+        batcher.close(Duration.ofSeconds(10));
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+        // then: it used to wait its whole timeout again for that transmission, which still holds its permit
+        assertThat(elapsedMillis)
+                .as("Closing again should have returned at once, but took " + elapsedMillis + "ms")
+                .isLessThan(5_000);
+        assertThat(dropped).containsExactly("stuck");
+    }
+
+    @Test
+    @DisplayName("Waits for the close in progress when closed concurrently, rather than returning before it is over")
+    void testClosingConcurrentlyWaitsForTheFirstClose() throws Exception {
+        // given: a first close waiting for a transmission that never completes
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = batcherNeverAnswering(dropped);
+        batcher.add(List.of("stuck"));
+        var firstClose = new Thread(() -> batcher.close(Duration.ofMillis(500)));
+        firstClose.setDaemon(true);
+        firstClose.start();
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+        while (batcher.health().status() != DeliveryHealth.Status.DOWN && System.nanoTime() < deadlineNanos) {
+            Thread.sleep(5);
+        }
+
+        // when: closed again meanwhile, by a caller about to release what the transport uses
+        long start = System.nanoTime();
+        batcher.close(Duration.ofSeconds(10));
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+        // then: it returns once the first close is over, neither before, nor after waiting its own timeout
+        assertThat(dropped).containsExactly("stuck");
+        assertThat(elapsedMillis)
+                .as("Closing again should have returned with the first close, but took " + elapsedMillis + "ms")
+                .isLessThan(5_000);
+        firstClose.join(SECONDS.toMillis(5));
+    }
+
+    /**
+     * A batcher sending every element on its own to a transport that never answers, reporting the elements it
+     * drops to the given list.
+     */
+    private static Batcher<String> batcherNeverAnswering(List<String> dropped) {
+        return Batcher.<String>builder()
+                .flushThreshold(() -> 1)
+                .transport(elements -> new CompletableFuture<>())
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+    }
+
+    @Test
     @DisplayName("Reports elements a failed transmission hands back after closing drained the batch")
     void testElementsRequeuedAfterCloseDrainedAreReported() throws Exception {
         // given: a transport failing at once, and a listener holding up the handling of that failure until

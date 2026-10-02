@@ -13,11 +13,13 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
@@ -218,7 +220,13 @@ public class Batcher<T> {
      * transmit or report it. Raised before the close first takes {@link #lock}, so that {@link #add(List)}
      * reading it unset under the lock knows {@link #reportRemainingAsDropped()} will still see what it stacks.
      */
-    private volatile boolean closed;
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    /**
+     * Released once the first {@link #close(Duration)} is over, which a later one waits for rather than closing
+     * again.
+     */
+    private final CountDownLatch closeCompleted = new CountDownLatch(1);
 
     /**
      * Whether {@link #reportRemainingAsDropped()} emptied {@link #pending} for good, past which
@@ -530,7 +538,7 @@ public class Batcher<T> {
         lock.lock();
         try {
             // Read under the lock, which close() only takes after raising it (see closed)
-            rejected = closed;
+            rejected = closed.get();
             if (!rejected) {
                 pending.append(elements);
                 // Each read once, so that two readings cannot disagree
@@ -587,7 +595,7 @@ public class Batcher<T> {
      */
     public DeliveryHealth health() {
         DeliveryHealth.Status status;
-        if (closed) {
+        if (closed.get()) {
             status = DeliveryHealth.Status.DOWN;
         } else if (!transmissionFailed) {
             status = DeliveryHealth.Status.UP;
@@ -1252,13 +1260,34 @@ public class Batcher<T> {
      * not completed in time, is reported through {@link BatcherListener#onDropped(List, String)}, giving a
      * dead-letter sink a last chance to save it. A transmission completing later has its result ignored, its
      * elements being possibly delivered as well as reported.
+     * <p>
+     * Only the first call closes: a later one waits for it to be over, within its own timeout, rather than
+     * waiting again for the transmissions it gave up on.
      *
      * @param timeout The maximum time to wait for pending transmissions and notifications to complete, or
      *                {@code null} to wait indefinitely, which is only safe for a transport always completing
      *                its future and a listener always returning
      */
     public void close(@Nullable Duration timeout) {
-        closed = true;
+        if (closed.getAndSet(true)) {
+            awaitFirstClose(timeout);
+            return;
+        }
+        try {
+            closeOnce(timeout);
+        } finally {
+            // Even after an Error, which would otherwise leave a later close without a timeout waiting for good
+            closeCompleted.countDown();
+        }
+    }
+
+    /**
+     * Closes this engine, as the first call of {@link #close(Duration)} does.
+     *
+     * @param timeout The maximum time to wait for pending transmissions and notifications to complete, or
+     *                {@code null} to wait indefinitely
+     */
+    private void closeOnce(@Nullable Duration timeout) {
         if (timeout != null) {
             closeDeadlineNanos = System.nanoTime() + MILLISECONDS.toNanos(Durations.toMillisWithinYear(timeout));
         }
@@ -1277,6 +1306,24 @@ public class Batcher<T> {
             awaitDropNotifications();
             reportRemainingAsDropped();
             reportInFlightAsDropped();
+        }
+    }
+
+    /**
+     * Waits, at most the given time, for the first {@link #close(Duration)} to be over, an interruption ending
+     * the wait.
+     *
+     * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
+     */
+    private void awaitFirstClose(@Nullable Duration timeout) {
+        try {
+            if (timeout == null) {
+                closeCompleted.await();
+            } else if (!closeCompleted.await(Durations.toMillisWithinYear(timeout), MILLISECONDS)) {
+                log.warn("Gave up waiting for the close in progress to complete after {}", timeout);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
