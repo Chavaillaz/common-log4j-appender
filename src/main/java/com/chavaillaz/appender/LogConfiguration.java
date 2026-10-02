@@ -7,10 +7,10 @@ package com.chavaillaz.appender;
  * The three fields below are what only the application can answer and what ends up in every document, where
  * {@link DeliveryOptions} is pipeline tuning meaning the same for every appender built on this library.
  * <p>
- * A read-only contract: an implementation is expected to be immutable (a {@code record}, or a class built once
- * through a builder), being read repeatedly from background threads without any synchronization. The
- * {@code @PluginBuilderFactory} pattern of Log4j2 produces exactly that, mutable fields on the builder and an
- * immutable object out of its {@code build()}.
+ * Read repeatedly from background threads without any synchronization: an implementation is expected to be
+ * immutable (a {@code record}, or a class built once through a builder), as the {@code @PluginBuilderFactory}
+ * pattern of Log4j2 produces, mutable fields on the builder and an immutable object out of its {@code build()},
+ * or else to hold what it varies at runtime, such as its delivery options, in {@code volatile} fields.
  */
 public interface LogConfiguration {
 
@@ -40,8 +40,8 @@ public interface LogConfiguration {
      * {@link DeliveryOptions#defaults()}.
      * <p>
      * Read again each time a setting is used rather than once, so that an implementation can vary most of them
-     * at runtime by returning another instance (see {@link DeliveryOptions}): return a stored instance rather
-     * than building one on every call.
+     * at runtime by returning another instance (see {@link DeliveryOptions}): return one held in a
+     * {@code volatile} field rather than building one on every call.
      *
      * @return The delivery options
      */
