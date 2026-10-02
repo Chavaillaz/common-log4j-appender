@@ -1356,19 +1356,7 @@ public class Batcher<T> {
      * @throws InterruptedException If the current thread is interrupted while waiting
      */
     public void awaitPendingTransmissions() throws InterruptedException {
-        awaitPendingTransmissions(null);
-    }
-
-    /**
-     * Waits until every currently dispatched transmission has completed, or the given timeout elapses.
-     *
-     * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
-     * @return {@code true} if every pending transmission completed, {@code false} if the timeout elapsed first
-     * @throws InterruptedException If the current thread is interrupted while waiting
-     */
-    public boolean awaitPendingTransmissions(@Nullable Duration timeout) throws InterruptedException {
-        Long timeoutMillis = toMillis(timeout);
-        return awaitPendingTransmissions(timeoutMillis == null ? -1 : MILLISECONDS.toNanos(timeoutMillis));
+        awaitPendingTransmissions(-1);
     }
 
     /**
