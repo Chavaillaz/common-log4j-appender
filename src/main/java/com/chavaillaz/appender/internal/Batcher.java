@@ -516,9 +516,10 @@ public class Batcher<T> {
     }
 
     /**
-     * Accumulates the given elements, triggering a transmission if this reaches {@code flushThreshold}, or
-     * fills the pending batch up to one of its limits. A transmission this triggers runs on a virtual thread of
-     * its own, the caller only waiting for one of those in flight to complete past
+     * Accumulates the given elements, triggering a transmission once the batch reaches {@code flushThreshold}
+     * or one of its pending limits, unless transmissions are held off after a failure: the batch then waits for
+     * the next flush, losing its oldest elements past those limits. A transmission this triggers runs on a
+     * virtual thread of its own, the caller only waiting for one of those in flight to complete past
      * {@code maxConcurrentTransmissions}.
      *
      * @param elements The elements to accumulate

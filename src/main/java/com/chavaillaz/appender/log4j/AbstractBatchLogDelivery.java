@@ -29,11 +29,12 @@ import com.chavaillaz.appender.internal.BatcherListener;
  * {@link LogConfiguration} and a {@link LogDeliveryListener}: a subclass only implements
  * {@link #sendBulk(List)}.
  * <p>
- * A batch due (threshold reached, or {@link #flush()} called) is transmitted on a virtual thread of its own,
- * at most {@link DeliveryOptions#maxConcurrentTransmissions()} at once, the thread accumulating documents (the
- * background thread of {@link AbstractLogDeliveryAppender}, never the application thread) waiting for a slot
- * past that. The documents of a failed transmission are put back at the front of the batch and retried, so
- * that concurrent transmissions may deliver documents out of order, each carrying its own timestamp.
+ * A batch due (its threshold or a pending limit reached, or {@link #flush()} called) is transmitted on a
+ * virtual thread of its own, at most {@link DeliveryOptions#maxConcurrentTransmissions()} at once, the thread
+ * accumulating documents (the background thread of {@link AbstractLogDeliveryAppender}, never the application
+ * thread) waiting for a slot past that. The documents of a failed transmission are put back at the front of the
+ * batch and retried, so that concurrent transmissions may deliver documents out of order, each carrying its own
+ * timestamp.
  * <p>
  * The pending batch is capped by {@link DeliveryOptions#maxPendingDocuments()} and
  * {@link DeliveryOptions#maxPendingBytes()}, a request by {@link DeliveryOptions#maxRequestDocuments()} and
