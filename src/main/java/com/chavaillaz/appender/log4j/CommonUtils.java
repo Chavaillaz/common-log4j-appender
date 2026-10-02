@@ -46,9 +46,8 @@ public final class CommonUtils {
      * change while the application runs. Once per class loader holding this library, so once per JVM for an
      * application on its own.
      * <p>
-     * A call waits at most {@link #HOSTNAME_LOOKUP_TIMEOUT} for the lookup, which has no bound of its own and
-     * typically runs while the application starts, returning {@code localhost} past it: the lookup goes on, and
-     * a later call gets its result.
+     * A call waits at most {@link #HOSTNAME_LOOKUP_TIMEOUT} for the lookup, which has no bound of its own, and
+     * returns {@code localhost} past it: the lookup goes on, and a later call gets its result.
      *
      * @return The host name, or {@code localhost} if it cannot be determined within a reasonable time
      */

@@ -371,8 +371,8 @@ public class DefaultLogConverter implements LogConverter {
 
     /**
      * Maximum length (in characters) of the {@code stacktrace} field written by
-     * {@link #writeThrowable(Map, LogEvent)}. Override to raise, lower, or disable ({@code 0} or negative)
-     * truncation.
+     * {@link #writeThrowable(Map, LogEvent)}. Defaults to {@code 8'192}; override to raise, lower, or disable
+     * ({@code 0} or negative) truncation.
      *
      * @return The maximum length allowed for the stack trace, or a non-positive value to disable truncation
      */

@@ -671,8 +671,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Takes the health of this appender, the one of its delivery while it runs (see
      * {@link LogDelivery#getHealth()}), and {@link DeliveryHealth.Status#DOWN} otherwise: before it starts,
-     * from the moment it starts stopping, and for good once started without a delivery, its creation having
-     * failed and every event being discarded.
+     * from the moment it starts stopping, and for good if creating its delivery failed, every event then being
+     * discarded.
      *
      * @return The current health of the log delivery pipeline, with the time since documents were last
      *         accepted, or since this appender was created while none were yet
@@ -711,7 +711,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Takes a snapshot of this appender and of its delivery, for a metrics library to poll (see
      * {@link DeliveryMetrics}): the dropped documents count the events this appender discarded as well, every
-     * one of them once started without a delivery.
+     * event if creating its delivery failed.
      *
      * @return The current metrics, those of the delivery being {@code 0} before it is created, or if it could
      *         not be

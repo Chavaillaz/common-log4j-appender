@@ -12,9 +12,8 @@ import com.chavaillaz.appender.LogConfiguration;
 /**
  * Converts a logging event into the document a {@link com.chavaillaz.appender.LogDelivery} sends.
  * <p>
- * A converter is given whatever configuration it needs when built, through its constructor, so that none can
- * be used before it is configured: {@link #newInstance(String, LogConfiguration)} creates one an appender
- * configuration names by its class.
+ * A converter takes the configuration it needs in its constructor, so that none is used unconfigured:
+ * {@link #newInstance(String, LogConfiguration)} creates the one a configuration names by its class.
  */
 @FunctionalInterface
 public interface LogConverter {

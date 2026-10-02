@@ -345,11 +345,10 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * transmissions.
      * <p>
      * The returned future may be completed before this method returns, by a blocking client holding only that
-     * thread, or later by an asynchronous one, its result being handled on a thread of this delivery rather
+     * thread, or later by an asynchronous one, the result then being handled on a thread of this delivery rather
      * than on the one of the client. Either way it must complete: until it does, the transmission holds one of
-     * the {@link DeliveryOptions#maxConcurrentTransmissions()} slots, and requests never answered, once they
-     * hold them all, leave the next batch waiting for a slot until this delivery closes. Give the client a
-     * timeout.
+     * the {@link DeliveryOptions#maxConcurrentTransmissions()} slots, and once unanswered requests hold them all,
+     * the next batch waits for a slot until this delivery closes. Give the client a timeout.
      * <p>
      * It completes with {@link TransmissionResult#success()} when every document was accepted,
      * {@link TransmissionResult#failure(Throwable)} when none was, or

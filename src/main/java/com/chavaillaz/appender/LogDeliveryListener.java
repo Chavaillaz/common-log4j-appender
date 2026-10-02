@@ -11,8 +11,8 @@ import org.jspecify.annotations.Nullable;
  * events to a metrics library. Every method has a no-op default; override only the ones you need.
  * <p>
  * Methods are called concurrently, from the threads transmitting, the background threads of the appender and
- * the thread stopping it, never from a thread while it logs: an implementation must be thread-safe, and should
- * return quickly, a stop waiting for its last notifications whatever its budget.
+ * the thread stopping it, never from a thread while it logs: an implementation must be thread-safe, and return
+ * quickly, since a stop waits for its last notifications whatever its budget.
  * <p>
  * An implementation logging what it observes uses {@code StatusLogger.getLogger()}, as this library does: an
  * ordinary logger feeds each message back to the appender as one more document, whose failure logs again, in
@@ -31,8 +31,8 @@ public interface LogDeliveryListener {
     /**
      * Combines the given listeners into one notifying each of them in turn, so that a delivery taking a single
      * listener can feed a dead-letter sink and a metrics library at once, for instance. One failing does not
-     * keep the next ones from being notified: its failure is thrown once all of them were, a later one being
-     * logged.
+     * keep the next ones from being notified: the first failure is thrown once all were notified, the later
+     * ones being logged.
      *
      * @param listeners The listeners to notify, in order
      * @return A listener notifying all of them, {@link #NOOP} for none, or the listener itself for one
@@ -77,7 +77,7 @@ public interface LogDeliveryListener {
      * Called when documents are discarded for good instead of kept for a later retry, as {@code reason} says:
      * they kept failing, a pending or queued limit was reached, an event failed to convert, or a delivery closed
      * before sending them or before their transmission was answered. The documents themselves are passed, as
-     * an unmodifiable list, this being the last chance to save them, to a local file or a dead-letter queue for
+     * an unmodifiable list: this is the last chance to save them, to a local file or a dead-letter queue for
      * instance.
      *
      * @param documents The documents being discarded
