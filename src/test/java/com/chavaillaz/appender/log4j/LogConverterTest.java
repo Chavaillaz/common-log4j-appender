@@ -43,6 +43,18 @@ class LogConverterTest {
     }
 
     @Test
+    @DisplayName("Refuses to choose between constructors taking unrelated types of the configuration")
+    void testRefusesAnAmbiguousConstructor() {
+        // Given: a configuration implementing two interfaces, each taken by a constructor of its own
+        var configuration = new LabeledConfiguration();
+
+        // When / Then: rather than taking whichever the JVM happens to list first
+        assertThatThrownBy(() -> LogConverter.newInstance(AmbiguousConverter.class.getName(), configuration))
+                .isInstanceOf(NoSuchMethodException.class)
+                .hasMessageContaining("none more specific than the others");
+    }
+
+    @Test
     @DisplayName("Creates the default converter by its name too")
     void testCreatesTheDefaultConverter() throws Exception {
         // When / Then
@@ -105,6 +117,46 @@ class LogConverterTest {
 
         public OverloadedConverter(TestLogConfiguration configuration) {
             this.taken = "TestLogConfiguration";
+        }
+
+        @Override
+        public Map<String, Object> convert(LogEvent event) {
+            return Map.of();
+        }
+
+    }
+
+    interface Labeled {
+
+    }
+
+    static class LabeledConfiguration implements LogConfiguration, Labeled {
+
+        @Override
+        public String getApplication() {
+            return "my-application";
+        }
+
+        @Override
+        public String getHost() {
+            return "my-host";
+        }
+
+        @Override
+        public String getEnvironment() {
+            return "my-environment";
+        }
+
+    }
+
+    public static class AmbiguousConverter implements LogConverter {
+
+        public AmbiguousConverter(LogConfiguration configuration) {
+            // Either one would do, as far as the configuration is concerned
+        }
+
+        public AmbiguousConverter(Labeled configuration) {
+            // Either one would do, as far as the configuration is concerned
         }
 
         @Override

@@ -1,6 +1,8 @@
 package com.chavaillaz.appender.log4j;
 
 import java.lang.reflect.Constructor;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.logging.log4j.core.LogEvent;
@@ -39,24 +41,32 @@ public interface LogConverter {
      * @param configuration The configuration to build the converter with
      * @return The new converter
      * @throws ReflectiveOperationException If the class cannot be found, has no public constructor taking the
-     *                                      configuration, or its constructor fails
+     *                                      configuration, has several of which none is more specific than the
+     *                                      others, or its constructor fails
      * @throws ClassCastException           If the class does not implement this interface
      */
     static LogConverter newInstance(String className, LogConfiguration configuration) throws ReflectiveOperationException {
         Class<? extends LogConverter> type = LoaderUtil.loadClass(className).asSubclass(LogConverter.class);
-        Constructor<?> chosen = null;
+        List<Class<?>> parameterTypes = new ArrayList<>();
         for (Constructor<?> candidate : type.getConstructors()) {
             Class<?>[] parameters = candidate.getParameterTypes();
-            if (parameters.length == 1 && parameters[0].isInstance(configuration)
-                    && (chosen == null || chosen.getParameterTypes()[0].isAssignableFrom(parameters[0]))) {
-                chosen = candidate;
+            if (parameters.length == 1 && parameters[0].isInstance(configuration)) {
+                parameterTypes.add(parameters[0]);
             }
         }
-        if (chosen == null) {
+        if (parameterTypes.isEmpty()) {
             throw new NoSuchMethodException(className + " has no public constructor taking a "
                     + configuration.getClass().getName());
         }
-        return type.cast(chosen.newInstance(configuration));
+        for (Class<?> parameter : parameterTypes) {
+            if (parameterTypes.stream().allMatch(other -> other.isAssignableFrom(parameter))) {
+                return type.cast(type.getConstructor(parameter).newInstance(configuration));
+            }
+        }
+        // Unrelated types, two interfaces the configuration implements for instance: taking the first would
+        // depend on the order of the constructors, which the JVM leaves unspecified
+        throw new NoSuchMethodException(className + " has several public constructors taking a "
+                + configuration.getClass().getName() + ", none more specific than the others: " + parameterTypes);
     }
 
 }
