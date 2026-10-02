@@ -883,15 +883,23 @@ public class Batcher<T> {
     /**
      * Dispatches the elements of a swapped batch for transmission, split first into chunks within the request
      * limits if needed (see {@link PendingBatch#split(int, long)}), each chunk being handed to
-     * {@link #dispatchChunk(Chunk)} independently.
+     * {@link #dispatchChunk(Chunk)} independently. Those it could not hand over are put back once all were
+     * tried, last first, so that they keep their order in front of the batch rather than being retried,
+     * reported or trimmed newest first.
      *
      * @param due The batch swapped out, no one else's by then
      */
     private void dispatch(PendingBatch<T> due) {
         int maxCount = readLimit(maxRequestElements, Integer.MAX_VALUE, "the maximum request elements");
         long maxBytes = readLimit(maxRequestBytes, Long.MAX_VALUE, "the maximum request bytes");
+        List<Chunk<T>> undispatched = new ArrayList<>();
         for (Chunk<T> chunk : due.split(maxCount, maxBytes)) {
-            dispatchChunk(chunk);
+            if (!dispatchChunk(chunk)) {
+                undispatched.add(chunk);
+            }
+        }
+        for (Chunk<T> chunk : undispatched.reversed()) {
+            requeue(chunk);
         }
     }
 
@@ -900,25 +908,26 @@ public class Batcher<T> {
      * is acquired, which may block the caller where the transmission itself never does.
      *
      * @param chunk The chunk to dispatch
+     * @return {@code true} if the chunk is no longer the caller's, handed to its transmission or reported by a
+     *         close, {@code false} if it must be put back, never attempted
      */
-    private void dispatchChunk(Chunk<T> chunk) {
+    private boolean dispatchChunk(Chunk<T> chunk) {
         try {
             if (!acquireTransmissionPermit()) {
                 log.warn("Unable to transmit {} {}(s) within the remaining close budget, they will be reported as dropped",
                         chunk.size(), elementNoun);
-                requeue(chunk);
-                return;
+                return false;
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            requeue(chunk);
-            return;
+            return false;
         }
 
         // Before it starts, so that a close looking for what is in flight cannot miss it
         inFlight.add(chunk);
         try {
             transmissionExecutor.execute(() -> transmit(chunk));
+            return true;
         } catch (Throwable e) {
             // Throwable: an Error starting the thread, the memory running out say, would keep the permit for
             // good, a few of them wedging every later dispatch, and lose the chunks still to dispatch
@@ -927,9 +936,7 @@ public class Batcher<T> {
                 log.warn("Unable to start the transmission of {} {}(s), putting them back", chunk.size(), elementNoun, e);
             }
             // Unless the close shutting the executor down reported them already
-            if (inFlight.remove(chunk)) {
-                requeue(chunk);
-            }
+            return !inFlight.remove(chunk);
         }
     }
 

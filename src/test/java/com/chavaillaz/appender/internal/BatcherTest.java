@@ -936,6 +936,73 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Reports the requests a close found no permit for in their order, oldest first")
+    void testRequestsWithoutPermitAtCloseAreReportedInOrder() {
+        // given: the single transmission permit held for good by a stuck transmission, and a batch split into
+        // three requests of two elements
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10)
+                .maxRequestElements(() -> 2)
+                .maxConcurrentTransmissions(1)
+                .transport(elements -> new CompletableFuture<>())
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                    }
+                })
+                .build();
+        batcher.add(List.of("stuck"));
+        batcher.flush();
+        batcher.add(List.of("a", "b", "c", "d", "e", "f"));
+
+        // when: closing, the final flush finding no permit within the budget for any of its requests
+        batcher.close(Duration.ofMillis(100));
+
+        // then: a dead-letter sink gets them as they were added. Each used to be put back in front of the one
+        // before, reporting "e", "f", "c", "d", "a", "b"
+        assertThat(dropped).containsExactly("a", "b", "c", "d", "e", "f", "stuck");
+    }
+
+    @Test
+    @DisplayName("Retries the requests an interrupted dispatch put back in their order, oldest first")
+    void testRequestsPutBackOnInterruptAreRetriedInOrder() throws Exception {
+        // given: the single transmission permit held by a transmission answering once told to, and a batch
+        // split into three requests of two elements
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        var answer = new CompletableFuture<TransmissionResult<String>>();
+        var attempts = new AtomicInteger();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 10)
+                .maxRequestElements(() -> 2)
+                .maxConcurrentTransmissions(1)
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return attempts.incrementAndGet() == 1 ? answer : completedFuture(TransmissionResult.success());
+                })
+                .build();
+        batcher.add(List.of("held"));
+        batcher.flush();
+        batcher.add(List.of("a", "b", "c", "d", "e", "f"));
+
+        // when: flushed by an interrupted thread, as the worker of an appender whose stop abandons it, every
+        // request being put back untried
+        Thread.currentThread().interrupt();
+        batcher.flush();
+        boolean stillInterrupted = Thread.interrupted();
+        answer.complete(TransmissionResult.success());
+        batcher.awaitPendingTransmissions();
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+
+        // then: they go out as they were added, rather than newest first, the interruption kept for the caller
+        assertThat(stillInterrupted).isTrue();
+        assertThat(transmitted).containsExactly(
+                List.of("held"), List.of("a", "b"), List.of("c", "d"), List.of("e", "f"));
+    }
+
+    @Test
     @DisplayName("Reports the elements of a transmission still in flight once closing gives up on it, and only once")
     void testElementsInFlightWhenClosedAreReportedOnce() throws Exception {
         // given: a transport holding its future open, so closing gives up on it while that transmission is
