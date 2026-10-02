@@ -51,9 +51,10 @@ public sealed interface TransmissionResult<T> {
      *                 reported which elements were rejected without throwing
      * @param <T>      The type of element transmitted
      * @return A partially failed result
+     * @throws NullPointerException If the list or one of its elements is {@code null}
      */
     static <T> TransmissionResult<T> partialFailure(List<T> rejected, @Nullable Throwable cause) {
-        return new PartialFailure<>(List.copyOf(rejected), cause);
+        return new PartialFailure<>(rejected, cause);
     }
 
     /**
@@ -84,6 +85,15 @@ public sealed interface TransmissionResult<T> {
      * @param <T>      The type of element transmitted
      */
     record PartialFailure<T>(List<T> rejected, @Nullable Throwable cause) implements TransmissionResult<T> {
+
+        /**
+         * Keeps an unmodifiable copy of the rejected elements, so that the result cannot change once returned.
+         *
+         * @throws NullPointerException If the list or one of its elements is {@code null}
+         */
+        public PartialFailure {
+            rejected = List.copyOf(rejected);
+        }
 
     }
 
