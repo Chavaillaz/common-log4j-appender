@@ -116,7 +116,8 @@ public class MyConfiguration implements LogConfiguration {
     String application;
     String host;
     String environment;
-    DeliveryOptions deliveryOptions;
+    @Builder.Default // Rather than null when the builder leaves it unset
+    DeliveryOptions deliveryOptions = DeliveryOptions.defaults();
     String url; // Anything else specific to your delivery mechanism
 }
 ```
