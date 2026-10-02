@@ -1055,12 +1055,12 @@ public class Batcher<T> {
             case TransmissionResult.PartialFailure<T> partial -> {
                 Partition<T> partition = partition(chunk, partial.rejected());
                 Chunk<T> rejected = partition.rejected();
-                if (rejected.size() != partial.rejected().size()) {
-                    // A transport breaking the contract, with duplicates or foreign elements, which would
-                    // otherwise be injected into the batch: only those belonging to the chunk are kept
-                    log.warn("Transport reported {} rejected {}(s) for a batch of {}, but only {} of them belong to it; "
-                                    + "ignoring the rest (they must be reported by reference identity)",
-                            partial.rejected().size(), elementNoun, chunk.size(), rejected.size());
+                if (partition.foreign() > 0) {
+                    // A transport breaking the contract, reporting equal copies rather than the elements it was
+                    // given for instance, which would otherwise be injected into the batch
+                    log.warn("Transport reported {} rejected {}(s) the batch of {} does not hold, ignoring them "
+                                    + "(they must be the very instances it was given)",
+                            partition.foreign(), elementNoun, chunk.size());
                 }
                 if (rejected.size() == 0) {
                     onTransmissionSuccess(chunk.size(), durationMillis);
@@ -1101,16 +1101,18 @@ public class Batcher<T> {
      * @param accepted The elements not reported as rejected, in their original order
      * @param rejected The elements reported as rejected, in their original order, with the failure streaks
      *                 they had before this attempt
+     * @param foreign  How many of the instances reported as rejected the chunk does not hold, ignored
      * @param <T>      The type of element
      */
-    private record Partition<T>(List<T> accepted, Chunk<T> rejected) {
+    private record Partition<T>(List<T> accepted, Chunk<T> rejected, int foreign) {
 
     }
 
     /**
      * Splits a chunk according to whether each of its elements is in {@code rejected}, matched by reference
      * rather than {@code equals()} (see {@link TransmissionResult}). Driven by the chunk, so that the result
-     * only holds elements of the chunk, each as many times as the chunk does.
+     * only holds elements of the chunk, each as many times as the chunk does, however many times
+     * {@code rejected} names it.
      *
      * @param chunk    The dispatched chunk
      * @param rejected The elements the transport reported as rejected
@@ -1119,10 +1121,11 @@ public class Batcher<T> {
      */
     private static <T> Partition<T> partition(Chunk<T> chunk, List<T> rejected) {
         if (rejected.isEmpty()) {
-            return new Partition<>(chunk.elements(), new Chunk<>(List.of(), List.of()));
+            return new Partition<>(chunk.elements(), new Chunk<>(List.of(), List.of()), 0);
         }
         Set<T> rejectedIdentity = Collections.newSetFromMap(new IdentityHashMap<>(rejected.size()));
         rejectedIdentity.addAll(rejected);
+        Set<T> held = Collections.newSetFromMap(new IdentityHashMap<>(rejectedIdentity.size()));
         List<T> accepted = new ArrayList<>(chunk.size());
         List<T> actuallyRejected = new ArrayList<>(Math.min(chunk.size(), rejected.size()));
         List<FailureRun> rejectedRuns = new ArrayList<>();
@@ -1130,13 +1133,15 @@ public class Batcher<T> {
         for (T element : chunk.elements()) {
             int streak = streaks.next();
             if (rejectedIdentity.contains(element)) {
+                held.add(element);
                 actuallyRejected.add(element);
                 FailureRun.append(rejectedRuns, streak, 1);
             } else {
                 accepted.add(element);
             }
         }
-        return new Partition<>(accepted, new Chunk<>(actuallyRejected, rejectedRuns));
+        return new Partition<>(accepted, new Chunk<>(actuallyRejected, rejectedRuns),
+                rejectedIdentity.size() - held.size());
     }
 
     /**

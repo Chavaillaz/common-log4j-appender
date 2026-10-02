@@ -489,6 +489,52 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Warns of a rejected element the request never held, such as an equal copy of one it did")
+    void testPartialFailureNamingAnEqualCopyIsReported() throws Exception {
+        // given: a transport reporting a copy of the element it was given, equal to it but another instance
+        record Item(String name) {
+
+        }
+        Batcher<Item> batcher = Batcher.<Item>builder()
+                .transport(elements -> completedFuture(TransmissionResult.partialFailure(
+                        List.of(new Item(elements.getFirst().name())), null)))
+                .build();
+
+        // when
+        List<StatusData> statuses = captureStatuses(() -> {
+            batcher.add(List.of(new Item("a")));
+            batcher.awaitPendingTransmissions();
+        });
+
+        // then: the copy, matching nothing the request held, is said to be ignored
+        assertThat(statuses)
+                .extracting(StatusData::getFormattedStatus)
+                .anyMatch(status -> status.contains("reported 1 rejected element(s) the batch of 1 does not hold"));
+    }
+
+    @Test
+    @DisplayName("Does not warn of a request holding an element twice when the transport rejects it once")
+    void testPartialFailureOfAnElementHeldTwiceIsNotReported() throws Exception {
+        // given: one instance sent twice, the transport naming it once, as the very instance it was given
+        String twice = "a";
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 2)
+                .transport(elements -> completedFuture(TransmissionResult.partialFailure(List.of(elements.getFirst()), null)))
+                .build();
+
+        // when
+        List<StatusData> statuses = captureStatuses(() -> {
+            batcher.add(List.of(twice, twice));
+            batcher.awaitPendingTransmissions();
+        });
+
+        // then: nothing the transport reported was ignored, the instance belonging to the request
+        assertThat(statuses)
+                .extracting(StatusData::getFormattedStatus)
+                .noneMatch(status -> status.contains("rejected element(s)"));
+    }
+
+    @Test
     @DisplayName("Splits a batch into chunks that each stay under the maximum request size")
     void testChunksByRequestBytes() throws Exception {
         // given: elements measured at 10 bytes each and a 25 byte request limit, so chunks hold two of them
