@@ -103,11 +103,9 @@ producing the logs (`Application`, `Host`, `Environment`, which end up inside ev
 shutdown. Every `DeliveryOptions` setting has a usable default, so `getDeliveryOptions()` can be left alone
 entirely until you have a reason to tune something.
 
-The interface is deliberately read-only (no setters): build an immutable instance once, rather than a
-mutable bean, since it is read repeatedly (not just once) from a background thread with no synchronization
-of its own around those reads. This shape falls out naturally from Log4j2's own `@PluginBuilderFactory`
-pattern, whose `Builder` already carries the mutable, per-attribute fields, with only its `build()` result
-needing to satisfy `LogConfiguration`:
+The interface is read-only: build an immutable instance once, since background threads read it repeatedly
+without synchronization. Log4j2's `@PluginBuilderFactory` pattern gives that shape naturally, its `Builder`
+holding the mutable attributes and its `build()` returning the configuration:
 
 ```java
 @Value
@@ -238,8 +236,8 @@ none converts before it has it: `LogConverter.newInstance(className, configurati
 configuration names by its class, through its public constructor taking the configuration.
 
 A converter reading the location of the caller (`LogEvent.getSource()`) needs the appender to override
-`requiresLocation()` to return `true`. An event is otherwise handed over without it, Log4j2 finding it by
-walking the stack of the application thread, which costs twenty times all the rest `append()` does.
+`requiresLocation()` to return `true`. The event is otherwise handed over without it: Log4j2 finds it by
+walking the stack of the application thread, which costs twenty times the rest of `append()`.
 
 ## Observability
 
@@ -274,14 +272,14 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 ```
 
 All three have a no-op default; override only what you need. They are called concurrently, from threads of
-the library or the one stopping the appender rather than the application thread logging, and must be
-thread-safe, a stop waiting for its last notifications whatever its budget. A slow listener therefore
-never holds up the application: at most `MaxQueuedEvents` events discarded by a full queue wait to be reported,
-those past it, discarded faster than they are reported, being only counted (see `getMetrics()` below) and
-logged. `onDocumentsDropped` deserves the most attention in production — it
-fires only when documents are irrecoverably discarded (see the safety nets above), which should normally
-never happen and is worth alerting on. It receives the actual documents (an unmodifiable list), not just a
-count, as a last chance to save them.
+the library or the one stopping the appender rather than from the application thread logging: they must be
+thread-safe, and return quickly, a stop waiting for its last notifications whatever its budget. A slow
+listener never holds up the application: at most `MaxQueuedEvents` events discarded by a full queue wait to
+be reported, those discarded faster than they are reported being only counted (see `getMetrics()` below) and
+logged. `onDocumentsDropped` deserves the most attention in production — it fires only when documents are
+irrecoverably discarded (see the safety nets above), which should normally never happen and is worth
+alerting on. It receives the actual documents (an unmodifiable list), not just a count, as a last chance to
+save them.
 
 `FileDeadLetterListener` provides a ready-made `onDocumentsDropped` for the most common case: it appends
 every dropped document to a local file, one JSON object per line (newline-delimited JSON), wrapped with the
