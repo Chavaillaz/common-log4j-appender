@@ -2,7 +2,7 @@
 
 ![Quality Gate](https://github.com/chavaillaz/common-log4j-appender/actions/workflows/code-quality.yml/badge.svg)
 ![Dependency Check](https://github.com/chavaillaz/common-log4j-appender/actions/workflows/dependency-check.yml/badge.svg)
-[![Maven Central](https://maven-badges.sml.io/maven-central/com.chavaillaz/common-log4j-appender/badge.svg?subject=Maven%20Central&color=blue)](https://maven-badges.sml.io/maven-central/com.chavaillaz/common-log4j-appender)
+[![Maven Central](https://maven-badges.sml.io/sonatype-central/com.chavaillaz/common-log4j-appender/badge.svg?subject=Maven%20Central&color=blue)](https://maven-badges.sml.io/sonatype-central/com.chavaillaz/common-log4j-appender)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 This library provides the building blocks to create Log4j2 appenders that ship log events to an external
