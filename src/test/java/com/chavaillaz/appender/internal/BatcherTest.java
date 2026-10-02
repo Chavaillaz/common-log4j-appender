@@ -1031,6 +1031,37 @@ class BatcherTest {
         firstClose.join(SECONDS.toMillis(5));
     }
 
+    @Test
+    @DisplayName("Logs an interrupted wait for the close in progress, as the close itself logs one")
+    void testInterruptedWaitForTheFirstCloseIsLogged() throws Exception {
+        // given: a first close waiting for a transmission that never completes
+        var dropped = new CopyOnWriteArrayList<String>();
+        Batcher<String> batcher = batcherNeverAnswering(dropped);
+        batcher.add(List.of("stuck"));
+        var firstClose = new Thread(() -> batcher.close(Duration.ofMillis(500)));
+        firstClose.setDaemon(true);
+        firstClose.start();
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
+        while (batcher.health().status() != DeliveryHealth.Status.DOWN && System.nanoTime() < deadlineNanos) {
+            Thread.sleep(5);
+        }
+
+        // when: closed again meanwhile by an interrupted thread
+        var stillInterrupted = new AtomicBoolean();
+        List<StatusData> statuses = captureStatuses(() -> {
+            Thread.currentThread().interrupt();
+            batcher.close(Duration.ofSeconds(10));
+            stillInterrupted.set(Thread.interrupted());
+        });
+
+        // then: it says it stopped waiting, rather than returning before the first close is over without a word
+        assertThat(stillInterrupted).isTrue();
+        assertThat(statuses)
+                .extracting(StatusData::getFormattedStatus)
+                .anyMatch(status -> status.contains("Interrupted while waiting for the close in progress to complete"));
+        firstClose.join(SECONDS.toMillis(5));
+    }
+
     /**
      * A batcher sending every element on its own to a transport that never answers, reporting the elements it
      * drops to the given list.

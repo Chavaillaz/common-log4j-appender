@@ -1329,6 +1329,7 @@ public class Batcher<T> {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("Interrupted while waiting for the close in progress to complete");
         }
     }
 
@@ -1350,6 +1351,7 @@ public class Batcher<T> {
             dropNotificationPermits.release(MAX_CONCURRENT_DROP_NOTIFICATIONS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("Interrupted while waiting for the listener to return from notifications of dropped {}s", elementNoun);
         }
     }
 
