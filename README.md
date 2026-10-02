@@ -52,7 +52,7 @@ module com.example.appender {
 
 ## How it works
 
-Four types are involved, each to extend or implement, the conversion only to customize the documents:
+Four types are involved; you extend or implement each of them, the conversion only to customize the documents:
 
 | Concept       | Type to extend/implement       | Responsibility                                                                 |
 |---------------|---------------------------------|---------------------------------------------------------------------------------|
@@ -134,16 +134,16 @@ DeliveryOptions options = DeliveryOptions.builder()
 implementation can vary a limit at runtime by returning a different instance — return one held in a
 `volatile` field rather than building a new one on every call. Use
 `options.with().maxPendingDocuments(50_000).build()` to derive one instance from another without restating
-the rest. A few settings are read once all the same, when the appender or its delivery is created:
+the rest. A few settings are read only once, when the appender or its delivery is created:
 `FlushInterval`, `MaxConcurrentTransmissions`, `MaxQueuedEvents`, `RetryBackoff` and `MaxRetryBackoff`.
 
 ### 2. Delivery
 
 Extend `AbstractBatchLogDelivery` and implement `sendBulk(List<Map<String, Object>>)`, returning a
 `CompletableFuture<TransmissionResult<Map<String, Object>>>` completed with the outcome. Each call runs on a
-virtual thread of its own, so the future may be completed synchronously by a blocking client (as below), or
-later from another thread by an asynchronous one. The outcome is handled on a thread of the library, never on
-the one of the client completing the future, whose I/O the listener or a retry therefore never holds up:
+virtual thread of its own, so a blocking client may complete the future before returning (as below), and an
+asynchronous one later, from a thread of its own. The outcome is then handled on a thread of the library, so
+that neither the listener nor a retry holds up the I/O thread of the client:
 
 ```java
 public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
@@ -166,8 +166,8 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 ```
 
 Either way the future must complete: a transmission holds one of the `MaxConcurrentTransmissions` slots until
-it does, and requests never answered, once they hold them all, stall the pipeline until the appender stops,
-its queue discarding the oldest events meanwhile. Give your client a request timeout.
+it does, and once unanswered requests hold them all, the pipeline stalls until the appender stops, its queue
+discarding the oldest events meanwhile. Give your client a request timeout.
 
 Every failed attempt is logged with its cause on Log4j2's status logger (see
 [Shutdown and failure handling](#shutdown-and-failure-handling)), so there is no need to log it again. A
@@ -231,9 +231,9 @@ fields:
 All MDC (context) entries are also added as-is, without overriding any of the fields above should a key
 collide with one of them. To customize this behaviour, extend `DefaultLogConverter` and override the
 relevant `write*` method, or implement `LogConverter` from scratch for full control, then return it from
-`getLogConverter()` of your appender. A converter takes the configuration it needs in its constructor, so that
-none converts before it has it: `LogConverter.newInstance(className, configuration)` creates one a
-configuration names by its class, through its public constructor taking the configuration.
+`getLogConverter()` of your appender. A converter takes the configuration it needs in its constructor:
+`LogConverter.newInstance(className, configuration)` creates the one a configuration names by its class,
+through its public constructor taking the configuration.
 
 A converter reading the location of the caller (`LogEvent.getSource()`) needs the appender to override
 `requiresLocation()` to return `true`. The event is otherwise handed over without it: Log4j2 finds it by
@@ -272,11 +272,11 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 ```
 
 All three have a no-op default; override only what you need. They are called concurrently, from threads of
-the library or the one stopping the appender rather than from the application thread logging: they must be
-thread-safe, and return quickly, a stop waiting for its last notifications whatever its budget. A slow
+the library or the one stopping the appender, never from the application thread logging: they must be
+thread-safe, and return quickly, since a stop waits for its last notifications whatever its budget. A slow
 listener never holds up the application: at most `MaxQueuedEvents` events discarded by a full queue wait to
-be reported, those discarded faster than they are reported being only counted (see `getMetrics()` below) and
-logged. `onDocumentsDropped` deserves the most attention in production — it fires only when documents are
+be reported, and those discarded faster than that are only counted (see `getMetrics()` below) and logged.
+`onDocumentsDropped` deserves the most attention in production — it fires only when documents are
 irrecoverably discarded (see the safety nets above), which should normally never happen and is worth
 alerting on. It receives the actual documents (an unmodifiable list), not just a count, as a last chance to
 save them.
@@ -311,9 +311,9 @@ endpoint or a metrics library, instead of only reacting to listener callbacks:
 - `AbstractLogDeliveryAppender#getHealth()` — a `DeliveryHealth` telling what the pipeline does about its
   last transmission attempt: `UP` once it succeeded, `RETRYING` or `BACKING_OFF` after a failure (documents
   are not necessarily lost yet, being retried at the next opportunity or once the retry backoff elapses),
-  and `DOWN` while the appender is not started, and for good once it started without a delivery, its
-  creation having failed, every event then being discarded. It also tells how long ago documents were last
-  accepted, so that an outage lasting too long is told apart from a single failed attempt.
+  and `DOWN` while the appender is not started, and for good if creating its delivery failed, every event then
+  being discarded. It also tells how long ago documents were last accepted, so that an outage lasting too long
+  is told apart from a single failed attempt.
 - `AbstractLogDeliveryAppender#isBackpressured()` — `true` once the internal queue feeding the background
   thread (bounded by `MaxQueuedEvents`) is full, meaning the very next logging event would evict the oldest
   queued one — an early warning before `onDocumentsDropped` actually fires.
