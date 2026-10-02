@@ -96,12 +96,6 @@ public class Batcher<T> {
     private static final long NO_DEADLINE = Long.MIN_VALUE;
 
     /**
-     * Upper bound of a close timeout, so that converting it to nanoseconds cannot overflow into a deadline
-     * already elapsed. A year is indistinguishable from waiting indefinitely.
-     */
-    private static final long MAX_TIMEOUT_MILLIS = Duration.ofDays(365).toMillis();
-
-    /**
      * How many notifications of {@link #notifyDropped(List, String)} may be in flight at once, the next ones
      * running on the calling thread, so that a slow listener cannot pile them up without bound.
      */
@@ -1264,9 +1258,8 @@ public class Batcher<T> {
      */
     public void close(@Nullable Duration timeout) {
         closed = true;
-        Long timeoutMillis = toMillis(timeout);
-        if (timeoutMillis != null) {
-            closeDeadlineNanos = System.nanoTime() + MILLISECONDS.toNanos(timeoutMillis);
+        if (timeout != null) {
+            closeDeadlineNanos = System.nanoTime() + MILLISECONDS.toNanos(Durations.toMillisWithinYear(timeout));
         }
         try {
             // Forced, this last attempt going out whatever the backoff
@@ -1391,26 +1384,6 @@ public class Batcher<T> {
             return true;
         }
         return false;
-    }
-
-    /**
-     * Converts the given timeout to milliseconds, clamped to {@link #MAX_TIMEOUT_MILLIS} rather than letting
-     * {@link Duration#toMillis()} throw out of a shutdown path. Package-private for a test to pin the clamp,
-     * which no call can be observed telling apart from waiting indefinitely.
-     *
-     * @param timeout The timeout to convert, or {@code null}
-     * @return The timeout in milliseconds (never negative), or {@code null} to wait indefinitely
-     */
-    static @Nullable Long toMillis(@Nullable Duration timeout) {
-        if (timeout == null) {
-            return null;
-        }
-        try {
-            return Math.clamp(timeout.toMillis(), 0, MAX_TIMEOUT_MILLIS);
-        } catch (ArithmeticException e) {
-            // Past one end of the clamp above, the upper one being where null would mean waiting indefinitely
-            return timeout.isNegative() ? 0 : MAX_TIMEOUT_MILLIS;
-        }
     }
 
 }

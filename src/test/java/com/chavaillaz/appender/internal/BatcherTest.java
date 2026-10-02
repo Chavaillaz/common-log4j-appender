@@ -1695,26 +1695,6 @@ class BatcherTest {
     }
 
     @Test
-    @DisplayName("Clamps a close timeout too large to express in milliseconds instead of waiting forever")
-    void testOversizedCloseTimeoutIsClampedRatherThanUnbounded() {
-        // given: a year, the cap past which every timeout is indistinguishable from waiting indefinitely
-        long oneYearMillis = Duration.ofDays(365).toMillis();
-
-        // then: only an absent timeout means "wait indefinitely"
-        assertThat(Batcher.toMillis(null)).isNull();
-        assertThat(Batcher.toMillis(Duration.ofSeconds(-1))).isZero();
-        assertThat(Batcher.toMillis(Duration.ofSeconds(1))).isEqualTo(1_000L);
-        assertThat(Batcher.toMillis(Duration.ofDays(1_000))).isEqualTo(oneYearMillis);
-
-        // and: a duration too large for Duration#toMillis() to express at all is past that cap too, rather
-        // than the one value that leaves close() with no deadline in effect and therefore never times out
-        assertThat(Batcher.toMillis(Duration.ofSeconds(Long.MAX_VALUE))).isEqualTo(oneYearMillis);
-
-        // and: one as far below zero does not wait at all, as any negative timeout
-        assertThat(Batcher.toMillis(Duration.ofSeconds(Long.MIN_VALUE))).isZero();
-    }
-
-    @Test
     @DisplayName("Reports its own diagnostics on Log4j2's status channel, not through an application logger")
     void testDiagnosticsGoToTheStatusLoggerNotTheApplicationPipeline() throws Exception {
         // given: an appender built on this engine is normally attached to the root logger, so anything this

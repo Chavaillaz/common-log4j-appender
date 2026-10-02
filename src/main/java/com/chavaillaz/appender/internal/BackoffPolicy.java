@@ -40,8 +40,8 @@ public interface BackoffPolicy {
      * @return An exponential backoff policy with full jitter
      */
     static BackoffPolicy exponential(@Nullable Duration initial, @Nullable Duration max) {
-        long initialMillis = toMillis(initial);
-        long maxMillis = toMillis(max);
+        long initialMillis = initial != null ? Durations.toMillisWithinYear(initial) : 0;
+        long maxMillis = max != null ? Durations.toMillisWithinYear(max) : 0;
         if (initialMillis <= 0) {
             return none();
         }
@@ -55,27 +55,6 @@ public interface BackoffPolicy {
                     : cappedMaxMillis;
             return ThreadLocalRandom.current().nextLong(ceiling + 1);
         };
-    }
-
-    /**
-     * Converts the given duration to milliseconds, clamped to a year so that neither
-     * {@link Duration#toMillis()} nor the {@code ceiling + 1} bound above can overflow. A year of backoff is
-     * already indistinguishable from never retrying.
-     *
-     * @param duration The duration to convert, or {@code null} for none
-     * @return The duration in milliseconds, never negative
-     */
-    private static long toMillis(@Nullable Duration duration) {
-        long maxMillis = Duration.ofDays(365).toMillis();
-        if (duration == null) {
-            return 0L;
-        }
-        try {
-            return Math.clamp(duration.toMillis(), 0L, maxMillis);
-        } catch (ArithmeticException e) {
-            // Too large to be expressed in milliseconds, so past one end of the clamp above
-            return duration.isNegative() ? 0L : maxMillis;
-        }
     }
 
     /**
