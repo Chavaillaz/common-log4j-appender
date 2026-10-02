@@ -394,11 +394,11 @@ to split it further.
   milliseconds) of the root `<Configuration>` element of your Log4j2 configuration or, while it is left at
   its default of `0` (also what a reconfiguration passes), `CloseTimeout`. The delivery is closed within
   what the accepted logs left of it, so a downstream system that accepts a connection and then never
-  answers can't hold up the JVM past that budget. Anything still pending once it is spent — a failing final
-  transmission's documents, or documents a stuck transmission never gave back — is reported through
-  `onDocumentsDropped` rather than discarded along with the appender, so a dead-letter sink still gets its
-  last chance at them. A transmission answering after that may still deliver its documents, which a
-  dead-letter sink then holds as well.
+  answers can't hold up the JVM past that budget. Anything still pending once it is spent — events still
+  queued or waiting to be reported, a failing final transmission's documents, or documents a stuck
+  transmission never gave back — is reported through `onDocumentsDropped` rather than discarded along with
+  the appender, so a dead-letter sink still gets its last chance at them. A transmission answering after that
+  may still deliver its documents, which a dead-letter sink then holds as well.
 - **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
   the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected

@@ -1817,6 +1817,54 @@ class AbstractLogDeliveryAppenderTest {
             assertThat(dropped.stream().map(d -> d.get("logmessage")).toList()).containsExactly("queued-1", "queued-2");
         }
 
+        @Test
+        @DisplayName("Reports the discards still waiting for a slow listener before it returns, once its budget is spent")
+        void testStopReportsTheDiscardsStillWaitingForTheListener() throws Exception {
+            // given: a one-slot queue behind a blocked worker, and a listener still busy with the first discard
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
+            var releaseListener = new CountDownLatch(1);
+            var listenerCalled = new CountDownLatch(1);
+            var firstCall = new AtomicBoolean(true);
+            var reported = new CopyOnWriteArrayList<Object>();
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    if (firstCall.getAndSet(false)) {
+                        listenerCalled.countDown();
+                        try {
+                            releaseListener.await(5, SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    documents.forEach(document -> reported.add(document.get("logmessage")));
+                }
+            });
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+            appender.append(realLogEvent("C")); // evicts B, which the listener then holds on to
+            assertThat(listenerCalled.await(5, SECONDS)).as("The listener should have been told about B").isTrue();
+            appender.append(realLogEvent("D")); // evicts C, waiting for the listener
+
+            // when: stopped within a budget the blocked worker spends
+            appender.stop(200, MILLISECONDS);
+
+            // then: C was reported before the stop returned, rather than left to a thread the JVM exiting cuts
+            // short, along with D, abandoned in the queue
+            assertThat(reported).containsExactlyInAnyOrder("C", "D");
+
+            // cleanup
+            releaseListener.countDown();
+            releaseTask.countDown();
+        }
+
     }
 
     @Nested

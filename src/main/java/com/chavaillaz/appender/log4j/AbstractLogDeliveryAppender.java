@@ -723,9 +723,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Stops accepting new logging events, waits for already-accepted ones to be processed and for discarded ones
      * to be reported, then flushes and closes the delivery handler, so logs accepted just before shutdown are
-     * not lost. Each step shares one budget, getting what the steps before it left. Once that budget is spent
-     * on the accepted events, or the wait for them interrupted, the task running is interrupted and the events
-     * still queued are reported as dropped.
+     * not lost. Each step shares one budget, getting what the steps before it left. Once it is spent, or a wait
+     * interrupted, nothing is waited for any longer: the task running is interrupted, and the events still
+     * queued or still waiting to be reported are reported as dropped on the calling thread.
      *
      * @param timeout  The maximum time the whole stop may take, or {@code 0} or less for
      *                 {@link DeliveryOptions#closeTimeout()} instead: Log4j2 passes {@code 0} when its
@@ -814,8 +814,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Stops the reporter of the discarded events once it reported those still waiting, a report running past
-     * the given time finishing on its own.
+     * Stops the reporter of the discarded events once it reported those still waiting. Past the given time, or
+     * once interrupted, those it has not taken yet are reported on the calling thread instead, as the events
+     * still queued are, rather than left to a thread the JVM exiting would cut short.
      *
      * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
      */
@@ -823,12 +824,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         discardReporter.shutdown();
         try {
             long timeoutNanos = timeout == null ? Long.MAX_VALUE : timeout.toNanos();
-            if (!discardReporter.awaitTermination(timeoutNanos, NANOSECONDS)) {
-                error("Discarded logging events were still being reported to the delivery listener as the appender stopped");
+            if (discardReporter.awaitTermination(timeoutNanos, NANOSECONDS)) {
+                return;
             }
+            error("The delivery listener was still being notified of discarded logging events as the appender stopped");
         } catch (InterruptedException e) {
             currentThread().interrupt();
         }
+        // The report in progress finishes on its own, the listener being notified of the rest concurrently
+        reportPendingDiscards();
     }
 
     /**
