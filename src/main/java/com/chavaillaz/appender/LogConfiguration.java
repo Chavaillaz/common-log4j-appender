@@ -7,10 +7,9 @@ package com.chavaillaz.appender;
  * The three fields below are what only the application can answer and what ends up in every document, where
  * {@link DeliveryOptions} is pipeline tuning meaning the same for every appender built on this library.
  * <p>
- * Read repeatedly from background threads without any synchronization: an implementation is expected to be
- * immutable (a {@code record}, or a class built once through a builder), as the {@code @PluginBuilderFactory}
- * pattern of Log4j2 produces, mutable fields on the builder and an immutable object out of its {@code build()},
- * or else to hold what it varies at runtime, such as its delivery options, in {@code volatile} fields.
+ * Read repeatedly from background threads without synchronization: an implementation is expected to be
+ * immutable, as the {@code build()} of a Log4j2 {@code @PluginBuilderFactory} builder produces it, or else to
+ * hold what it varies at runtime, such as its delivery options, in {@code volatile} fields.
  */
 public interface LogConfiguration {
 

@@ -172,9 +172,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private volatile @Nullable LogDelivery logDeliveryHandler;
 
     /**
-     * The converter {@link #getLogConverter()} returns by default, which also converts every event discarded,
-     * so that it can still be reported whatever converter a subclass returns, one failing on it included: this
-     * one is known to be safe to call from the thread reporting it as well.
+     * The converter {@link #getLogConverter()} returns by default, which also converts every discarded event to
+     * report it, whatever converter a subclass returns, one that failed on it included: this one is known to be
+     * safe to call from the thread reporting it.
      */
     private final DefaultLogConverter defaultConverter;
 
@@ -471,9 +471,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Snapshots the event on the calling thread, Log4j2 being free to reuse (mutate) it once
      * {@link #append(LogEvent)} returns.
      * <p>
-     * Its thread is read first: the {@code Log4jLogEvent} Log4j2 creates whenever its thread-locals are off (by
-     * default, whenever the Servlet API is on the classpath) resolves it from whichever thread asks first, which
-     * its {@code toImmutable()} leaves to the worker before Log4j2 2.25.
+     * Its thread is read first: the {@code Log4jLogEvent} that Log4j2 creates while its thread-locals are off (by
+     * default, whenever the Servlet API is on the classpath) resolves its thread from whichever thread asks
+     * first, which before Log4j2 2.25 its {@code toImmutable()} leaves to the worker.
      * <p>
      * The caller location is left out unless {@link #requiresLocation()}: a synchronous logger includes it by
      * default, and {@code toImmutable()} finds it by walking the stack, twenty times what the rest of

@@ -49,8 +49,8 @@ final class CompositeLogDeliveryListener implements LogDeliveryListener {
 
     /**
      * Notifies every listener, one failing not keeping the next ones from being notified. The first failure is
-     * thrown again once all were, as the one of a single listener would be, and a later one logged: added to
-     * the first as suppressed, it would grow an exception a listener throws again on every call.
+     * thrown once all were, as a single listener's would be, and the later ones logged: added to it as
+     * suppressed, they would keep growing an exception a listener throws again on every call.
      *
      * @param notification The call to make on each listener
      */

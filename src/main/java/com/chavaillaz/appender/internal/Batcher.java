@@ -835,9 +835,9 @@ public class Batcher<T> {
      * Counts dropped elements, and notifies {@link #listener} of them on a virtual thread, so that a slow
      * listener does not stall {@link #add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS}
      * run at once: past that, or once no thread starts, the executor being shut down for instance, the
-     * notification runs on the calling thread, so that a slow listener cannot pile notifications, and the
-     * elements they hold, up without bound under the very overload causing them. Waited for by
-     * {@link #close(Duration)}, not by {@link #awaitPendingTransmissions()}.
+     * notification runs on the calling thread, so that a slow listener cannot pile up notifications, and the
+     * elements they hold, under the very overload causing them. Waited for by {@link #close(Duration)}, not by
+     * {@link #awaitPendingTransmissions()}.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded

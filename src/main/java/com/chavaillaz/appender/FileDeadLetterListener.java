@@ -40,11 +40,11 @@ import org.apache.logging.log4j.status.StatusLogger;
  * deleted one day at a time.
  * <p>
  * Each line wraps the document, unmodified, with the reason it was dropped and when:
- * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Lines are appended whole, so that neither
- * concurrent callers nor other listeners or processes appending to the same file interleave within one, a line
- * left incomplete by a write cut short (a crash, a full disk) is ended before the next one is appended, and a
- * failure to write passes the documents it left out to {@link #onWriteFailure(Path, List, String, IOException)},
- * logged by default, rather than throwing into the pipeline.
+ * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Lines are appended whole, never interleaved with
+ * those of concurrent callers, nor of other listeners or processes appending to the same file, and a line left
+ * incomplete by a write cut short (a crash, a full disk) is ended before the next one. A failure to write hands
+ * the documents it left out to {@link #onWriteFailure(Path, List, String, IOException)}, which logs them by
+ * default, rather than throwing into the pipeline.
  * <p>
  * The JSON is written without any dependency: {@code null}, {@link Boolean}, {@link Number}, {@link Map},
  * {@link Iterable} and array values as their JSON counterpart, the latter three recursively and keys in their
@@ -238,9 +238,9 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Appends, in a single write, the given lines from the given one on, each followed by a line separator, as
-     * many as fit in {@link #MAX_WRITE_BYTES}, and that one at least however long: on a local file system, a
-     * write to a file opened for appending lands at its end in one piece, so that another listener or process
+     * Appends in a single write, each followed by a line separator, as many of the given lines as fit in
+     * {@link #MAX_WRITE_BYTES}, starting from the given one, which goes in however long: on a local file system,
+     * a write to a file opened for appending lands at its end in one piece, so that another listener or process
      * appending to the same file puts its lines between these, never inside one.
      *
      * @param out   The file to append to
