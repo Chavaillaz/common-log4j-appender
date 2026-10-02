@@ -1711,6 +1711,41 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Reports an event appended once stopped as rejected, without formatting its message")
+        void testAppendAfterStopIsReportedAsRejectedWhateverItsMessage() throws Exception {
+            // given: an event whose message fails to format, which the rejection used to format while describing
+            // the task, the failure then passing for one of creating it
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
+            appender.setHandler(recordingErrorHandler(new CopyOnWriteArrayList<>()));
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            LogDeliveryListener listener = new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    droppedReasons.add(reason);
+                }
+            };
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+            var message = mock(Message.class);
+            when(message.getFormattedMessage()).thenThrow(new IllegalStateException("cannot format"));
+            var loggingEvent = Log4jLogEvent.newBuilder()
+                    .setMessage(message)
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .build();
+            appender.start();
+            appender.stop(1, SECONDS);
+
+            // when
+            appender.append(loggingEvent);
+
+            // then: reported for what happened to it, right away since nothing is left to report it later
+            assertThat(droppedReasons).containsExactly("internal queue capacity exceeded, or the appender is stopping");
+        }
+
+        @Test
         @DisplayName("Attempts to interrupt a still-running task once the shutdown timeout elapses")
         void testStopInterruptsStuckTaskAfterTimeout() throws Exception {
             // given: a delivery task that blocks forever unless interrupted, and a stop() timeout short

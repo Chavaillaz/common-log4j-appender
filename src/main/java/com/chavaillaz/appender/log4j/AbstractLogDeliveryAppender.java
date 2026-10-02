@@ -106,8 +106,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         @Override
         public void rejectedExecution(Runnable task, ThreadPoolExecutor executor) {
-            if (executor.isShutdown() || !(task instanceof EventTask newTask)) {
-                throw new RejectedExecutionException("Task " + task + " rejected from " + executor);
+            // Rejected without describing the task, whose event would format its message, application code
+            if (executor.isShutdown()) {
+                throw new RejectedExecutionException("The appender is stopping");
+            }
+            if (!(task instanceof EventTask newTask)) {
+                throw new RejectedExecutionException("The queue is full");
             }
 
             // Retried first, the worker having possibly taken an event since the offer that failed
@@ -134,7 +138,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             // Checked again once queued, as ThreadPoolExecutor.execute() does: shut down since the check above,
             // the executor may have no worker left to run it, nor anything left to report it
             if (executor.isShutdown() && executor.remove(newTask)) {
-                throw new RejectedExecutionException("Task " + task + " rejected from " + executor);
+                throw new RejectedExecutionException("The appender is stopping");
             }
         }
 
