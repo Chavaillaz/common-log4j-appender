@@ -178,8 +178,8 @@ class BatcherFuzzTest {
         stillPending.removeAll(realAccepted);
 
         // Corrupt the reported rejected list with noise a well-behaved transport would never produce: a
-        // duplicate reference and/or a foreign element, occasionally pushing its size past the chunk's own
-        // - exactly the shape that used to crash withoutIdentity()'s capacity calculation.
+        // duplicate reference and/or a foreign element, occasionally pushing its size past the chunk's own,
+        // the shape that once crashed the split of a chunk into its accepted and rejected elements
         List<Elem> reported = new ArrayList<>(realRejected);
         if (random.nextBoolean()) {
             reported.add(realRejected.get(random.nextInt(realRejected.size())));

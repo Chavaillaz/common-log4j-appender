@@ -115,7 +115,7 @@ public class Batcher<T> {
 
     /**
      * The most bytes one element counts for: more than a request can carry, a Java array holding at most 2 GiB,
-     * and little enough that the size of a batch holding as many elements as a collection can never overflows.
+     * and little enough that the size of a batch holding as many elements as a collection can never overflow.
      */
     private static final long MAX_ELEMENT_BYTES = Integer.MAX_VALUE;
 
