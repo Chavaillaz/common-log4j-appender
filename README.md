@@ -270,7 +270,8 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 ```
 
 All three have a no-op default; override only what you need. They are called concurrently, from threads of
-the library rather than the application thread logging, and must be thread-safe. A slow listener therefore
+the library or the one stopping the appender rather than the application thread logging, and must be
+thread-safe, a stop waiting for its last notifications whatever its budget. A slow listener therefore
 never holds up the application: at most `MaxQueuedEvents` events discarded by a full queue wait to be reported,
 those past it, discarded faster than they are reported, being only counted (see `getMetrics()` below) and
 logged. `onDocumentsDropped` deserves the most attention in production — it
