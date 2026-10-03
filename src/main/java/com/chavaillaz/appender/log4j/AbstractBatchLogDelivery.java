@@ -237,7 +237,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * Defaults to {@link DocumentSizeEstimator#estimate(Map)}, a compact JSON approximation. Override it when
      * the encoding differs enough to matter: an Elasticsearch bulk body adds an action line per document, and a
      * compressed or binary transport is smaller. Expected to be cheap and free of side effects, being called
-     * for every document on the way in, and again when a batch is split for transmission.
+     * for every document on the way in, and again when a batch is split, trimmed or put back after a failure.
      *
      * @param document The document to measure
      * @return The estimated size of the document in bytes

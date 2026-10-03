@@ -62,7 +62,8 @@ import com.chavaillaz.appender.TransmissionResult;
  * The pending batch, with the failure streaks of its elements and the trims bounding it, is a
  * {@link PendingBatch} guarded by a lock: this class decides when it is due, and handles its transmissions,
  * their results and the close. The listener is notified through a {@link ListenerNotifier}, so that none of
- * its calls can throw into the engine, nor a slow one hold up {@link #add(List)}.
+ * its calls can throw into the engine, and the drops {@link #add(List)} causes are reported off its thread,
+ * up to a bound past which a slow listener holds it up.
  * <p>
  * Instances are created through {@link #builder()}, every setting but the transport function having a usable
  * default.
@@ -374,7 +375,7 @@ public class Batcher<T> {
          * Unset by default, measuring costing something for every element: set it along with one of them.
          * <p>
          * Expected to be cheap and free of side effects, being called for every element on the way in, and
-         * again when a batch is split for transmission. A negative result counts as zero, and so does one
+         * again when a batch is split, trimmed or put back. A negative result counts as zero, and so does one
          * throwing, which is logged, so that a faulty measurement only makes the limits less accurate. A result
          * past 2 GiB counts as 2 GiB, more than any request carries.
          *
