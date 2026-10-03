@@ -1546,6 +1546,23 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Closes a delivery implementing only close() when stopped, through the default close(Duration)")
+        void testStopClosesADeliveryImplementingOnlyClose() {
+            // given: a delivery implementing only what LogDelivery requires, holding an event
+            var appender = new MinimalLogDeliveryAppender("appender-name", null, TestLogConfiguration.builder().build());
+            appender.start();
+            appender.append(realLogEvent("before the stop"));
+
+            // when
+            appender.stop(2, SECONDS);
+
+            // then: the event sent as converted by default, and the resources of the delivery released once
+            assertThat(appender.getSent()).singleElement()
+                    .satisfies(document -> assertThat(document).containsEntry("logmessage", "before the stop"));
+            assertThat(appender.getCloseCount()).hasValue(1);
+        }
+
+        @Test
         @DisplayName("Waits for pending tasks when Log4j2 leaves the timeout to the appender")
         void testStopWithDefaultTimeoutWaitsForPendingTasks() throws Exception {
             // given: the same slow tasks, stopped with 0, which Log4j2 passes when its shutdownTimeout is
@@ -2336,6 +2353,23 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(2, SECONDS);
         }
 
+        @Test
+        @DisplayName("getHealth() and getMetrics() take the defaults of a delivery tracking neither")
+        void testHealthAndMetricsOfADeliveryTrackingNeither() {
+            // given: a delivery implementing only what LogDelivery requires
+            var appender = new MinimalLogDeliveryAppender("appender-name", null, TestLogConfiguration.builder().build());
+
+            // when
+            appender.start();
+
+            // then: up, as if its last transmission had just succeeded, with nothing counted
+            assertThat(appender.getHealth()).isEqualTo(new DeliveryHealth(DeliveryHealth.Status.UP, Duration.ZERO));
+            assertThat(appender.getMetrics()).isEqualTo(DeliveryMetrics.NONE);
+
+            // cleanup
+            appender.stop(2, SECONDS);
+        }
+
     }
 
     @Nested
@@ -2471,6 +2505,51 @@ class AbstractLogDeliveryAppenderTest {
         @Override
         protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> countTaskExecuted.incrementAndGet();
+        }
+
+    }
+
+    /**
+     * An appender whose delivery implements only what {@link LogDelivery} requires, leaving its listener, health,
+     * metrics and bounded close to the defaults, as a delivery not extending {@link AbstractBatchLogDelivery} may.
+     */
+    @Getter
+    static class MinimalLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        List<Map<String, Object>> sent = new CopyOnWriteArrayList<>();
+        AtomicInteger closeCount = new AtomicInteger();
+
+        protected MinimalLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
+            super(name, filter, configuration);
+        }
+
+        @Override
+        protected LogDelivery createLogDeliveryHandler() {
+            return new LogDelivery() {
+                @Override
+                public void send(@Nullable Map<String, Object> document) {
+                    if (document != null) {
+                        sent.add(document);
+                    }
+                }
+
+                @Override
+                public void send(@Nullable List<@Nullable Map<String, Object>> documents) {
+                    if (documents != null) {
+                        documents.forEach(this::send);
+                    }
+                }
+
+                @Override
+                public void flush() {
+                    // Nothing batched
+                }
+
+                @Override
+                public void close() {
+                    closeCount.incrementAndGet();
+                }
+            };
         }
 
     }
