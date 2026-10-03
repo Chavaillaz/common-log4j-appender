@@ -439,9 +439,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * {@inheritDoc}
      * <p>
-     * Never blocks nor fails the calling thread: the event is snapshotted and queued for the background
-     * thread, and a failure is reported through the {@code ErrorHandler} of this appender, and through the
-     * listener of the delivery when it loses the event, rather than thrown.
+     * Never fails the calling thread, nor blocks it while the appender runs: the event is snapshotted and queued
+     * for the background thread, and a failure is reported through the {@code ErrorHandler} of this appender,
+     * and through the listener of the delivery when it loses the event, rather than thrown. An event appended
+     * once the appender stopped, which Log4j2 still allows, is reported to that listener on the calling thread,
+     * no other thread being left to do it.
      *
      * @param loggingEvent The logging event to append
      */

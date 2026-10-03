@@ -11,8 +11,9 @@ import org.jspecify.annotations.Nullable;
  * events to a metrics library. Every method has a no-op default; override only the ones you need.
  * <p>
  * Methods are called concurrently, from the threads transmitting, the background threads of the appender and
- * the thread stopping it, never from a thread while it logs: an implementation must be thread-safe, and return
- * quickly, since a stop waits for its last notifications whatever its budget.
+ * the thread stopping it, and from a thread logging only for an event it logs once the appender stopped, no
+ * other thread being left to report it: an implementation must be thread-safe, and return quickly, since a
+ * stop waits for its last notifications whatever its budget.
  * <p>
  * An implementation logging what it observes uses {@code StatusLogger.getLogger()}, as this library does: an
  * ordinary logger feeds each message back to the appender as one more document, whose failure logs again, in

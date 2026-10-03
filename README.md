@@ -272,14 +272,14 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 ```
 
 All three have a no-op default; override only what you need. They are called concurrently, from threads of
-the library or the one stopping the appender, never from the application thread logging: they must be
-thread-safe, and return quickly, since a stop waits for its last notifications whatever its budget. A slow
-listener never holds up the application: at most `MaxQueuedEvents` events discarded by a full queue wait to
-be reported, and those discarded faster than that are only counted (see `getMetrics()` below) and logged.
-`onDocumentsDropped` deserves the most attention in production — it fires only when documents are
-irrecoverably discarded (see the safety nets above), which should normally never happen and is worth
-alerting on. It receives the actual documents (an unmodifiable list), not just a count, as a last chance to
-save them.
+the library or the one stopping the appender, and from an application thread only for an event it logs once
+the appender stopped, no other thread being left to report it: they must be thread-safe, and return quickly,
+since a stop waits for its last notifications whatever its budget. A slow listener never holds up the
+application: at most `MaxQueuedEvents` events discarded by a full queue wait to be reported, and those
+discarded faster than that are only counted (see `getMetrics()` below) and logged. `onDocumentsDropped`
+deserves the most attention in production — it fires only when documents are irrecoverably discarded (see
+the safety nets above), which should normally never happen and is worth alerting on. It receives the actual
+documents (an unmodifiable list), not just a count, as a last chance to save them.
 
 Log what a listener observes through `StatusLogger.getLogger()`, as the library does (see
 [Shutdown and failure handling](#shutdown-and-failure-handling)), never through an ordinary logger: its
