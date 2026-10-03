@@ -2,8 +2,11 @@ package com.chavaillaz.appender;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
+import java.io.IOException;
+import java.lang.reflect.UndeclaredThrowableException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -57,6 +60,38 @@ class LogDeliveryListenerTest {
     }
 
     @Test
+    @DisplayName("Throws an Error of a listener as it is, once the next ones were notified")
+    void testFailingListenerErrorIsThrownAsItIs() {
+        // given: a listener overflowing the stack, serializing a document containing itself for instance
+        var calls = new CopyOnWriteArrayList<String>();
+        var failure = new StackOverflowError();
+        var composed = LogDeliveryListener.compose(new Failing(failure), new Recording("sink", calls));
+
+        // when
+        var thrown = catchThrowable(() -> composed.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
+
+        // then
+        assertThat(calls).containsExactly("sink dropped 1");
+        assertThat(thrown).isSameAs(failure);
+    }
+
+    @Test
+    @DisplayName("Wraps a checked exception a listener sneaks past the compiler, once the next ones were notified")
+    void testFailingListenerCheckedExceptionIsWrapped() {
+        // given: a listener throwing a checked exception none of its methods declares
+        var calls = new CopyOnWriteArrayList<String>();
+        var failure = new IOException("disk full");
+        var composed = LogDeliveryListener.compose(new Failing(failure), new Recording("sink", calls));
+
+        // when
+        var thrown = catchThrowable(() -> composed.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
+
+        // then: the caller gets an unchecked exception, as a proxy throws, the failure being its cause
+        assertThat(calls).containsExactly("sink dropped 1");
+        assertThat(thrown).isInstanceOf(UndeclaredThrowableException.class).cause().isSameAs(failure);
+    }
+
+    @Test
     @DisplayName("Composes no listener into the no-op one, and a single listener into itself")
     void testComposingNoneOrOneListener() {
         var listener = new Recording("only", new CopyOnWriteArrayList<>());
@@ -96,13 +131,18 @@ class LogDeliveryListenerTest {
     }
 
     /**
-     * Fails every call it gets with the same exception.
+     * Fails every call it gets with the same failure, a checked exception included, thrown without being declared.
      */
-    private record Failing(RuntimeException failure) implements LogDeliveryListener {
+    private record Failing(Throwable failure) implements LogDeliveryListener {
 
         @Override
         public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
-            throw failure;
+            Failing.<RuntimeException>sneakyThrow(failure);
+        }
+
+        @SuppressWarnings("unchecked")
+        private static <E extends Throwable> void sneakyThrow(Throwable failure) throws E {
+            throw (E) failure;
         }
 
     }
