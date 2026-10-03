@@ -1578,6 +1578,50 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Waits without bound when Log4j2 leaves the timeout to an appender whose CloseTimeout is unset")
+        void testStopWithoutAnyTimeoutWaitsWithoutBound() throws Exception {
+            // given: slow tasks queued right before stopping, and no CloseTimeout to bound the stop
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .closeTimeout(null).build();
+            var events = new CopyOnWriteArrayList<String>();
+            var appender = new RecordingLogDeliveryAppender("appender-name", null, configuration, events, 50);
+
+            // when
+            appender.start();
+            for (int i = 0; i < 5; i++) {
+                appender.append(mockLogEvent());
+            }
+            appender.stop(0, MILLISECONDS);
+
+            // then: every queued event was processed, and the delivery closed without a timeout either
+            assertThat(events.stream().filter("send"::equals).count()).isEqualTo(5);
+            assertThat(appender.getCloseTimeouts()).singleElement().isNull();
+        }
+
+        @Test
+        @DisplayName("Falls back to the close timeout it was built with when the current one cannot be read")
+        void testStopFallsBackToTheCloseTimeoutItWasBuiltWith() throws Exception {
+            // given: a CloseTimeout of a second, whose delivery options fail to resolve by the time it stops
+            var configuration = new FlakyOptionsConfiguration();
+            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            appender.start();
+            configuration.broken.set(true);
+
+            // when: Log4j2 leaves the timeout to the appender
+            assertThatNoException().isThrownBy(() -> appender.stop(0, MILLISECONDS));
+
+            // then: the failure is reported, and the delivery closed within that second rather than without bound
+            assertThat(errors).anyMatch(IllegalStateException.class::isInstance);
+            verify(appender.getLogDeliveryHandler()).close(argThat((Duration timeout) ->
+                    timeout != null && !timeout.isNegative() && timeout.compareTo(Duration.ofSeconds(1)) <= 0));
+            assertThat(appender.isStopped()).isTrue();
+        }
+
+        @Test
         @DisplayName("Never keeps the JVM alive on its own once the application is done")
         void testBackgroundThreadsDoNotKeepTheJvmAlive() throws Exception {
             // given: batching enabled, so start() also creates the periodic flush scheduler, and a worker
