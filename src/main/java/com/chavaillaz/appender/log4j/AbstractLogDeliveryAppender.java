@@ -204,6 +204,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final AtomicBoolean discardReportQueued = new AtomicBoolean();
 
     /**
+     * Whether {@link #discardReporter} is running a report, so that a stop giving up on it can tell a listener
+     * still being notified from a reporter merely idle, whose thread has yet to end.
+     */
+    private volatile boolean discardReportRunning;
+
+    /**
      * Whether a periodic flush is waiting for the background thread, which runs it after the event it is
      * processing, or on its own when idle: a flush needing a slot of its own in a full queue would wait for as
      * long as the application keeps logging faster than the delivery keeps up.
@@ -552,12 +558,25 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         }
         if (discardReportQueued.compareAndSet(false, true)) {
             try {
-                discardReporter.execute(this::reportPendingDiscards);
+                discardReporter.execute(this::runDiscardReport);
             } catch (Throwable e) {
                 // Throwable: a report never queued would leave the flag raised, and every later discard waiting
                 discardReportQueued.set(false);
                 reportPendingDiscards();
             }
+        }
+    }
+
+    /**
+     * Reports the events waiting in {@link #pendingDiscards} from {@link #discardReporter}, flagged as
+     * {@link #discardReportRunning} meanwhile.
+     */
+    private void runDiscardReport() {
+        discardReportRunning = true;
+        try {
+            reportPendingDiscards();
+        } finally {
+            discardReportRunning = false;
         }
     }
 
@@ -833,7 +852,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             if (discardReporter.awaitTermination(timeoutNanos, NANOSECONDS)) {
                 return;
             }
-            error("The delivery listener was still being notified of discarded logging events as the appender stopped");
+            if (discardReportRunning) {
+                // Otherwise idle, its thread yet to end, which a spent budget does not wait for
+                error("The delivery listener was still being notified of discarded logging events as the appender stopped");
+            }
         } catch (InterruptedException e) {
             currentThread().interrupt();
         }

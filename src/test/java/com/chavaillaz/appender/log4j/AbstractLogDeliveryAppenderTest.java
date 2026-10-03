@@ -68,6 +68,12 @@ import com.chavaillaz.appender.TransmissionResult;
 @DisplayName("AbstractLogDeliveryAppender")
 class AbstractLogDeliveryAppenderTest {
 
+    /**
+     * What a stop giving up on the reporter of discarded events reports while the listener is still busy.
+     */
+    private static final String LISTENER_STILL_NOTIFIED =
+            "The delivery listener was still being notified of discarded logging events as the appender stopped";
+
     private LogEvent mockLogEvent() {
         var logEvent = mock(LogEvent.class);
         when(logEvent.toImmutable()).thenReturn(logEvent);
@@ -1980,6 +1986,8 @@ class AbstractLogDeliveryAppenderTest {
                     documents.forEach(document -> reported.add(document.get("logmessage")));
                 }
             });
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
             appender.start();
             appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
             awaitEmptyQueue(appender);
@@ -1992,11 +2000,50 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(200, MILLISECONDS);
 
             // then: C was reported before the stop returned, rather than left to a thread the JVM exiting cuts
-            // short, along with D, abandoned in the queue
+            // short, along with D, abandoned in the queue, and the listener still busy was reported too
             assertThat(reported).containsExactlyInAnyOrder("C", "D");
+            assertThat(errors).extracting(Throwable::getMessage).contains(LISTENER_STILL_NOTIFIED);
 
             // cleanup
             releaseListener.countDown();
+            releaseTask.countDown();
+        }
+
+        @Test
+        @DisplayName("Never reports the listener as still notified once its budget is spent, when it returned already")
+        void testStopSpendingItsBudgetLeavesAnIdleReporterUnreported() throws Exception {
+            // given: a one-slot queue behind a blocked worker, and a listener returning at once from a discard
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseTask = new CountDownLatch(1);
+            var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                }
+            });
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+            appender.append(realLogEvent("C")); // evicts B, which the listener is told about right away
+            awaitSize(dropped, 1);
+
+            // when: stopped within a budget the blocked worker spends, leaving none to the idle reporter
+            appender.stop(200, MILLISECONDS);
+
+            // then: the worker is reported, not a listener that returned long before
+            assertThat(errors).extracting(Throwable::getMessage)
+                    .contains("Log delivery thread pool did not terminate within PT0.2S, some logs may be lost")
+                    .doesNotContain(LISTENER_STILL_NOTIFIED);
+
+            // cleanup
             releaseTask.countDown();
         }
 
