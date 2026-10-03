@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -24,6 +25,7 @@ import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.status.StatusData;
 import org.apache.logging.log4j.status.StatusListener;
 import org.apache.logging.log4j.status.StatusLogger;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -1455,6 +1457,77 @@ class BatcherTest {
         // then: the Error was treated as an ordinary failure, so "a" was put back and went out with "b"
         assertThat(attempts.get()).isEqualTo(2);
         assertThat(transmitted).containsExactly(List.of("a", "b"));
+    }
+
+    @Test
+    @DisplayName("Retries the elements of a transport returning no future, as a failure without cause")
+    void testTransportReturningNoFutureIsAFailure() throws Exception {
+        assertRetriedAfterFailureWithoutCause(null);
+    }
+
+    @Test
+    @DisplayName("Retries the elements of a future completed without result, as a failure without cause")
+    void testFutureCompletedWithoutResultIsAFailure() throws Exception {
+        assertRetriedAfterFailureWithoutCause(completedFuture(null));
+    }
+
+    /**
+     * Checks that a first attempt answered with the given future is reported as a failure without cause, and
+     * that its element is retried with the next one.
+     */
+    private static void assertRetriedAfterFailureWithoutCause(
+            @Nullable CompletableFuture<TransmissionResult<String>> firstAnswer) throws Exception {
+        // given: a transport answering its first request with the given future, and the next ones with a success
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        var failures = new CopyOnWriteArrayList<Optional<Throwable>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return transmitted.size() == 1 ? firstAnswer : completedFuture(TransmissionResult.success());
+                })
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onFailed(int count, @Nullable Throwable cause) {
+                        failures.add(Optional.ofNullable(cause));
+                    }
+                })
+                .build();
+
+        // when
+        batcher.add(List.of("a"));
+        batcher.awaitPendingTransmissions();
+        DeliveryHealth.Status afterFirstAttempt = batcher.health().status();
+        batcher.add(List.of("b"));
+        batcher.awaitPendingTransmissions();
+
+        // then: a failure, as the transport contract says, rather than a success losing "a"
+        assertThat(failures).containsExactly(Optional.empty());
+        assertThat(afterFirstAttempt).isEqualTo(DeliveryHealth.Status.RETRYING);
+        assertThat(transmitted).containsExactly(List.of("a"), List.of("a", "b"));
+    }
+
+    @Test
+    @DisplayName("Reports the cause of a failure a future derived by the transport wraps, rather than its wrapper")
+    void testWrappedFailureIsReportedWithItsCause() throws Exception {
+        // given: a transport deriving its future from the one of a client, through thenApply(), whose failure
+        // then completes it with a CompletionException wrapping the actual cause
+        var cause = new IOException("connection refused");
+        var failures = new CopyOnWriteArrayList<Throwable>();
+        Batcher<String> batcher = batcher(1,
+                elements -> CompletableFuture.<String>failedFuture(cause).thenApply(response -> TransmissionResult.success()),
+                new BatcherListener<>() {
+                    @Override
+                    public void onFailed(int count, @Nullable Throwable failure) {
+                        failures.add(failure);
+                    }
+                });
+
+        // when
+        batcher.add(List.of("a"));
+        batcher.awaitPendingTransmissions();
+
+        // then: the listener, and the logs, name what went wrong rather than the future machinery
+        assertThat(failures).singleElement().isSameAs(cause);
     }
 
     @Test
