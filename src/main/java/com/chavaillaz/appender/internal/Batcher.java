@@ -6,7 +6,6 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -1069,7 +1068,7 @@ public class Batcher<T> {
                 onTransmissionFailure(chunk, failure.cause());
             }
             case TransmissionResult.PartialFailure<T> partial -> {
-                Partition<T> partition = partition(chunk, partial.rejected());
+                Chunk.Partition<T> partition = chunk.partition(partial.rejected());
                 Chunk<T> rejected = partition.rejected();
                 if (partition.foreign() > 0) {
                     // A transport breaking the contract, reporting equal copies rather than the elements it was
@@ -1111,56 +1110,6 @@ public class Batcher<T> {
     }
 
     /**
-     * The elements of a dispatched chunk, split into those a {@link TransmissionResult.PartialFailure}
-     * reported as rejected and those it did not.
-     *
-     * @param accepted The elements not reported as rejected, in their original order
-     * @param rejected The elements reported as rejected, in their original order, with the failure streaks
-     *                 they had before this attempt
-     * @param foreign  How many of the instances reported as rejected the chunk does not hold, ignored
-     * @param <T>      The type of element
-     */
-    private record Partition<T>(List<T> accepted, Chunk<T> rejected, int foreign) {
-
-    }
-
-    /**
-     * Splits a chunk according to whether each of its elements is in {@code rejected}, matched by reference
-     * rather than {@code equals()} (see {@link TransmissionResult}). Driven by the chunk, so that the result
-     * only holds elements of the chunk, each as many times as the chunk does, however many times
-     * {@code rejected} names it.
-     *
-     * @param chunk    The dispatched chunk
-     * @param rejected The elements the transport reported as rejected
-     * @param <T>      The type of element
-     * @return The chunk, partitioned into accepted and rejected elements
-     */
-    private static <T> Partition<T> partition(Chunk<T> chunk, List<T> rejected) {
-        if (rejected.isEmpty()) {
-            return new Partition<>(chunk.elements(), new Chunk<>(List.of(), List.of()), 0);
-        }
-        Set<T> rejectedIdentity = Collections.newSetFromMap(new IdentityHashMap<>(rejected.size()));
-        rejectedIdentity.addAll(rejected);
-        Set<T> held = Collections.newSetFromMap(new IdentityHashMap<>(rejectedIdentity.size()));
-        List<T> accepted = new ArrayList<>(chunk.size());
-        List<T> actuallyRejected = new ArrayList<>(Math.min(chunk.size(), rejected.size()));
-        List<FailureRun> rejectedRuns = new ArrayList<>();
-        FailureRun.Streaks streaks = new FailureRun.Streaks(chunk.runs());
-        for (T element : chunk.elements()) {
-            int streak = streaks.next();
-            if (rejectedIdentity.contains(element)) {
-                held.add(element);
-                actuallyRejected.add(element);
-                FailureRun.append(rejectedRuns, streak, 1);
-            } else {
-                accepted.add(element);
-            }
-        }
-        return new Partition<>(accepted, new Chunk<>(actuallyRejected, rejectedRuns),
-                rejectedIdentity.size() - held.size());
-    }
-
-    /**
      * Invokes the given listener notification, logging whatever it throws, so that a throwing
      * {@code onFailed} never skips the {@link #onTransmissionFailure(Chunk, Throwable)} following it.
      *
@@ -1186,36 +1135,24 @@ public class Batcher<T> {
     private void onTransmissionFailure(Chunk<T> chunk, @Nullable Throwable cause) {
         failedTransmissions.increment();
         int maxFailures = readLimit(maxConsecutiveFailures, 0, "the maximum consecutive failures");
-        List<T> givenUp = new ArrayList<>();
-        List<T> retried = new ArrayList<>(chunk.size());
-        List<FailureRun> retriedRuns = new ArrayList<>();
-        int highestStreak = 0;
-        FailureRun.Streaks streaks = new FailureRun.Streaks(chunk.runs());
-        for (T element : chunk.elements()) {
-            int streak = streaks.next() + 1;
-            if (maxFailures > 0 && streak >= maxFailures) {
-                givenUp.add(element);
-            } else {
-                retried.add(element);
-                FailureRun.append(retriedRuns, streak, 1);
-                highestStreak = Math.max(highestStreak, streak);
-            }
-        }
+        Chunk.AfterFailure<T> outcome = chunk.afterFailure(maxFailures);
 
+        List<T> givenUp = outcome.givenUp();
         if (!givenUp.isEmpty()) {
             log.error("Giving up on {} {}(s) after {} consecutive failed transmission attempts, they will be discarded",
                     givenUp.size(), elementNoun, maxFailures, cause);
             // Directly, under the permit the transmission still holds, so that awaitPendingTransmissions()
             // waits for it too
-            drop(Collections.unmodifiableList(givenUp), "maximum consecutive transmission failures exceeded");
+            drop(givenUp, "maximum consecutive transmission failures exceeded");
         }
-        if (!retried.isEmpty()) {
+        Chunk<T> retried = outcome.retried();
+        if (retried.size() > 0) {
             // Every attempt, a listener being otherwise the only way to learn of an outage before it costs
             // elements
             log.warn("Failed to transmit {} {}(s), {} consecutive failure(s) so far, retrying later",
-                    retried.size(), elementNoun, highestStreak, cause);
-            applyBackoff(highestStreak);
-            requeue(new Chunk<>(retried, retriedRuns));
+                    retried.size(), elementNoun, outcome.highestStreak(), cause);
+            applyBackoff(outcome.highestStreak());
+            requeue(retried);
         }
     }
 
