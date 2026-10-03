@@ -65,6 +65,25 @@ class DocumentSizeEstimatorTest {
                 .isBetween(0L, 3L);
     }
 
+    @Test
+    @DisplayName("Counts null and booleans as the JSON literals they are written as")
+    void testCountsNullAndBooleansAsLiterals() {
+        // given: a field a configuration left unset, as the default converter writes it, and two flags
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("host", null);
+        document.put("retried", true);
+        document.put("truncated", false);
+        String json = "{\"host\":null,\"retried\":true,\"truncated\":false}";
+
+        // when
+        long overhead = DocumentSizeEstimator.estimate(document) - json.getBytes(UTF_8).length;
+
+        // then: off by the comma counted after the last entry at most
+        assertThat(overhead)
+                .as("Estimated " + overhead + " bytes more than the JSON takes")
+                .isBetween(0L, 1L);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"ascii", "café", "日本語のログ", "emoji 🔥 here"})
     @DisplayName("Counts a string by its UTF-8 byte length, not its character count")
