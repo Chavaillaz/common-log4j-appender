@@ -38,8 +38,8 @@ class AbstractBatchLogDeliveryTest {
     /**
      * Waits for the given number of drop notifications to arrive. Needed only for a drop happening while
      * accumulating, which is deliberately notified off the calling thread and therefore not tracked by
-     * {@code awaitPendingTransmissions()} (see {@code Batcher.notifyDropped()}); every other assertion on a
-     * listener in this class can be made immediately.
+     * {@code awaitPendingTransmissions()} (see {@code ListenerNotifier.droppedInBackground()}); every other
+     * assertion on a listener in this class can be made immediately.
      *
      * @param listener The listener to watch
      * @param expected The number of drop notifications to wait for
@@ -291,7 +291,7 @@ class AbstractBatchLogDeliveryTest {
 
             // then: a count-based cap alone would have seen nothing wrong here, the batch holding two of the
             // thousand documents it is allowed; awaited rather than asserted immediately since a drop while
-            // accumulating is intentionally not tracked by awaitPendingTransmissions() (see notifyDropped())
+            // accumulating is intentionally not tracked by awaitPendingTransmissions() (see ListenerNotifier)
             awaitDropped(listener, 1);
             assertThat(listener.dropped).hasSize(1);
             assertThat(listener.dropped.get(0).documents()).containsExactly(first);
@@ -734,7 +734,7 @@ class AbstractBatchLogDeliveryTest {
 
             // then the oldest document (id=0) was discarded once the cap of 3 was exceeded, with no attempt
             // since the failed one; awaited rather than asserted immediately since this particular notification
-            // is intentionally not tracked by awaitPendingTransmissions() (see notifyDropped()'s documentation)
+            // is intentionally not tracked by awaitPendingTransmissions() (see ListenerNotifier)
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
             awaitDropped(listener, 1);
             assertThat(listener.dropped).hasSize(1);
