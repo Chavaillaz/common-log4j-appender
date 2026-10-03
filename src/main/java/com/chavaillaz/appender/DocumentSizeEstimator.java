@@ -1,9 +1,5 @@
 package com.chavaillaz.appender;
 
-import java.lang.reflect.Array;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Map;
 
 import org.jspecify.annotations.Nullable;
@@ -90,29 +86,9 @@ public final class DocumentSizeEstimator {
             case CharSequence text -> utf8Length(text) + STRING_OVERHEAD;
             case Map<?, ?> map -> estimateObject(map, depth);
             case Iterable<?> iterable -> estimateArray(iterable, depth);
-            case Object array when array.getClass().isArray() -> estimateArray(elementsOf(array), depth);
+            case Object array when array.getClass().isArray() -> estimateArray(JsonWriter.elementsOf(array), depth);
             default -> utf8Length(String.valueOf(value)) + STRING_OVERHEAD;
         };
-    }
-
-    /**
-     * Lists the elements of an array, primitive ones boxed, so that it is measured and written as the JSON
-     * array a serializer turns it into, rather than as the identity hash {@link String#valueOf(Object)}
-     * renders it as.
-     *
-     * @param array The array, of objects or of primitives
-     * @return Its elements, in order
-     */
-    static List<?> elementsOf(Object array) {
-        if (array instanceof Object[] objects) {
-            return Arrays.asList(objects);
-        }
-        int length = Array.getLength(array);
-        List<Object> elements = new ArrayList<>(length);
-        for (int i = 0; i < length; i++) {
-            elements.add(Array.get(array, i));
-        }
-        return elements;
     }
 
     /**
