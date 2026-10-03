@@ -221,7 +221,7 @@ fields:
 | `host`        | Taken from the configuration                                                         |
 | `environment` | Taken from the configuration                                                         |
 | `application` | Taken from the configuration                                                         |
-| `logger`      | Logger name, falling back to the fully qualified caller class name if not available  |
+| `logger`      | Logger name, or for an event without one the class of the logger (`getLoggerFqcn()`) |
 | `level`       | Level of the logging event (e.g. `INFO`, `ERROR`)                                    |
 | `logmessage`  | Formatted message, truncated to 32'768 characters by default (see `getMaxMessageLength()`) |
 | `thread`      | Name of the thread that created the logging event                                    |

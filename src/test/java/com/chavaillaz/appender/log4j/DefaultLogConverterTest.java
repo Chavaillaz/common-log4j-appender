@@ -155,7 +155,7 @@ class DefaultLogConverterTest {
         }
 
         @Test
-        @DisplayName("Falls back to the fully qualified caller class name when the logger name is missing")
+        @DisplayName("Falls back to the class of the logger when the logger name is missing")
         void testConversionFallsBackToFqcnWhenLoggerNameMissing() {
             // given
             var configuration = TestLogConfiguration.builder().build();
@@ -163,14 +163,14 @@ class DefaultLogConverterTest {
             var event = Log4jLogEvent.newBuilder()
                     .setMessage(new SimpleMessage("Message"))
                     .setLoggerName(null)
-                    .setLoggerFqcn("com.chavaillaz.appender.log4j.MyClass")
+                    .setLoggerFqcn("org.apache.logging.log4j.spi.AbstractLogger")
                     .build();
 
             // when
             var document = converter.convert(event);
 
             // then
-            assertThat(document.get("logger")).isEqualTo("com.chavaillaz.appender.log4j.MyClass");
+            assertThat(document.get("logger")).isEqualTo("org.apache.logging.log4j.spi.AbstractLogger");
         }
 
         @Test
