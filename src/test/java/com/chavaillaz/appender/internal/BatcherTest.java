@@ -965,7 +965,8 @@ class BatcherTest {
         });
         adder.setDaemon(true);
         adder.start();
-        Thread.sleep(300);
+        // Waited for rather than slept through: an add() reaching the batcher once closed returns as well
+        awaitWaiting(List.of(adder));
         assertThat(blocked.get()).as("The second add() should be waiting for the only transmission permit").isTrue();
 
         // when: closing with a budget, which the blocked caller must notice rather than wait out an
@@ -1672,12 +1673,14 @@ class BatcherTest {
     }
 
     /**
-     * Waits until each of the given threads waits, to enter a monitor or for a lock.
+     * Waits until each of the given threads waits: to enter a monitor, for a lock, or for a transmission permit,
+     * which it waits for a slice at a time.
      */
     private static void awaitWaiting(List<Thread> threads) throws InterruptedException {
         long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
         for (Thread thread : threads) {
-            while (thread.getState() != Thread.State.BLOCKED && thread.getState() != Thread.State.WAITING) {
+            while (thread.getState() != Thread.State.BLOCKED && thread.getState() != Thread.State.WAITING
+                    && thread.getState() != Thread.State.TIMED_WAITING) {
                 if (System.nanoTime() > deadlineNanos) {
                     throw new AssertionError("Timed out waiting for " + thread + " to wait, " + thread.getState());
                 }
