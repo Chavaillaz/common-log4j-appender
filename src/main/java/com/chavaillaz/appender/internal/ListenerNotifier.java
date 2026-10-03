@@ -111,9 +111,9 @@ final class ListenerNotifier<T> {
     /**
      * Counts dropped elements, and notifies the listener of them on a virtual thread, so that a slow listener
      * does not stall {@link Batcher#add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS} run
-     * at once: past that, or once no thread starts, the executor being shut down for instance, the notification
-     * runs on the calling thread. Waited for by {@link #awaitDropNotifications(long)}, which the close calls, not
-     * by {@link Batcher#awaitPendingTransmissions()}.
+     * at once: past that, or when no thread starts (the executor shut down, for instance), the notification runs
+     * on the calling thread. Waited for by {@link #awaitDropNotifications(long)}, which the close calls, not by
+     * {@link Batcher#awaitPendingTransmissions()}.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded

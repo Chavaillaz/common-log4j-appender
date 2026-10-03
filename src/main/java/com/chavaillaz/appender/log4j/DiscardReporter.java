@@ -22,14 +22,13 @@ import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
 
 /**
- * Reports the logging events an appender discards before they reach its delivery to the listener of that
- * delivery, on a thread of its own, so that converting them and calling the listener never holds up the thread
- * discarding them, the one logging or the worker of the appender. Its own failures are reported through the
+ * Reports the logging events an appender discards before they reach its delivery, notifying the listener of
+ * that delivery on a thread of its own: converting the events and calling the listener never hold up the thread
+ * discarding them, the one logging or the worker of the appender. Its own failures go to the
  * {@code ErrorHandler} of the appender.
  * <p>
- * At most as many discards as given at construction wait to be reported, a discard past it being logged rather
- * than waited for: a burst discarding events faster than they are reported would otherwise pass the delay on to
- * the application.
+ * At most the number of discards given at construction wait to be reported. A discard past it is logged
+ * instead, since waiting for the reports to catch up would pass the delay on to the application.
  */
 final class DiscardReporter {
 
@@ -44,8 +43,8 @@ final class DiscardReporter {
     }
 
     /**
-     * The appender whose discarded events are reported, through whose {@code ErrorHandler} this reporter reports
-     * its own failures: the one it has when they happen, a configuration being free to replace it.
+     * The appender whose discarded events are reported, kept rather than its {@code ErrorHandler}, which a
+     * configuration may replace: each failure of this reporter goes to the one the appender has by then.
      */
     private final AbstractAppender appender;
 
@@ -105,8 +104,8 @@ final class DiscardReporter {
 
     /**
      * Hands a discarded logging event to {@link #executor}, so that converting it and calling the listener
-     * never holds up the thread discarding it. Reported right away only once stopped, nothing being left to
-     * report it later.
+     * never hold up the thread discarding it. Once stopped, or if the thread reporting it fails to start, it is
+     * reported on the calling thread instead.
      *
      * @param event  The logging event being discarded
      * @param reason A short, human-readable explanation of why it was discarded
@@ -130,9 +129,9 @@ final class DiscardReporter {
     }
 
     /**
-     * Reports several discarded events in one notification rather than one per event, on the calling thread,
-     * a listener saving them usually paying per call, and a stop timing out abandoning up to a full queue at
-     * once. Converted by {@link #converter}, and only for a listener reading them.
+     * Reports the given discarded events in one notification, on the calling thread: a listener saving them
+     * usually pays per call, and a stop timing out abandons up to a full queue at once. They are converted by
+     * {@link #converter}, and only for a listener other than {@link LogDeliveryListener#NOOP}.
      *
      * @param events The logging events being discarded
      * @param reason A short, human-readable explanation of why they were discarded
@@ -181,7 +180,7 @@ final class DiscardReporter {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        // The report in progress finishes on its own, the listener being notified of the rest concurrently
+        // The report in progress finishes on its own, while the listener is notified of the rest here
         reportPending();
     }
 

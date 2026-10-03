@@ -9,7 +9,7 @@ import java.util.Set;
 /**
  * Elements taken out of the pending batch of a {@link Batcher} together, with the failure streak each of
  * them has so far: a request handed to the transport, or what a failed one puts back. Compared by identity,
- * two requests being free to carry equal elements.
+ * since two requests may carry equal elements.
  *
  * @param <T> The type of element
  */
