@@ -751,6 +751,47 @@ class BatcherTest {
     }
 
     @Test
+    @DisplayName("Discards the oldest elements a failed request puts back past the maximum pending size")
+    void testRequeuePastPendingBytesCapDiscardsOldestElements() throws Exception {
+        // given: a batch capped at 25 bytes with elements of 10, and a first request of two elements answered
+        // only once a third element was stacked behind it
+        var transmitted = new CopyOnWriteArrayList<List<String>>();
+        var dropped = new CopyOnWriteArrayList<String>();
+        var reasons = new CopyOnWriteArrayList<String>();
+        var firstAnswer = new CompletableFuture<TransmissionResult<String>>();
+        Batcher<String> batcher = Batcher.<String>builder()
+                .flushThreshold(() -> 100)
+                .elementSize(element -> 10)
+                .maxPendingBytes(() -> 25L)
+                .transport(elements -> {
+                    transmitted.add(elements);
+                    return transmitted.size() == 1 ? firstAnswer : completedFuture(TransmissionResult.success());
+                })
+                .listener(new BatcherListener<>() {
+                    @Override
+                    public void onDropped(List<String> elements, String reason) {
+                        dropped.addAll(elements);
+                        reasons.add(reason);
+                    }
+                })
+                .build();
+        batcher.add(List.of("a", "b"));
+        batcher.flush();
+        batcher.add(List.of("c"));
+
+        // when: the request fails, putting its 20 bytes back in front of the 10 stacked meanwhile
+        firstAnswer.complete(TransmissionResult.failure(null));
+        batcher.awaitPendingTransmissions();
+
+        // then: the oldest was discarded to bring the batch back under the cap, the rest kept in order
+        assertThat(dropped).containsExactly("a");
+        assertThat(reasons).containsExactly("maximum pending bytes exceeded");
+        batcher.flush();
+        batcher.awaitPendingTransmissions();
+        assertThat(transmitted).containsExactly(List.of("a", "b"), List.of("b", "c"));
+    }
+
+    @Test
     @DisplayName("Never measures an element when no measurement was supplied at all")
     void testNoMeasurementWithoutAnElementSizeFunction() throws Exception {
         // given: byte limits set but no way to measure against them, which must be inert rather than
