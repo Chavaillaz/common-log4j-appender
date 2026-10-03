@@ -4,10 +4,12 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.lang.Thread.State;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -541,6 +543,23 @@ class FileDeadLetterListenerTest {
 
         // then
         assertThat(file.getParent()).isDirectory();
+    }
+
+    @Test
+    @DisplayName("Fails at construction when the parent directory cannot be created, rather than at the first drop")
+    void testFailsAtConstructionWhenTheParentDirectoryCannotBeCreated(@TempDir Path tempDir) throws Exception {
+        // given: a path going through a regular file, where no directory can be created
+        var regularFile = Files.createFile(tempDir.resolve("not-a-directory"));
+        var file = regularFile.resolve("dead-letters.ndjson");
+
+        // when
+        var failure = catchThrowable(() -> new FileDeadLetterListener(file));
+
+        // then: a misconfiguration shows when the appender is configured, not once something needs saving
+        assertThat(failure)
+                .isInstanceOf(UncheckedIOException.class)
+                .hasMessageContaining(file.toString())
+                .hasCauseInstanceOf(IOException.class);
     }
 
     @Test
