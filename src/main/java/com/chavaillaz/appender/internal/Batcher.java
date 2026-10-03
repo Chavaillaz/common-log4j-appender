@@ -109,12 +109,11 @@ public class Batcher<T> {
      */
     private static final long MAX_ELEMENT_BYTES = Integer.MAX_VALUE;
 
-    private final IntSupplier flushThreshold;
-    private final IntSupplier maxPendingElements;
-    private final IntSupplier maxRequestElements;
-    private final IntSupplier maxConsecutiveFailures;
-    private final LongSupplier maxPendingBytes;
-    private final LongSupplier maxRequestBytes;
+    /**
+     * The limits read again on every use, so that they can be changed at runtime, each left unenforced while
+     * it cannot be read.
+     */
+    private final DynamicLimits limits;
 
     /**
      * Measures one element, or {@code null} not to track sizes, leaving both byte limits inert. Fixed at
@@ -157,8 +156,8 @@ public class Batcher<T> {
     private final ListenerNotifier<T> notifier;
 
     /**
-     * The maximum number of batches transmitted concurrently, fixed at construction time (unlike the other
-     * limits above, which are re-read on every call to allow a dynamic override).
+     * The maximum number of batches transmitted concurrently, fixed at construction time (unlike
+     * {@link #limits}, which are re-read on every call to allow a dynamic override).
      */
     private final int maxConcurrentTransmissions;
 
@@ -240,12 +239,9 @@ public class Batcher<T> {
             throw new IllegalArgumentException(
                     "maxConcurrentTransmissions must be at least 1, but was " + builder.maxConcurrentTransmissions);
         }
-        this.flushThreshold = builder.flushThreshold;
-        this.maxPendingElements = builder.maxPendingElements;
-        this.maxRequestElements = builder.maxRequestElements;
-        this.maxConsecutiveFailures = builder.maxConsecutiveFailures;
-        this.maxPendingBytes = builder.maxPendingBytes;
-        this.maxRequestBytes = builder.maxRequestBytes;
+        this.limits = new DynamicLimits(builder.flushThreshold, builder.maxPendingElements,
+                builder.maxRequestElements, builder.maxConsecutiveFailures,
+                builder.maxPendingBytes, builder.maxRequestBytes);
         this.elementSize = builder.elementSize;
         this.maxConcurrentTransmissions = builder.maxConcurrentTransmissions;
         this.backoff = builder.backoff;
@@ -497,7 +493,7 @@ public class Batcher<T> {
      * @return The new batch
      */
     private PendingBatch<T> newPendingBatch() {
-        int threshold = readLimit(flushThreshold, Integer.MAX_VALUE, "the flush threshold");
+        int threshold = limits.flushThreshold();
         int capacity = threshold > 0 ? Math.min(threshold, MAX_INITIAL_BATCH_CAPACITY) : 16;
         return new PendingBatch<>(elementSize != null ? this::sizeOf : null, capacity);
     }
@@ -530,9 +526,9 @@ public class Batcher<T> {
             if (!rejected) {
                 pending.append(elements);
                 // Each read once, so that two readings cannot disagree
-                int threshold = readLimit(flushThreshold, Integer.MAX_VALUE, "the flush threshold");
-                maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
-                maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
+                int threshold = limits.flushThreshold();
+                maxPending = limits.maxPendingElements();
+                maxBytes = limits.maxPendingBytes();
                 log.trace("Stacking batch {}/{}", pending.size(), threshold);
 
                 // Due once it reaches the threshold, or fills up to a pending limit, which it would otherwise
@@ -671,7 +667,7 @@ public class Batcher<T> {
                         pending.size(), elementNoun);
                 return;
             }
-            log.debug("Sending partial batch of {}/{}", pending.size(), readLimit(flushThreshold, Integer.MAX_VALUE, "the flush threshold"));
+            log.debug("Sending partial batch of {}/{}", pending.size(), limits.flushThreshold());
             due = swapBatch();
         } finally {
             lock.unlock();
@@ -717,45 +713,6 @@ public class Batcher<T> {
     }
 
     /**
-     * Reads one of the dynamic limits, a supplier throwing leaving the limit unenforced for now: these
-     * suppliers are application code reading a configuration, and the request limits are read once a batch
-     * was swapped out, which an exception would otherwise carry away.
-     * <p>
-     * The fallback is always the value meaning unbounded or disabled, never one that discards: going
-     * unenforced for a while costs memory or an oversized request, where the alternative costs elements.
-     *
-     * @param limit      The supplier to read
-     * @param unenforced The value to fall back to, leaving the limit unenforced
-     * @param name       The name of the limit, used to phrase the warning logged
-     * @return The limit, or {@code unenforced} if the supplier threw
-     */
-    private long readLimit(LongSupplier limit, long unenforced, String name) {
-        try {
-            return limit.getAsLong();
-        } catch (Throwable e) {
-            log.warn("Unhandled exception thrown while reading {}, leaving it unenforced for now", name, e);
-            return unenforced;
-        }
-    }
-
-    /**
-     * Reads one of the dynamic count limits (see {@link #readLimit(LongSupplier, long, String)}).
-     *
-     * @param limit      The supplier to read
-     * @param unenforced The value to fall back to, leaving the limit unenforced
-     * @param name       The name of the limit, used to phrase the warning logged
-     * @return The limit, or {@code unenforced} if the supplier threw
-     */
-    private int readLimit(IntSupplier limit, int unenforced, String name) {
-        try {
-            return limit.getAsInt();
-        } catch (Throwable e) {
-            log.warn("Unhandled exception thrown while reading {}, leaving it unenforced for now", name, e);
-            return unenforced;
-        }
-    }
-
-    /**
      * Logs the oldest elements a trim discarded to keep the pending batch within {@code maxPendingBytes}.
      *
      * @param oversized The elements discarded
@@ -789,9 +746,9 @@ public class Batcher<T> {
                 abandoned = chunk.elements();
             } else {
                 pending.prepend(chunk);
-                maxPending = readLimit(maxPendingElements, Integer.MAX_VALUE, "the maximum pending elements");
+                maxPending = limits.maxPendingElements();
                 discarded = pending.trimToCount(maxPending);
-                maxBytes = readLimit(maxPendingBytes, Long.MAX_VALUE, "the maximum pending bytes");
+                maxBytes = limits.maxPendingBytes();
                 oversized = pending.trimToBytes(maxBytes);
             }
         } finally {
@@ -826,8 +783,8 @@ public class Batcher<T> {
      * @param due The batch swapped out, no one else's by then
      */
     private void dispatch(PendingBatch<T> due) {
-        int maxCount = readLimit(maxRequestElements, Integer.MAX_VALUE, "the maximum request elements");
-        long maxBytes = readLimit(maxRequestBytes, Long.MAX_VALUE, "the maximum request bytes");
+        int maxCount = limits.maxRequestElements();
+        long maxBytes = limits.maxRequestBytes();
         List<Chunk<T>> undispatched = new ArrayList<>();
         for (Chunk<T> chunk : due.split(maxCount, maxBytes)) {
             if (!dispatchChunk(chunk)) {
@@ -1055,7 +1012,7 @@ public class Batcher<T> {
      */
     private void onTransmissionFailure(Chunk<T> chunk, @Nullable Throwable cause) {
         failedTransmissions.increment();
-        int maxFailures = readLimit(maxConsecutiveFailures, 0, "the maximum consecutive failures");
+        int maxFailures = limits.maxConsecutiveFailures();
         Chunk.AfterFailure<T> outcome = chunk.afterFailure(maxFailures);
 
         List<T> givenUp = outcome.givenUp();
