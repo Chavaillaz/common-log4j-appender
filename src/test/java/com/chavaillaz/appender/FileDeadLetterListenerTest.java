@@ -16,6 +16,8 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -560,13 +562,14 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
-    @DisplayName("Saves the rest of a batch when one of its documents cannot be rendered at all")
-    void testUnrenderableDocumentOnlyCostsItsOwnLine(@TempDir Path tempDir) throws Exception {
+    @DisplayName("Saves the rest of a document when one of its values cannot be rendered")
+    void testUnrenderableValueOnlyCostsItself(@TempDir Path tempDir) throws Exception {
         // given: a document holding a value whose toString() throws, as any application object put into a
         // document by a custom converter is free to do
         var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
         var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
         Map<String, Object> unrenderable = new LinkedHashMap<>();
+        unrenderable.put("logmessage", "kept");
         unrenderable.put("payload", new Object() {
             @Override
             public String toString() {
@@ -583,6 +586,7 @@ class FileDeadLetterListenerTest {
                 throw new StackOverflowError("recursive rendering");
             }
         });
+        recursive.put("logmessage", "kept too");
 
         // when: they are handed over in the middle of a batch, exactly as a pending batch would be
         assertThatNoException()
@@ -594,17 +598,51 @@ class FileDeadLetterListenerTest {
         // very sink meant to be their last resort
         List<String> lines = Files.readAllLines(file, UTF_8);
         assertThat(lines).as("Unexpected lines: " + lines).hasSize(4);
-        assertThat(lines.get(0)).as("Unexpected line: " + lines.get(0)).contains("\"logmessage\":\"first\"");
-        assertThat(lines.get(3)).as("Unexpected line: " + lines.get(3)).contains("\"logmessage\":\"second\"");
+        assertThat(lines.get(0)).contains("\"logmessage\":\"first\"");
+        assertThat(lines.get(3)).contains("\"logmessage\":\"second\"");
 
-        // and: each one that could not be rendered still leaves a line saying so, rather than nothing at all
-        assertThat(lines.get(1))
-                .as("Unexpected line: " + lines.get(1))
-                .contains("\"unrenderable\":\"java.lang.IllegalStateException\"");
-        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).contains("\"reason\":\"reason\"");
-        assertThat(lines.get(2))
-                .as("Unexpected line: " + lines.get(2))
-                .contains("\"unrenderable\":\"java.lang.StackOverflowError\"");
+        // and: each value that could not be rendered is replaced by its failure, the rest of its document kept
+        assertThat(lines.get(1)).endsWith(
+                "\"document\":{\"logmessage\":\"kept\",\"payload\":\"<unrenderable: java.lang.IllegalStateException>\"}}");
+        assertThat(lines.get(2)).endsWith(
+                "\"document\":{\"payload\":\"<unrenderable: java.lang.StackOverflowError>\",\"logmessage\":\"kept too\"}}");
+    }
+
+    @Test
+    @DisplayName("Replaces a collection failing partway through its iteration as a whole, keeping the line valid")
+    void testCollectionFailingPartwayIsReplacedWhole(@TempDir Path tempDir) throws Exception {
+        // given: a custom collection whose iteration fails after its first element was written
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+        Iterable<String> failingPartway = () -> new Iterator<>() {
+            private boolean first = true;
+
+            @Override
+            public boolean hasNext() {
+                return true;
+            }
+
+            @Override
+            public String next() {
+                if (!first) {
+                    throw new ConcurrentModificationException();
+                }
+                first = false;
+                return "written";
+            }
+        };
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("items", failingPartway);
+        document.put("logmessage", "kept");
+
+        // when
+        listener.onDocumentsDropped(List.of(document), "reason");
+
+        // then: what it had written was taken back rather than left as an unclosed array
+        String line = Files.readAllLines(file, UTF_8).getFirst();
+        assertBalancedJson(line);
+        assertThat(line).endsWith(
+                "\"document\":{\"items\":\"<unrenderable: java.util.ConcurrentModificationException>\",\"logmessage\":\"kept\"}}");
     }
 
     @Test

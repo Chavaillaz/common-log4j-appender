@@ -26,6 +26,7 @@ import java.util.regex.Pattern;
 
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.status.StatusLogger;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A ready-made {@link LogDeliveryListener} appending every irrecoverably dropped document to a local file, one
@@ -50,9 +51,9 @@ import org.apache.logging.log4j.status.StatusLogger;
  * own iteration order, and anything else, {@link String} included, as a JSON string of its
  * {@link String#valueOf(Object)} rendering. A number JSON cannot express ({@link Double#NaN}, an infinity, a
  * custom {@link Number} rendering otherwise) is written as a string, and nesting is followed to a bounded
- * depth, so that no value can leave a line a parser cannot read. A document that cannot be rendered at all,
- * a value whose {@code toString()} throws for instance, costs only its own line, replaced by one naming the
- * failure.
+ * depth, so that no value can leave a line a parser cannot read. A value that cannot be rendered, one whose
+ * {@code toString()} throws for instance, is replaced by a string naming the failure, the rest of its document
+ * being saved.
  */
 public class FileDeadLetterListener implements LogDeliveryListener {
 
@@ -191,7 +192,7 @@ public class FileDeadLetterListener implements LogDeliveryListener {
                 ByteArrayOutputStream write = new ByteArrayOutputStream(MAX_WRITE_BYTES);
                 int buffered = 0;
                 for (Map<String, Object> document : documents) {
-                    byte[] line = toLine(document, reason, droppedAt).getBytes(UTF_8);
+                    byte[] line = toJson(wrap(document, reason, droppedAt)).getBytes(UTF_8);
                     if (buffered > 0 && write.size() + line.length + LINE_SEPARATOR.length > MAX_WRITE_BYTES) {
                         write.writeTo(out);
                         appended += buffered;
@@ -289,28 +290,6 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     }
 
     /**
-     * Renders one dropped document as the line to append for it, or as a line naming why it could not be
-     * rendered: rendering runs application code (a {@code toString()}, the iteration of a custom collection),
-     * and one document failing must not cost the others handed over with it.
-     *
-     * @param document  The document being dropped
-     * @param reason    A short, human-readable explanation of why it was dropped
-     * @param droppedAt The instant it was dropped at
-     * @return The line to append for this document
-     */
-    private String toLine(Map<String, Object> document, String reason, Instant droppedAt) {
-        try {
-            return toJson(wrap(document, reason, droppedAt));
-        } catch (Throwable e) {
-            // Throwable, a value whose own toString() recurses overflowing the stack whatever MAX_DEPTH says.
-            // Only the class name is used, the toString() of this exception being application code too
-            String failure = e.getClass().getName();
-            log.warn("Unable to render a dropped document as JSON ({}), saving a placeholder in its place", failure);
-            return toJson(wrap(Map.of("unrenderable", failure), reason, droppedAt));
-        }
-    }
-
-    /**
      * Wraps the given document with the reason it was dropped and when, without modifying it, so that a field
      * of the document bearing the same name is kept.
      *
@@ -354,21 +333,40 @@ public class FileDeadLetterListener implements LogDeliveryListener {
         return builder.toString();
     }
 
-    private static void writeJson(StringBuilder builder, Object value, int depth) {
+    /**
+     * Writes the given value, or a string naming why it could not be written in its place: rendering runs
+     * application code (a {@code toString()}, the iteration of a custom collection), and one value failing must
+     * not cost the rest of its document.
+     *
+     * @param builder The builder to append to
+     * @param value   The value to write
+     * @param depth   The nesting depth this value sits at
+     */
+    private static void writeJson(StringBuilder builder, @Nullable Object value, int depth) {
         if (depth > MAX_DEPTH) {
             // Cut rather than followed, a document containing itself recursing until the stack runs out
             writeJsonString(builder, TRUNCATED_MARKER);
             return;
         }
-        switch (value) {
-            case null -> builder.append("null");
-            case Boolean bool -> builder.append(bool);
-            case Number number -> writeJsonNumber(builder, number);
-            case Map<?, ?> map -> writeJsonObject(builder, map, depth);
-            case Iterable<?> iterable -> writeJsonArray(builder, iterable, depth);
-            case Object array when array.getClass().isArray() ->
-                    writeJsonArray(builder, DocumentSizeEstimator.elementsOf(array), depth);
-            default -> writeJsonString(builder, String.valueOf(value));
+        int start = builder.length();
+        try {
+            switch (value) {
+                case null -> builder.append("null");
+                case Boolean bool -> builder.append(bool);
+                case Number number -> writeJsonNumber(builder, number);
+                case Map<?, ?> map -> writeJsonObject(builder, map, depth);
+                case Iterable<?> iterable -> writeJsonArray(builder, iterable, depth);
+                case Object array when array.getClass().isArray() ->
+                        writeJsonArray(builder, DocumentSizeEstimator.elementsOf(array), depth);
+                default -> writeJsonString(builder, String.valueOf(value));
+            }
+        } catch (Throwable e) {
+            // Throwable, a value whose own toString() recurses overflowing the stack whatever MAX_DEPTH says.
+            // Only the class name is used, the toString() of this exception being application code too
+            builder.setLength(start);
+            String failure = e.getClass().getName();
+            log.warn("Unable to render a value of a dropped document as JSON ({}), saving a placeholder in its place", failure);
+            writeJsonString(builder, "<unrenderable: " + failure + ">");
         }
     }
 
