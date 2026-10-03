@@ -27,6 +27,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.stream.IntStream;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.status.StatusData;
+import org.apache.logging.log4j.status.StatusListener;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -684,6 +688,49 @@ class FileDeadLetterListenerTest {
         assertThatNoException().isThrownBy(() -> listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason"));
         assertThat(failures).containsExactly("reason");
         assertThat(failedFiles).containsExactly(file);
+    }
+
+    @Test
+    @DisplayName("Logs the documents it could not save by default, so that they appear somewhere")
+    void testDefaultWriteFailureLogsTheDocuments(@TempDir Path tempDir) throws Exception {
+        // given: the file of the day is actually a directory, and onWriteFailure left as it is
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        Files.createDirectory(file);
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+        var errors = new CopyOnWriteArrayList<StatusData>();
+        var statusListener = new StatusListener() {
+            @Override
+            public void log(StatusData data) {
+                errors.add(data);
+            }
+
+            @Override
+            public Level getStatusLevel() {
+                return Level.ERROR;
+            }
+
+            @Override
+            public void close() {
+                // Nothing to release
+            }
+        };
+
+        // when
+        StatusLogger.getLogger().registerListener(statusListener);
+        try {
+            listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason");
+        } finally {
+            StatusLogger.getLogger().removeListener(statusListener);
+        }
+
+        // then: the document, the reason and the cause, on the status channel rather than lost
+        assertThat(errors)
+                .filteredOn(error -> error.getMessage().getFormattedMessage().contains(file.toString()))
+                .singleElement()
+                .satisfies(error -> {
+                    assertThat(error.getMessage().getFormattedMessage()).contains("reason", "{id=1}");
+                    assertThat(error.getThrowable()).isInstanceOf(IOException.class);
+                });
     }
 
     @Test
