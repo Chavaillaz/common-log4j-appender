@@ -1200,6 +1200,48 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Discards the newest event when another one takes the slot its eviction freed")
+        void testEventLosingTheFreedSlotIsDiscardedAsTheNewest() throws Exception {
+            // given: a one-slot queue in which another thread appends D right as the eviction frees the slot
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(1).build();
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new RecordingBlockingLogDeliveryAppender<>(
+                    "appender-name", null, configuration, releaseFirstTask);
+            var droppedMessages = new CopyOnWriteArrayList<Object>();
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    documents.forEach(document -> droppedMessages.add(document.get("logmessage")));
+                    droppedReasons.add(reason);
+                }
+            });
+            var queue = new RivalQueue(() -> appender.append(realLogEvent("D")));
+            replaceWorkerExecutor(appender, new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, queue,
+                    workerExecutorOf(appender).getRejectedExecutionHandler()));
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("B")); // fills the one-slot queue
+
+            // when: C evicts B, and D takes the freed slot first
+            queue.armed = true;
+            appender.append(realLogEvent("C"));
+            releaseFirstTask.countDown();
+            appender.stop(2, SECONDS);
+
+            // then: each discard is reported for what it was, rather than as a queue full or a stop
+            assertThat(appender.getProcessedMessages()).containsExactly("A", "D");
+            assertThat(droppedMessages).containsExactly("B", "C");
+            assertThat(droppedReasons).containsExactly(
+                    "internal queue capacity exceeded, discarding the oldest pending event",
+                    "internal queue capacity exceeded, discarding the newest event");
+        }
+
+        @Test
         @DisplayName("Skips converting an event discarded while nothing listens for discards")
         void testDiscardNobodyListensForIsNotConverted() throws Exception {
             // given: the same full-queue setup, with a delivery keeping the default listener, which ignores
@@ -1454,6 +1496,32 @@ class AbstractLogDeliveryAppenderTest {
                 }
             }
             return super.offer(task);
+        }
+
+    }
+
+    /**
+     * A one-slot worker queue in which, once armed, another event is appended right as the policy discarding
+     * the oldest event frees the slot, taking it before the event the eviction was for.
+     */
+    static class RivalQueue extends LinkedBlockingQueue<Runnable> {
+
+        private final Runnable rival;
+        volatile boolean armed;
+
+        RivalQueue(Runnable rival) {
+            super(1);
+            this.rival = rival;
+        }
+
+        @Override
+        public Runnable poll() {
+            Runnable evicted = super.poll();
+            if (armed) {
+                armed = false;
+                rival.run();
+            }
+            return evicted;
         }
 
     }
@@ -1774,7 +1842,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(loggingEvent);
 
             // then: reported for what happened to it, right away since nothing is left to report it later
-            assertThat(droppedReasons).containsExactly("internal queue capacity exceeded, or the appender is stopping");
+            assertThat(droppedReasons).containsExactly("appender no longer accepting events");
         }
 
         @Test

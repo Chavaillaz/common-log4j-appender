@@ -129,8 +129,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 }
                 if (!queued) {
                     // Another event took the freed slot first, so this one is discarded instead
-                    error("Log delivery task rejected: the internal queue is full, or the appender is stopping");
-                    discard(newTask.event(), "internal queue capacity exceeded, or the appender is stopping");
+                    error("Log delivery task rejected: the internal queue is full, discarding the newest event");
+                    discard(newTask.event(), "internal queue capacity exceeded, discarding the newest event");
                     return;
                 }
             }
@@ -461,8 +461,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             workerExecutor.execute(new EventTask(immutableEvent, () -> deliver(task, immutableEvent)));
         } catch (RejectedExecutionException e) {
             // A full queue evicts rather than rejects, so this is the appender stopping
-            error("Log delivery task rejected: the internal queue is full, or the appender is stopping", e);
-            discard(immutableEvent, "internal queue capacity exceeded, or the appender is stopping");
+            error("Log delivery task rejected: the appender is stopping or stopped", e);
+            discard(immutableEvent, "appender no longer accepting events");
         } catch (Throwable e) {
             // createLogDeliveryTask() failed, losing the event
             error("Log delivery task creation error", e);
