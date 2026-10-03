@@ -9,9 +9,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.RejectedExecutionHandler;
@@ -160,16 +157,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * A logging event discarded before reaching the delivery, waiting in {@link #pendingDiscards} to be reported.
-     *
-     * @param event  The logging event discarded
-     * @param reason A short, human-readable explanation of why it was discarded
-     */
-    private record Discard(LogEvent event, String reason) {
-
-    }
-
-    /**
      * The single background thread converting and batching events, fed by a queue bounded to
      * {@link DeliveryOptions#maxQueuedEvents()}, typed as a {@link ThreadPoolExecutor} so that its queue can be
      * inspected.
@@ -191,37 +178,20 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private volatile @Nullable LogDelivery logDeliveryHandler;
 
     /**
-     * The converter {@link #getLogConverter()} returns by default, which also converts every discarded event to
-     * report it, whatever converter a subclass returns, one that failed on it included: this one is known to be
-     * safe to call from the thread reporting it.
+     * The converter {@link #getLogConverter()} returns by default, which {@link #discardReporter} also converts
+     * every discarded event with, whatever converter a subclass returns, one that failed on it included: this one
+     * is known to be safe to call from the thread reporting it.
      */
     private final DefaultLogConverter defaultConverter;
 
     /**
-     * The events discarded before reaching the delivery, waiting for {@link #discardReporter} to report them, so
-     * that converting them and calling the listener never holds up the thread logging, nor the worker. Bounded
-     * like the queue, a discard past it being counted and logged rather than waited for.
+     * Reports the events discarded before reaching the delivery, so that converting them and calling the
+     * listener never holds up the thread logging, nor the worker. Bounded like the queue, a discard past it being
+     * counted and logged rather than waited for. Runs on a virtual thread, which inherits neither the
+     * inheritable thread-locals nor the context class loader of the thread discarding the first event (see
+     * {@link #namedThreadFactory(String, String)}).
      */
-    private final BlockingQueue<Discard> pendingDiscards;
-
-    /**
-     * Reports {@link #pendingDiscards} on a virtual thread, one notification per reason, which inherits
-     * neither the inheritable thread-locals nor the context class loader of the thread discarding the first
-     * event (see {@link #namedThreadFactory(String, String)}).
-     */
-    private final ExecutorService discardReporter;
-
-    /**
-     * Whether a report of {@link #pendingDiscards} is queued on {@link #discardReporter} and yet to start, so
-     * that a burst of discards queues a single report.
-     */
-    private final AtomicBoolean discardReportQueued = new AtomicBoolean();
-
-    /**
-     * Whether {@link #discardReporter} is running a report, so that a stop giving up on it can tell a listener
-     * still being notified from a reporter merely idle, whose thread has yet to end.
-     */
-    private volatile boolean discardReportRunning;
+    private final DiscardReporter discardReporter;
 
     /**
      * Whether a periodic flush is waiting for the background thread, which runs it after the event it is
@@ -274,10 +244,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         DeliveryOptions options = configuration.getDeliveryOptions();
         this.initialCloseTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
-        this.pendingDiscards = new LinkedBlockingQueue<>(options.maxQueuedEvents());
-        this.discardReporter = Executors.newSingleThreadExecutor(Thread.ofVirtual()
-                .name(threadName("discard-reporter", name)).inheritInheritableThreadLocals(false).factory());
         this.defaultConverter = new DefaultLogConverter(configuration);
+        this.discardReporter = new DiscardReporter(this, () -> logDeliveryHandler, defaultConverter,
+                options.maxQueuedEvents(), Thread.ofVirtual().name(threadName("discard-reporter", name))
+                        .inheritInheritableThreadLocals(false).factory());
     }
 
     /**
@@ -558,97 +528,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Hands a discarded logging event to {@link #discardReporter}, so that converting it and calling the
-     * listener never holds up the thread discarding it, the one logging or the worker. Reported right away only
-     * once the appender stopped, nothing being left to report it later.
+     * Counts a discarded logging event, and hands it to {@link #discardReporter}, so that converting it and
+     * calling the listener never holds up the thread discarding it, the one logging or the worker.
      *
      * @param event  The logging event being discarded
      * @param reason A short, human-readable explanation of why it was discarded
      */
     private void discard(LogEvent event, String reason) {
         discardedEvents.increment();
-        if (!pendingDiscards.offer(new Discard(event, reason))) {
-            // The report falls behind the discards, which waiting for it would pass on to the application
-            error("Unable to report a discarded logging event, " + pendingDiscards.size()
-                    + " are already waiting for the delivery listener");
-            return;
-        }
-        if (discardReportQueued.compareAndSet(false, true)) {
-            try {
-                discardReporter.execute(this::runDiscardReport);
-            } catch (Throwable e) {
-                // Throwable: a report never queued would leave the flag raised, and every later discard waiting
-                discardReportQueued.set(false);
-                reportPendingDiscards();
-            }
-        }
-    }
-
-    /**
-     * Reports the events waiting in {@link #pendingDiscards} from {@link #discardReporter}, flagged as
-     * {@link #discardReportRunning} meanwhile.
-     */
-    private void runDiscardReport() {
-        discardReportRunning = true;
-        try {
-            reportPendingDiscards();
-        } finally {
-            discardReportRunning = false;
-        }
-    }
-
-    /**
-     * Reports the events waiting in {@link #pendingDiscards}, in one notification per run of events discarded
-     * for the same reason.
-     */
-    private void reportPendingDiscards() {
-        // Lowered first, so that a discard waiting from now on queues a report of its own
-        discardReportQueued.set(false);
-        List<Discard> discards = new ArrayList<>();
-        pendingDiscards.drainTo(discards);
-        List<LogEvent> events = new ArrayList<>(discards.size());
-        String reason = null;
-        for (Discard discard : discards) {
-            if (reason != null && !reason.equals(discard.reason())) {
-                reportDropped(events, reason);
-                events = new ArrayList<>();
-            }
-            reason = discard.reason();
-            events.add(discard.event());
-        }
-        if (reason != null) {
-            reportDropped(events, reason);
-        }
-    }
-
-    /**
-     * Reports several discarded events in one notification rather than one per event, a listener saving them
-     * usually paying per call, and a stop timing out abandoning up to a full queue at once. Converted by
-     * {@link #defaultConverter}, and only for a listener reading them.
-     *
-     * @param events The logging events being discarded
-     * @param reason A short, human-readable explanation of why they were discarded
-     */
-    private void reportDropped(List<LogEvent> events, String reason) {
-        LogDelivery handler = logDeliveryHandler;
-        if (handler == null || events.isEmpty()) {
-            return;
-        }
-        try {
-            LogDeliveryListener listener = handler.getListener();
-            if (listener == LogDeliveryListener.NOOP) {
-                // Nothing would read the documents, not worth converting, stack traces included
-                return;
-            }
-            List<Map<String, Object>> documents = new ArrayList<>(events.size());
-            for (LogEvent event : events) {
-                documents.add(defaultConverter.convert(event));
-            }
-            listener.onDocumentsDropped(List.copyOf(documents), reason);
-        } catch (Throwable e) {
-            // Throwable: a listener failing must not end the thread reporting, nor escape a stop
-            error("Failed to report a discarded logging event to the delivery listener", e);
-        }
+        discardReporter.report(event, reason);
     }
 
     /**
@@ -799,7 +687,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             // Otherwise left running past the stop, stuck for good or feeding the queue to a closed delivery
             abandonQueuedEvents();
         } finally {
-            stopDiscardReporter(remainingBudget(startNanos, budgetNanos));
+            discardReporter.stop(remainingBudget(startNanos, budgetNanos));
             stopLogDeliveryHandler(remainingBudget(startNanos, budgetNanos));
             // The filter alone, the state of this appender being changed here
             super.stop(timeout, timeUnit, false);
@@ -820,7 +708,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             }
         }
         discardedEvents.add(abandonedEvents.size());
-        reportDropped(abandonedEvents, "appender stopped before the event could be processed");
+        discardReporter.reportNow(abandonedEvents, "appender stopped before the event could be processed");
     }
 
     /**
@@ -853,31 +741,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         }
         // Saturates rather than overflows, and a negative timeout waits no more than a zero one does
         return closeTimeout == null ? Long.MAX_VALUE : Math.max(0, NANOSECONDS.convert(closeTimeout));
-    }
-
-    /**
-     * Stops the reporter of the discarded events once it reported those still waiting. Past the given time, or
-     * once interrupted, those it has not taken yet are reported on the calling thread instead, as the events
-     * still queued are, rather than left to a thread the JVM exiting would cut short.
-     *
-     * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
-     */
-    private void stopDiscardReporter(@Nullable Duration timeout) {
-        discardReporter.shutdown();
-        try {
-            long timeoutNanos = timeout == null ? Long.MAX_VALUE : timeout.toNanos();
-            if (discardReporter.awaitTermination(timeoutNanos, NANOSECONDS)) {
-                return;
-            }
-            if (discardReportRunning) {
-                // Otherwise idle, its thread yet to end, which a spent budget does not wait for
-                error("The delivery listener was still being notified of discarded logging events as the appender stopped");
-            }
-        } catch (InterruptedException e) {
-            currentThread().interrupt();
-        }
-        // The report in progress finishes on its own, the listener being notified of the rest concurrently
-        reportPendingDiscards();
     }
 
     /**
