@@ -65,18 +65,33 @@ import com.chavaillaz.appender.LogDeliveryListener;
 public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> extends AbstractAppender {
 
     /**
-     * Creates the threads of an executor, all given the same name for thread dumps.
+     * Creates the threads of an executor, named after their role and their appender (see
+     * {@link #threadName(String, String)}).
      * <p>
      * Daemon threads, like those of Log4j2: they only end with {@link #stop(long, TimeUnit)}, which the shutdown
      * hook of Log4j2 calls once the JVM starts shutting down, and a live non-daemon thread keeps it from doing so.
      * They take neither the inheritable thread-locals nor the context class loader of the thread creating them,
      * which they would otherwise keep reachable until the appender stops.
      *
-     * @param name The name of the threads
+     * @param role         The role of the threads
+     * @param appenderName The name of the appender they belong to
      * @return The thread factory to use
      */
-    private static ThreadFactory namedThreadFactory(String name) {
-        return Thread.ofPlatform().name(name).daemon(true).inheritInheritableThreadLocals(false).factory();
+    private static ThreadFactory namedThreadFactory(String role, String appenderName) {
+        return Thread.ofPlatform().name(threadName(role, appenderName)).daemon(true)
+                .inheritInheritableThreadLocals(false).factory();
+    }
+
+    /**
+     * Names a thread of an appender after its role and the appender, so that a thread dump tells apart the
+     * threads of two appenders, such as two instances of one plugin sending to different places.
+     *
+     * @param role         The role of the thread, such as {@code worker}
+     * @param appenderName The name of the appender it belongs to
+     * @return The name of the thread, {@code log-delivery-worker-Elasticsearch} for instance
+     */
+    private static String threadName(String role, String appenderName) {
+        return "log-delivery-" + role + "-" + appenderName;
     }
 
     /**
@@ -192,10 +207,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Reports {@link #pendingDiscards} on a virtual thread, one notification per reason, which inherits
      * neither the inheritable thread-locals nor the context class loader of the thread discarding the first
-     * event (see {@link #namedThreadFactory(String)}).
+     * event (see {@link #namedThreadFactory(String, String)}).
      */
-    private final ExecutorService discardReporter = Executors.newSingleThreadExecutor(
-            Thread.ofVirtual().name("log-delivery-discard-reporter").inheritInheritableThreadLocals(false).factory());
+    private final ExecutorService discardReporter;
 
     /**
      * Whether a report of {@link #pendingDiscards} is queued on {@link #discardReporter} and yet to start, so
@@ -259,8 +273,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.logConfiguration = configuration;
         DeliveryOptions options = configuration.getDeliveryOptions();
         this.initialCloseTimeout = options.closeTimeout();
-        this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents());
+        this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
         this.pendingDiscards = new LinkedBlockingQueue<>(options.maxQueuedEvents());
+        this.discardReporter = Executors.newSingleThreadExecutor(Thread.ofVirtual()
+                .name(threadName("discard-reporter", name)).inheritInheritableThreadLocals(false).factory());
         this.defaultConverter = new DefaultLogConverter(configuration);
     }
 
@@ -269,11 +285,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * capacity, with {@link DiscardOldestEventPolicy} in place of the default {@code AbortPolicy}.
      *
      * @param queueCapacity The maximum number of tasks the queue can hold
+     * @param appenderName  The name of this appender, which its thread is named after
      * @return The executor to use for {@link #workerExecutor}
      */
-    private ThreadPoolExecutor newWorkerExecutor(int queueCapacity) {
-        return new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS,
-                new LinkedBlockingQueue<>(queueCapacity), namedThreadFactory("log-delivery-worker"), new DiscardOldestEventPolicy());
+    private ThreadPoolExecutor newWorkerExecutor(int queueCapacity, String appenderName) {
+        return new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new LinkedBlockingQueue<>(queueCapacity),
+                namedThreadFactory("worker", appenderName), new DiscardOldestEventPolicy());
     }
 
     /**
@@ -318,7 +335,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             return;
         }
 
-        flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("log-delivery-flush-scheduler"));
+        flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("flush-scheduler", getName()));
         flushScheduler.scheduleWithFixedDelay(this::requestFlush, intervalMillis, intervalMillis, MILLISECONDS);
     }
 

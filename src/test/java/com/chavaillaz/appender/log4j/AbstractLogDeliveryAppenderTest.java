@@ -22,7 +22,6 @@ import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -100,26 +99,14 @@ class AbstractLogDeliveryAppenderTest {
     }
 
     /**
-     * How many periodic flush schedulers are alive right now, across every appender in this JVM. Only ever
-     * compared against a reading taken moments earlier, so schedulers left behind by another test do not
-     * matter.
-     */
-    private static int countFlushSchedulerThreads() {
-        return (int) Thread.getAllStackTraces().keySet().stream()
-                .filter(Thread::isAlive)
-                .filter(thread -> "log-delivery-flush-scheduler".equals(thread.getName()))
-                .count();
-    }
-
-    /**
-     * The live threads with the given name right now, across every appender in this JVM, as a mutable set so
-     * a caller can subtract the ones that were already there before it acted.
+     * The live platform threads with the given name right now, across every appender in this JVM: named after
+     * their appender, those of an appender whose name no other test uses.
      */
     private static Set<Thread> liveThreadsNamed(String name) {
         return Thread.getAllStackTraces().keySet().stream()
                 .filter(Thread::isAlive)
                 .filter(thread -> name.equals(thread.getName()))
-                .collect(Collectors.toCollection(HashSet::new));
+                .collect(Collectors.toSet());
     }
 
     /**
@@ -227,12 +214,11 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofMillis(200)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, configuration);
+            var appender = new LogDeliveryAppender("started-twice", null, configuration);
 
             // when: started again, as nothing in Log4j2's lifecycle rules out
             appender.start();
             var handler = appender.getLogDeliveryHandler();
-            int schedulersAfterFirstStart = countFlushSchedulerThreads();
             appender.start();
 
             // then: still the same handler, rather than a second one leaving the first with no reference
@@ -242,9 +228,9 @@ class AbstractLogDeliveryAppenderTest {
 
             // and: still a single scheduler. Counted rather than timed: a second one only shows up as two
             // flushes per interval, which is indistinguishable from one slow interval on a loaded machine
-            assertThat(countFlushSchedulerThreads())
+            assertThat(liveThreadsNamed("log-delivery-flush-scheduler-started-twice"))
                     .as("Starting again should not have created a second flush scheduler")
-                    .isLessThanOrEqualTo(schedulersAfterFirstStart);
+                    .hasSize(1);
 
             // and: that scheduler is running, waited for rather than slept through for the same reason
             appender.append(mockLogEvent());
@@ -1704,13 +1690,12 @@ class AbstractLogDeliveryAppenderTest {
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
             var workerIsDaemon = new CompletableFuture<Boolean>();
-            var appender = new LogDeliveryAppender("appender-name", null, configuration) {
+            var appender = new LogDeliveryAppender("daemon-threads", null, configuration) {
                 @Override
                 protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
                     return () -> workerIsDaemon.complete(Thread.currentThread().isDaemon());
                 }
             };
-            var schedulersBefore = liveThreadsNamed("log-delivery-flush-scheduler");
 
             // when: started and logged to from a non-daemon thread, as an application's main thread does
             Thread.ofPlatform().daemon(false).start(() -> {
@@ -1722,15 +1707,72 @@ class AbstractLogDeliveryAppenderTest {
             // shutdown hook calls, and that hook waits for the JVM to start shutting down -- which a live
             // non-daemon thread prevents, so an application returning from main() never exited at all
             assertThat(workerIsDaemon.get(5, SECONDS)).as("The worker thread should be a daemon").isTrue();
-            var schedulersCreated = liveThreadsNamed("log-delivery-flush-scheduler");
-            schedulersCreated.removeAll(schedulersBefore);
-            assertThat(schedulersCreated).as("Starting should have created a flush scheduler").isNotEmpty();
-            assertThat(schedulersCreated)
+            assertThat(liveThreadsNamed("log-delivery-flush-scheduler-daemon-threads"))
                     .as("The flush scheduler thread should be a daemon")
-                    .allMatch(Thread::isDaemon);
+                    .singleElement()
+                    .matches(Thread::isDaemon);
 
             // cleanup
             appender.stop(1, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Names its threads after the appender, telling two appenders apart in a thread dump")
+        void testThreadsAreNamedAfterTheAppender() throws Exception {
+            // given: two appenders, as two instances of one plugin sending to different places are, each
+            // failing to convert its events, so that they are reported as dropped, and recording which threads
+            // convert and report them
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var converting = new CopyOnWriteArrayList<String>();
+            var reporting = new CopyOnWriteArrayList<String>();
+            List<AbstractLogDeliveryAppender<?>> appenders = new ArrayList<>();
+            for (String name : List.of("first", "second")) {
+                var handler = mock(LogDelivery.class);
+                when(handler.getListener()).thenReturn(new LogDeliveryListener() {
+                    @Override
+                    public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                        reporting.add(name + ": " + Thread.currentThread().getName());
+                    }
+                });
+                appenders.add(new AbstractLogDeliveryAppender<>(name, null, configuration) {
+                    @Override
+                    protected LogDelivery createLogDeliveryHandler() {
+                        return handler;
+                    }
+
+                    @Override
+                    protected LogConverter getLogConverter() {
+                        return event -> {
+                            converting.add(name + ": " + Thread.currentThread().getName());
+                            throw new IllegalStateException("Unable to convert");
+                        };
+                    }
+                });
+            }
+
+            // when: each one is started and logged to
+            for (var appender : appenders) {
+                appender.start();
+                appender.append(realLogEvent("message"));
+            }
+
+            // then: every thread of an appender bears its name
+            awaitSize(reporting, 2);
+            assertThat(converting).containsExactlyInAnyOrder(
+                    "first: log-delivery-worker-first",
+                    "second: log-delivery-worker-second");
+            assertThat(reporting).containsExactlyInAnyOrder(
+                    "first: log-delivery-discard-reporter-first",
+                    "second: log-delivery-discard-reporter-second");
+            assertThat(liveThreadsNamed("log-delivery-flush-scheduler-first")).hasSize(1);
+            assertThat(liveThreadsNamed("log-delivery-flush-scheduler-second")).hasSize(1);
+
+            // cleanup
+            for (var appender : appenders) {
+                appender.stop(1, SECONDS);
+            }
         }
 
         @Test
