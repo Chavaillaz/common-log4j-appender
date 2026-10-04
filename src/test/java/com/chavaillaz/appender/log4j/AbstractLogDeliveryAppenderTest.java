@@ -2500,6 +2500,48 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Reports an event whose task comes back null as dropped, as a task failing to be created")
+        void testNullTaskIsReportedAsATaskCreationFailure() throws Exception {
+            // given: createLogDeliveryTask() returning null, a subclass mistake
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var handler = mock(LogDelivery.class);
+            when(handler.getMetrics()).thenReturn(DeliveryMetrics.NONE);
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            when(handler.getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    droppedReasons.add(reason);
+                }
+            });
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return handler;
+                }
+
+                @Override
+                protected @Nullable Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                    return null;
+                }
+            };
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when
+            appender.start();
+            assertThatNoException().isThrownBy(() -> appender.append(realLogEvent("without a task")));
+            appender.stop(2, SECONDS);
+
+            // then: counted and reported like any event lost before reaching the worker, rather than failing on
+            // the worker without a trace in the metrics nor the listener
+            assertThat(droppedReasons).containsExactly("log delivery task creation error");
+            assertThat(appender.getMetrics().droppedDocuments()).isEqualTo(1);
+            assertThat(errors).hasSize(1).first().isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
         @DisplayName("Never reports an event as dropped once it has already been handed to the worker")
         void testEventAlreadyHandedOffIsNotReportedDropped() throws Exception {
             // given: a configuration that fails to resolve, which the interface documents as legitimate for

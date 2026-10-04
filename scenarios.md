@@ -76,6 +76,7 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Reports a failing task and keeps processing the next ones
 - Reports an exception thrown while creating a task without propagating it to the caller
+- Reports an event whose task comes back null as dropped, as a task failing to be created
 - Never reports an event as dropped once it has already been handed to the worker
 
 **Delivery failing to be created**
@@ -630,8 +631,6 @@ The scenarios that can hurt, left for now, with what could be done about them.
 
 ### Minor
 
-- **`createLogDeliveryTask()` returning `null`** loses every event, each logged as a failing task, neither counted
-  as dropped nor reported to the listener.
 - **One event failing to convert while discards are reported** costs the listener the whole group reported with
   it. Only an event of a custom `LogEventFactory`, or memory running out, can make `DefaultLogConverter` fail.
 - **An event of a custom `LogEventFactory` whose `toImmutable()` returns itself** is queued as it is, not copied,

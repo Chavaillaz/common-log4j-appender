@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.RejectedExecutionHandler;
@@ -451,7 +452,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         LogEvent immutableEvent = snapshot(loggingEvent);
         freezeMessage(immutableEvent);
         try {
-            Runnable task = createLogDeliveryTask(immutableEvent);
+            // Checked here, where the event it would lose is still reported, rather than once the worker runs it
+            Runnable task = Objects.requireNonNull(createLogDeliveryTask(immutableEvent),
+                    "createLogDeliveryTask() returned null");
             // Everything else, the check of its severity included, runs once it is queued, on the worker
             workerExecutor.execute(new EventTask(immutableEvent, () -> deliver(task, immutableEvent)));
         } catch (RejectedExecutionException e) {
@@ -459,7 +462,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             error("Log delivery task rejected: the appender is stopping or stopped", e);
             discard(immutableEvent, "appender no longer accepting events");
         } catch (Throwable e) {
-            // createLogDeliveryTask() failed, losing the event
+            // createLogDeliveryTask() failed or returned null, losing the event
             error("Log delivery task creation error", e);
             discard(immutableEvent, "log delivery task creation error");
         }
