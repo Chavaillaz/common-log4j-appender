@@ -436,8 +436,10 @@ to split it further.
   may still deliver its documents, which a dead-letter sink then holds as well. That report comes once the
   budget is spent, so keep the budget under the time the platform lets a stopping process run before killing
   it, less what the application does before Log4j2 stops: `docker stop` kills after 10 seconds, Kubernetes
-  after 30 by default, and the default `CloseTimeout` of 5 seconds stays under both. A process killed while
-  the stop still waits reports none of what is pending.
+  after 30 by default, and the default `CloseTimeout` of 5 seconds stays under both. Log4j2 stops its
+  appenders one after the other, each with the whole budget, and the budgets of several appenders add
+  up: two of them with the default take 10 seconds during an outage, so it is their sum that must stay under
+  the kill. A process killed while the stop still waits reports none of what is pending.
 - **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
   the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected

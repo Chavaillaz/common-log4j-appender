@@ -81,8 +81,9 @@ import org.jspecify.annotations.Nullable;
  *                                   processed first, and its delivery closed within what they left. Defaults
  *                                   to five seconds, so that the platform running the application, which
  *                                   kills a process taking longer to stop (after 10 seconds for Docker, 30 for
- *                                   Kubernetes), lets it report what is still pending; {@code null} waits
- *                                   indefinitely, and it cannot be negative.
+ *                                   Kubernetes), lets it report what is still pending, the budgets of several
+ *                                   appenders adding up as Log4j2 stops them one after the other; {@code null}
+ *                                   waits indefinitely, and it cannot be negative.
  */
 public record DeliveryOptions(
         int flushThreshold,

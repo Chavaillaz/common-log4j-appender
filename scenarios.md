@@ -553,7 +553,9 @@ What an application or an implementer has to know, which the README or the Javad
   requests kept an unrelated virtual thread from running for 3.9 seconds with two processors.
 - **A stop killed by the platform before its report.** What is still pending is reported once the stop budget is
   spent: a budget longer than what the platform grants a stopping process (10 seconds for `docker stop`, 30 for
-  Kubernetes) reports nothing during an outage. The default `CloseTimeout` of 5 seconds stays under both.
+  Kubernetes) reports nothing during an outage. The default `CloseTimeout` of 5 seconds stays under both for one
+  appender, but Log4j2 stops appenders one after the other, each with the whole budget: two appenders whose
+  requests are never answered took 10,044 ms to stop, the second reporting at 10,043 ms.
 - **Unanswered requests holding every transmission slot.** A future that never completes keeps its slot until the
   delivery closes, and once all are held, the pipeline stalls, its queue discarding the oldest events. The client
   needs a timeout.
