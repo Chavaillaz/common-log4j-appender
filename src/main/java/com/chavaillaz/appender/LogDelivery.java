@@ -13,7 +13,8 @@ public interface LogDelivery extends AutoCloseable {
 
     /**
      * Sends the given document, or does nothing for {@code null}, which a
-     * {@link com.chavaillaz.appender.log4j.LogConverter} returns to skip an event.
+     * {@link com.chavaillaz.appender.log4j.LogConverter} returns to skip an event. Throwing tells that the
+     * document was not kept: the appender then reports its event as dropped.
      *
      * @param document The document, or {@code null} to skip this event
      */

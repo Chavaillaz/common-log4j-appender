@@ -22,7 +22,7 @@ import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
 
 /**
- * Reports the logging events an appender discards before they reach its delivery, notifying the listener of
+ * Reports the logging events an appender discards on their way to its delivery, notifying the listener of
  * that delivery on a thread of its own: converting the events and calling the listener never hold up the thread
  * discarding them, the one logging or the worker of the appender. Its own failures go to the
  * {@code ErrorHandler} of the appender.
@@ -33,7 +33,7 @@ import com.chavaillaz.appender.LogDeliveryListener;
 final class DiscardReporter {
 
     /**
-     * A logging event discarded before reaching the delivery, waiting in {@link #pendingDiscards} to be reported.
+     * A logging event discarded on its way to the delivery, waiting in {@link #pendingDiscards} to be reported.
      *
      * @param event  The logging event discarded
      * @param reason A short, human-readable explanation of why it was discarded
@@ -61,7 +61,7 @@ final class DiscardReporter {
     private final DefaultLogConverter converter;
 
     /**
-     * The events discarded before reaching the delivery, waiting for {@link #executor} to report them.
+     * The events discarded on their way to the delivery, waiting for {@link #executor} to report them.
      */
     private final BlockingQueue<Discard> pendingDiscards;
 

@@ -185,7 +185,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final DefaultLogConverter defaultConverter;
 
     /**
-     * Reports the events discarded before reaching the delivery, so that converting them and calling the
+     * Reports the events discarded on their way to the delivery, so that converting them and calling the
      * listener never holds up the thread logging, nor the worker. Bounded like the queue, a discard past it being
      * counted and logged rather than waited for. Runs on a virtual thread, which inherits neither the
      * inheritable thread-locals nor the context class loader of the thread discarding the first event (see
@@ -214,7 +214,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final Runnable flushTask = this::flushIfRequested;
 
     /**
-     * Events discarded before reaching the delivery, reported or not, for {@link #getMetrics()}.
+     * Events discarded on their way to the delivery, reported or not, for {@link #getMetrics()}.
      */
     private final LongAdder discardedEvents = new LongAdder();
 
@@ -557,7 +557,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Creates the task transmitting the given event, called on the application thread: it should only capture
      * what it needs, leaving the conversion and the transmission to the task, run on the background thread.
      * Defaults to a task converting the event with {@link #getLogConverter()} and sending the document to the
-     * delivery handler, an event failing to convert being reported as dropped.
+     * delivery handler, an event failing to convert, or that the delivery throws on, being reported as dropped.
      *
      * @param loggingEvent The logging event to send, an immutable snapshot
      * @return The task to run
@@ -577,7 +577,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                 discard(loggingEvent, "log conversion error");
                 return;
             }
-            handler.send(document);
+            try {
+                handler.send(document);
+            } catch (Throwable e) {
+                // Not kept by the delivery, which then has nothing to report: lost for good unless reported here
+                error("Log delivery error, reporting the event as dropped", e);
+                discard(loggingEvent, "log delivery error");
+            }
         };
     }
 
@@ -588,8 +594,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * {@link LogConverter#newInstance(String, LogConfiguration)} for one named in a configuration), along with
      * {@link #requiresLocation()} for one reading the location of the caller.
      * <p>
-     * The events this appender discards before converting them, when its queue is full, a stop gives up on them
-     * or this converter fails on them, are reported to the listener converted by a {@link DefaultLogConverter}
+     * The events this appender discards, when its queue is full, a stop gives up on them, this converter fails on
+     * them or the delivery throws on them, are reported to the listener converted by a {@link DefaultLogConverter}
      * whatever this returns: that one is safe to call from the thread reporting them, and only gives up the
      * fields it cannot read.
      *

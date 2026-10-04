@@ -78,10 +78,10 @@ public interface LogDeliveryListener {
 
     /**
      * Called when documents are discarded for good instead of kept for a later retry, as {@code reason} says:
-     * they kept failing, a pending or queued limit was reached, an event failed to convert, or a delivery closed
-     * before sending them or before their transmission was answered. The documents themselves are passed, as
-     * an unmodifiable list: this is the last chance to save them, to a local file or a dead-letter queue for
-     * instance.
+     * they kept failing, a pending or queued limit was reached, an event failed to convert or to reach its
+     * delivery, or a delivery closed before sending them or before their transmission was answered. The documents
+     * themselves are passed, as an unmodifiable list: this is the last chance to save them, to a local file or a
+     * dead-letter queue for instance.
      *
      * @param documents The documents being discarded
      * @param reason    A short, human-readable explanation of why the documents were discarded

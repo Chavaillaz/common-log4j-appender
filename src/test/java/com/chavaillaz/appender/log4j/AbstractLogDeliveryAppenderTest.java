@@ -756,6 +756,55 @@ class AbstractLogDeliveryAppenderTest {
             assertThat(appender.getMetrics().droppedDocuments()).isEqualTo(1);
         }
 
+        @Test
+        @DisplayName("Reports an event its delivery throws on as dropped, since the delivery did not keep it")
+        void testDefaultTaskReportsAnEventTheDeliveryThrowsOn() throws Exception {
+            // given: a delivery of its own throwing on one document, as one refusing a document it cannot encode
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var handler = mock(LogDelivery.class);
+            when(handler.getMetrics()).thenReturn(DeliveryMetrics.NONE);
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            var droppedReasons = new CopyOnWriteArrayList<String>();
+            when(handler.getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                    droppedReasons.add(reason);
+                }
+            });
+            doAnswer(invocation -> {
+                Map<String, Object> document = invocation.getArgument(0);
+                if ("unsendable".equals(document.get("logmessage"))) {
+                    throw new IllegalStateException("Simulated delivery failure");
+                }
+                return null;
+            }).when(handler).send(any(Map.class));
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return handler;
+                }
+            };
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+
+            // when
+            appender.start();
+            appender.append(realLogEvent("unsendable"));
+            appender.append(realLogEvent("sendable"));
+            appender.stop(2, SECONDS);
+
+            // then: the next event was still sent, and the one the delivery threw on reached the listener and
+            // the metrics, rather than only the handler of the appender, which may rate-limit it
+            verify(handler).send(argThat((Map<String, Object> document) -> "sendable".equals(document.get("logmessage"))));
+            assertThat(dropped.stream().map(d -> d.get("logmessage")).toList()).containsExactly("unsendable");
+            assertThat(droppedReasons).containsExactly("log delivery error");
+            assertThat(appender.getMetrics().droppedDocuments()).isEqualTo(1);
+            assertThat(errors).hasSize(1).first().isInstanceOf(IllegalStateException.class);
+        }
+
     }
 
     @Nested

@@ -70,6 +70,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Converts each event with a DefaultLogConverter and sends the document to the delivery
 - Converts each event with the converter the appender returns instead, when it overrides it
 - Reports an event the converter fails on as dropped, since it is never sent
+- Reports an event its delivery throws on as dropped, since the delivery did not keep it
 
 **Failing tasks**
 
@@ -565,7 +566,7 @@ What an application or an implementer has to know, which the README or the Javad
 - **A transmission still in flight once closed** is reported as dropped, and may be delivered all the same.
 - **A converter reusing one document for every event.** The events `a`, `b` and `c` went out as `[c, c, c]`, and a
   partial failure rejecting one of them dropped all three. A converter returns a new document for every event.
-- **Events discarded before their conversion take the shape of `DefaultLogConverter`,** whatever converter the
+- **Events the appender discards take the shape of `DefaultLogConverter`,** whatever converter the
   appender uses: a dead-letter sink then holds documents of two shapes.
 - **Discards outpacing their reporter are only counted and logged.** At most `MaxQueuedEvents` of them wait to be
   reported: a burst of 50,000 events in 50 ms left up to 36,000 of them unreported, though counted, with a
