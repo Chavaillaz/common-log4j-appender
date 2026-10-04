@@ -587,6 +587,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * built with the configuration of this appender; override it to return another one (see
      * {@link LogConverter#newInstance(String, LogConfiguration)} for one named in a configuration), along with
      * {@link #requiresLocation()} for one reading the location of the caller.
+     * <p>
+     * The events this appender discards before converting them, when its queue is full, a stop gives up on them
+     * or this converter fails on them, are reported to the listener converted by a {@link DefaultLogConverter}
+     * whatever this returns: that one is safe to call from the thread reporting them, and only gives up the
+     * fields it cannot read.
      *
      * @return The converter to use
      */

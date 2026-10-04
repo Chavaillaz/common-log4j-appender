@@ -248,6 +248,12 @@ A converter reading the location of the caller (`LogEvent.getSource()`) needs th
 `requiresLocation()` to return `true`. The event is otherwise handed over without it: Log4j2 finds it by
 walking the stack of the application thread, which costs twenty times the rest of `append()`.
 
+The events the appender discards before converting them, when its queue is full, a stop gives up on them
+or your converter fails on them, still reach `onDocumentsDropped` (see [Observability](#observability)),
+converted by a `DefaultLogConverter` whatever converter the appender uses: that one is safe to call from the
+thread reporting them, and only gives up the fields it cannot read. A dead-letter sink then holds documents
+of both shapes.
+
 ## Observability
 
 To monitor the health of the delivery pipeline (throughput, latency, failures, data loss), pass a
