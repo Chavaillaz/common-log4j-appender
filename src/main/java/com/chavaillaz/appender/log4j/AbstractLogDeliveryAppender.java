@@ -591,11 +591,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * The converter turning an event into the document sent, called on the background thread by the task
-     * {@link #createLogDeliveryTask(LogEvent)} creates by default. Defaults to a {@link DefaultLogConverter}
-     * built with the configuration of this appender; override it to return another one (see
-     * {@link LogConverter#newInstance(String, LogConfiguration)} for one named in a configuration), along with
-     * {@link #requiresLocation()} for one reading the location of the caller.
+     * The converter turning an event into the document sent, called for every event on the background thread by
+     * the task {@link #createLogDeliveryTask(LogEvent)} creates by default. Defaults to a
+     * {@link DefaultLogConverter} built with the configuration of this appender; override it to return another
+     * one, created once rather than on every call (see {@link LogConverter#newInstance(String, LogConfiguration)}
+     * for one named in a configuration), along with {@link #requiresLocation()} for one reading the location of
+     * the caller.
      * <p>
      * The events this appender discards, when its queue is full, a stop gives up on them, this converter fails on
      * them or the delivery throws on them, are reported to the listener converted by a {@link DefaultLogConverter}

@@ -39,10 +39,11 @@ import org.apache.logging.log4j.status.StatusLogger;
  * <p>
  * Each line wraps the document, unmodified, with the reason it was dropped and when:
  * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Lines are appended whole, never interleaved with
- * those of concurrent callers, nor of other listeners or processes appending to the same file, and a line left
- * incomplete by a write cut short (a crash, a full disk) is ended before the next one. A failure to write hands
- * the documents it may have left out to {@link #onWriteFailure(Path, List, String, IOException)}, which logs
- * them by default, rather than throwing into the pipeline.
+ * those of concurrent callers, nor, on a local file system, with those of other listeners or processes appending
+ * to the same file, and a line left incomplete by a write cut short (a crash, a full disk) is ended before the
+ * next one. A failure to write hands the documents it may have left out to
+ * {@link #onWriteFailure(Path, List, String, IOException)}, which logs them by default, rather than throwing into
+ * the pipeline.
  * <p>
  * The JSON is written without any dependency: {@code null}, {@link Boolean}, {@link Number}, {@link Map},
  * {@link Iterable} and array values as their JSON counterpart, the latter three recursively and keys in their
