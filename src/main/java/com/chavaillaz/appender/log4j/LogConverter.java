@@ -16,6 +16,10 @@ import com.chavaillaz.appender.LogConfiguration;
  * <p>
  * A converter takes the configuration it needs in its constructor, so that none is used unconfigured:
  * {@link #newInstance(String, LogConfiguration)} creates the one a configuration names by its class.
+ * <p>
+ * It runs on the background thread of the appender, and logs through {@code StatusLogger.getLogger()} if it
+ * logs at all: an ordinary logger hands each of its messages back to the appender as one more event to convert,
+ * in a loop that never ends once a converter logs for every event.
  */
 @FunctionalInterface
 public interface LogConverter {

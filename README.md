@@ -172,7 +172,9 @@ discarding the oldest events meanwhile. Give your client a request timeout.
 Every failed attempt is logged with its cause on Log4j2's status logger (see
 [Shutdown and failure handling](#shutdown-and-failure-handling)), so there is no need to log it again. A
 delivery logging anything of its own uses `StatusLogger.getLogger()` too, never an ordinary logger, which
-would feed its own warnings back into the appender.
+would feed its own warnings back into the appender. The client library it calls logs through ordinary
+loggers, which the configuration keeps away from the appender (see
+[Shutdown and failure handling](#shutdown-and-failure-handling)).
 
 The documents are handed over as an unmodifiable list. If your client can tell you that only *some* of
 them were rejected (e.g. one malformed document in an otherwise-successful bulk response), return
@@ -233,7 +235,9 @@ collide with one of them. To customize this behaviour, extend `DefaultLogConvert
 relevant `write*` method, or implement `LogConverter` from scratch for full control, then return it from
 `getLogConverter()` of your appender. A converter takes the configuration it needs in its constructor:
 `LogConverter.newInstance(className, configuration)` creates the one a configuration names by its class,
-through its public constructor taking the configuration.
+through its public constructor taking the configuration. A converter runs on the background thread of the
+appender, and logs through `StatusLogger.getLogger()` if it logs at all: an ordinary logger hands each of
+its messages back to the appender as one more event to convert.
 
 A converter reading the location of the caller (`LogEvent.getSource()`) needs the appender to override
 `requiresLocation()` to return `true`. The event is otherwise handed over without it: Log4j2 finds it by
@@ -424,6 +428,13 @@ to split it further.
   document to ship, whose own failure warns again — a loop that starts precisely when the downstream
   system goes down, and does not settle. So don't route the library's own loggers anywhere: there is
   nothing to route.
+- **Loops through other loggers:** code running inside the pipeline that logs through an ordinary logger
+  feeds the appender just the same, and a single event starts the loop. A converter logging each event it
+  converts sustains itself as fast as the background thread runs, and a client library logging each
+  request at a level the appender receives, the root logger at `DEBUG` for instance, as fast as requests
+  complete. Converters, deliveries and listeners log through `StatusLogger.getLogger()`, and the loggers of
+  the client a delivery calls are kept away from the appender: a `<Logger>` for their package with
+  `additivity="false"` and another appender, or a level above the one they log requests at.
 
 ## Example implementations
 
