@@ -25,7 +25,9 @@ import com.chavaillaz.appender.LogConfiguration;
 public interface LogConverter {
 
     /**
-     * Converts a logging event into the document to send.
+     * Converts a logging event into the document to send, a new one for every event, never modified once
+     * returned: the delivery keeps it until it is sent, retried or reported as dropped, and tells the documents
+     * of a request apart by reference.
      *
      * @param event The logging event
      * @return The document to send, or {@code null} to skip this event (see

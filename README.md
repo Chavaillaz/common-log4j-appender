@@ -240,9 +240,10 @@ collide with one of them. To customize this behaviour, extend `DefaultLogConvert
 relevant `write*` method, or implement `LogConverter` from scratch for full control, then return it from
 `getLogConverter()` of your appender. A converter takes the configuration it needs in its constructor:
 `LogConverter.newInstance(className, configuration)` creates the one a configuration names by its class,
-through its public constructor taking the configuration. A converter runs on the background thread of the
-appender, and logs through `StatusLogger.getLogger()` if it logs at all: an ordinary logger hands each of
-its messages back to the appender as one more event to convert.
+through its public constructor taking the configuration. A converter returns a new document for every
+event, never reused nor modified afterwards: the delivery keeps it until it is sent, retried or reported as
+dropped. It runs on the background thread of the appender, and logs through `StatusLogger.getLogger()` if it
+logs at all: an ordinary logger hands each of its messages back to the appender as one more event to convert.
 
 A converter reading the location of the caller (`LogEvent.getSource()`) needs the appender to override
 `requiresLocation()` to return `true`. The event is otherwise handed over without it: Log4j2 finds it by
