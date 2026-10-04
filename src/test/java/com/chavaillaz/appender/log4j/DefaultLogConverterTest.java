@@ -133,6 +133,27 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Does not let an MDC entry fill a reserved field left null")
+        void testConversionMdcDoesNotFillReservedFieldsLeftNull() {
+            // given: a configuration without host, and an MDC entry of that name, the host a request came from
+            var configuration = TestLogConfiguration.builder().host(null).build();
+            var converter = new DefaultLogConverter(configuration);
+            var mdc = new JdkMapAdapterStringMap();
+            mdc.putValue("host", "client.example.com");
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setContextData(mdc)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: the field keeps what the converter wrote, whatever the MDC of the event holds
+            assertThat(document).containsEntry("host", null);
+        }
+
+        @Test
         @DisplayName("Prefers the logger name over the internal fully qualified caller class name")
         void testConversionPrefersLoggerNameOverFqcn() {
             // given: loggerFqcn identifies the internal wrapper class Log4j2 uses to locate the caller's

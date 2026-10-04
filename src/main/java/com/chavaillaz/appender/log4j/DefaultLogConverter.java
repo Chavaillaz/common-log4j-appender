@@ -29,7 +29,8 @@ import com.chavaillaz.appender.LogConfiguration;
  *     <li><strong>logmessage:</strong> Formatted message, truncated to {@link #getMaxMessageLength()} characters</li>
  *     <li><strong>thread:</strong> Name of the thread that created the logging event</li>
  * </ul>
- * The MDC entries are added as well, without overriding any of these fields. If the event carries an exception:
+ * The MDC entries are added as well, without overriding any of these fields, even one left {@code null}. If the
+ * event carries an exception:
  * <ul>
  *     <li><strong>class:</strong> Name of the class of the exception</li>
  *     <li><strong>stacktrace:</strong> Stack trace, truncated to {@link #getMaxStackTraceLength()} characters</li>
@@ -217,8 +218,9 @@ public class DefaultLogConverter implements LogConverter {
     }
 
     /**
-     * Writes the MDC fields of the logging event in the given document, which a custom context data failing
-     * while iterated only costs its own fields.
+     * Writes the MDC fields of the logging event in the given document, never in place of a field written
+     * already, even one left {@code null}: a document keeps the same shape whatever the MDC of its event holds.
+     * A custom context data failing while iterated only costs its own fields.
      *
      * @param document The document to write the fields into
      * @param event    The logging event
@@ -229,7 +231,12 @@ public class DefaultLogConverter implements LogConverter {
             return;
         }
         try {
-            contextData.forEach(document::putIfAbsent);
+            contextData.forEach((key, value) -> {
+                // Rather than putIfAbsent(), which replaces a null value
+                if (!document.containsKey(key)) {
+                    document.put(key, value);
+                }
+            });
         } catch (Throwable e) {
             // Throwable, iterating a custom context data running code of the application
             log.warn("Unable to read the MDC context data of a logging event, it will be omitted", e);

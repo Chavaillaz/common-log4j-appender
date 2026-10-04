@@ -236,11 +236,11 @@ fields:
 | `stacktrace`  | Stack trace, only present with an exception, truncated to 8'192 characters by default (see `getMaxStackTraceLength()`) |
 
 All MDC (context) entries are also added as-is, without overriding any of the fields above should a key
-collide with one of them. To customize this behaviour, extend `DefaultLogConverter` and override the
-relevant `write*` method, or implement `LogConverter` from scratch for full control, then return it from
-`getLogConverter()` of your appender. A converter takes the configuration it needs in its constructor:
-`LogConverter.newInstance(className, configuration)` creates the one a configuration names by its class,
-through its public constructor taking the configuration. A converter returns a new document for every
+collide with one of them, even one left `null`. To customize this behaviour, extend `DefaultLogConverter`
+and override the relevant `write*` method, or implement `LogConverter` from scratch for full control, then
+return it from `getLogConverter()` of your appender. A converter takes the configuration it needs in its
+constructor: `LogConverter.newInstance(className, configuration)` creates the one a configuration names by
+its class, through its public constructor taking the configuration. A converter returns a new document for every
 event, never reused nor modified afterwards: the delivery keeps it until it is sent, retried or reported as
 dropped. It runs on the background thread of the appender, and logs through `StatusLogger.getLogger()` if it
 logs at all: an ordinary logger hands each of its messages back to the appender as one more event to convert.

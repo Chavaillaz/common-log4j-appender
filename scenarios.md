@@ -123,6 +123,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Does not include exception fields when the event carries no exception
 - Does not fail when the event carries no MDC context data
 - Does not let an MDC entry override a reserved field
+- Does not let an MDC entry fill a reserved field left null
 - Prefers the logger name over the internal fully qualified caller class name
 - Falls back to the class of the logger when the logger name is missing
 - Converts a null message to a null logmessage field
@@ -620,8 +621,6 @@ The scenarios that can hurt, left for now, with what could be done about them.
   failing write logs its documents on the status logger.
 - **The size estimate and the dead-letter file copy a primitive array into a list of boxed values** to measure or
   write it, taking memory in proportion to the array. A view of the array would not.
-- **An MDC entry fills a standard field left `null`,** `putIfAbsent()` replacing a `null` value: the host of a
-  configuration answering `null`, for instance.
 - **An MDC value that is a mutable object is kept by reference:** a document sent, or retried, later carries its
   state at that time.
 - **Dead-letter files follow symbolic links and take the default permissions of the process.** In a directory
