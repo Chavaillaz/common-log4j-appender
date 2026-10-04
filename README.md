@@ -427,9 +427,11 @@ to split it further.
 - **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
   the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected
-  documents. Any exception thrown while converting or sending a log is reported through Log4j2's
-  `StatusLogger` (visible with `-Dlog4j2.debug`, a `status` attribute on the root `<Configuration>`
-  element, or a `<StatusListener>`) instead of being silently swallowed, in addition to your
+  documents. Delivery is thus at least once: a request the downstream system processed although its answer
+  failed, the client timing out first for instance, is retried, and its documents delivered twice. Any
+  exception thrown while converting or sending a log is reported through Log4j2's `StatusLogger` (visible
+  with `-Dlog4j2.debug`, a `status` attribute on the root `<Configuration>` element, or a
+  `<StatusListener>`) instead of being silently swallowed, in addition to your
   `LogDeliveryListener` if configured. Every failed attempt is logged there as a warning with its cause,
   whether returned or thrown, and documents given up on as an error, so an outage shows from its first
   failure rather than once documents start being discarded.
