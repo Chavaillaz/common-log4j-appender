@@ -549,7 +549,7 @@ What an application or an implementer has to know, which the README or the Javad
   requests kept an unrelated virtual thread from running for 3.9 seconds with two processors.
 - **A stop killed by the platform before its report.** What is still pending is reported once the stop budget is
   spent: a budget longer than what the platform grants a stopping process (10 seconds for `docker stop`, 30 for
-  Kubernetes, the default `CloseTimeout`) reports nothing during an outage.
+  Kubernetes) reports nothing during an outage. The default `CloseTimeout` of 5 seconds stays under both.
 - **Unanswered requests holding every transmission slot.** A future that never completes keeps its slot until the
   delivery closes, and once all are held, the pipeline stalls, its queue discarding the oldest events. The client
   needs a timeout.

@@ -79,8 +79,10 @@ import org.jspecify.annotations.Nullable;
  *                                   {@code shutdownTimeout} of the Log4j2 configuration is left at {@code 0},
  *                                   also the budget of a whole appender stop: the events it accepted are
  *                                   processed first, and its delivery closed within what they left. Defaults
- *                                   to thirty seconds; {@code null} waits indefinitely, and it cannot be
- *                                   negative.
+ *                                   to five seconds, so that the platform running the application, which
+ *                                   kills a process taking longer to stop (after 10 seconds for Docker, 30 for
+ *                                   Kubernetes), lets it report what is still pending; {@code null} waits
+ *                                   indefinitely, and it cannot be negative.
  */
 public record DeliveryOptions(
         int flushThreshold,
@@ -217,7 +219,7 @@ public record DeliveryOptions(
         private int maxQueuedEvents = 10_000;
         private Duration retryBackoff = Duration.ofSeconds(1);
         private Duration maxRetryBackoff = Duration.ofSeconds(30);
-        private @Nullable Duration closeTimeout = Duration.ofSeconds(30);
+        private @Nullable Duration closeTimeout = Duration.ofSeconds(5);
 
         private Builder() {
             // Instantiated only through DeliveryOptions.builder() or DeliveryOptions.with()

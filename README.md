@@ -389,7 +389,7 @@ its documentation):
 | `MaxQueuedEvents` | Maximum logging events queued awaiting conversion and batching by the background thread; the oldest is discarded past that to make room for a new one. Defaults to `10'000`. |
 | `RetryBackoff` | Base delay before retrying a failed transmission, doubling per consecutive failure with full jitter, and holding off newly accumulated documents too while in effect. Defaults to `1s`; `0` disables it, retrying at the next opportunity. |
 | `MaxRetryBackoff` | Cap the delay above never grows past. Defaults to `30s`. |
-| `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. While Log4j2's `shutdownTimeout` is left at `0`, also the budget of the whole appender stop, already-accepted events included, to keep under the time the platform waits before killing the process (see [Shutdown](#shutdown-and-failure-handling)). Defaults to `30s`; `null` waits indefinitely. |
+| `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. While Log4j2's `shutdownTimeout` is left at `0`, also the budget of the whole appender stop, already-accepted events included, to keep under the time the platform waits before killing the process (see [Shutdown](#shutdown-and-failure-handling)). Defaults to `5s`; `null` waits indefinitely. |
 
 `Application`, `Host` and `Environment` come from `LogConfiguration` itself; everything else is a component
 of the `DeliveryOptions` it returns, all with usable defaults. An appender implementation typically exposes
@@ -436,8 +436,8 @@ to split it further.
   may still deliver its documents, which a dead-letter sink then holds as well. That report comes once the
   budget is spent, so keep the budget under the time the platform lets a stopping process run before killing
   it, less what the application does before Log4j2 stops: `docker stop` kills after 10 seconds, Kubernetes
-  after 30 by default, the default `CloseTimeout`. A process killed while the stop still waits reports none
-  of what is pending.
+  after 30 by default, and the default `CloseTimeout` of 5 seconds stays under both. A process killed while
+  the stop still waits reports none of what is pending.
 - **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
   the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected

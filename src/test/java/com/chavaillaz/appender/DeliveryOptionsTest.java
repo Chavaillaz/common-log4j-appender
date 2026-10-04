@@ -39,7 +39,7 @@ class DeliveryOptionsTest {
         assertThat(options.maxQueuedEvents()).isEqualTo(10_000);
         assertThat(options.retryBackoff()).isEqualTo(Duration.ofSeconds(1));
         assertThat(options.maxRetryBackoff()).isEqualTo(Duration.ofSeconds(30));
-        assertThat(options.closeTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(options.closeTimeout()).isEqualTo(Duration.ofSeconds(5));
     }
 
     @Test
