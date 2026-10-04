@@ -325,8 +325,8 @@ on its own. A day starts at midnight in the default time zone of the system, or 
 passed as second argument. Several appenders, or applications on the same host, can share the file on a local
 disk: each line is appended whole, never cut by the lines of another.
 
-Four methods also let you poll the current state of the pipeline directly, e.g. from a readiness
-endpoint or a metrics library, instead of only reacting to listener callbacks:
+Four methods also let you poll the current state of the pipeline directly, e.g. from a health indicator, an
+alert or a metrics library, instead of only reacting to listener callbacks:
 
 - `AbstractLogDeliveryAppender#getHealth()` — a `DeliveryHealth` telling what the pipeline does about its
   last transmission attempt: `UP` once it succeeded, `RETRYING` or `BACKING_OFF` after a failure (documents
@@ -350,16 +350,21 @@ Gauge.builder("logs.pending", appender, a -> a.getMetrics().pendingDocuments()).
 FunctionCounter.builder("logs.dropped", appender, a -> a.getMetrics().droppedDocuments()).register(registry);
 ```
 
-A readiness check can tolerate a short outage that retries absorb, and report one lasting longer:
+An alert can tolerate a short outage that retries absorb, and fire on one lasting longer:
 
 ```java
 DeliveryHealth health = appender.getHealth();
-boolean ready = switch (health.status()) {
-    case UP -> true;
-    case RETRYING, BACKING_OFF -> health.sinceLastSuccess().compareTo(Duration.ofMinutes(5)) < 0;
-    case DOWN -> false;
+boolean degraded = switch (health.status()) {
+    case UP -> false;
+    case RETRYING, BACKING_OFF -> health.sinceLastSuccess().compareTo(Duration.ofMinutes(5)) >= 0;
+    case DOWN -> true;
 };
 ```
+
+Keep these signals out of the readiness and liveness probes of the application. An outage of the downstream
+system would take every instance out of service at once, for logs it cannot ship, and the status stays
+`RETRYING` after documents were given up on, until the next success: an instance taken out of service logs
+nothing that could bring it back.
 
 ## Configuration reference
 

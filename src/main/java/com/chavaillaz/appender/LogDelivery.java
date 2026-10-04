@@ -44,7 +44,7 @@ public interface LogDelivery extends AutoCloseable {
     }
 
     /**
-     * Takes the health of this delivery, for a readiness endpoint or an alert to poll (see
+     * Takes the health of this delivery, for a health indicator or an alert to poll (see
      * {@link DeliveryHealth}). Defaults to {@link DeliveryHealth.Status#UP} for an implementation that does not
      * track its transmissions, as if its last one had just succeeded.
      *

@@ -555,6 +555,9 @@ What an application or an implementer has to know, which the README or the Javad
   needs a timeout.
 - **A `Failover` appender never falls back from this one,** which never fails a call to `append()`. A
   `FileDeadLetterListener` is the fallback.
+- **The health of the delivery gating the readiness of the application.** An outage of the downstream system then
+  takes every instance out of service at once, and an instance out of service logs nothing that could bring it
+  back. The health and the backpressure signal are meant for health indicators and alerts.
 - **Delivery is at least once.** A request the downstream system processed although its answer failed is retried,
   and its documents delivered twice.
 - **Retried documents are delivered out of order,** each carrying its timestamp.
@@ -595,8 +598,8 @@ The scenarios that can hurt, left for now, with what could be done about them.
   stays `UP` meanwhile, no attempt having failed. An optional timeout, counting such a request as failed, would
   free the slot and show the outage.
 - **The health stays `RETRYING` once every failed document was given up on,** until the next success: an
-  application logging nothing more reads as not ready past the five minutes of the readiness example of the
-  README, with nothing pending. The health could read `UP` once nothing is pending nor in flight.
+  instance logging nothing more keeps the alert of the README example firing, with nothing pending. Reading `UP`
+  then would hide an outage that cost every document; a status of its own could tell both apart.
 - **A request rejected whole for one document takes its neighbors with it.** With a downstream system refusing a
   whole request without naming the document at fault, one invalid document among 1,000 cost 159 valid ones, at
   `FlushThreshold` 100 and `MaxConsecutiveFailures` 5. Splitting a request failing whole in halves on retry would

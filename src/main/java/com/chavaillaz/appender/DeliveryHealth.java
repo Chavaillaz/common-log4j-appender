@@ -4,7 +4,7 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * The health of a delivery pipeline, for a readiness endpoint or an alert to poll: what it does about its last
+ * The health of a delivery pipeline, for a health indicator or an alert to poll: what it does about its last
  * transmission attempt, and for how long it delivered nothing. Taken by
  * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender#getHealth()} for a whole appender, or by
  * {@link LogDelivery#getHealth()} for its delivery alone.
@@ -12,6 +12,10 @@ import java.util.Objects;
  * A failed attempt is retried: documents are only lost once reported through
  * {@link LogDeliveryListener#onDocumentsDropped(java.util.List, String)}. An outage shows as a status other than
  * {@link Status#UP} along with a time since the last success growing past what the application tolerates.
+ * <p>
+ * It is not meant for the readiness or liveness probe of the application: an outage of the downstream system
+ * would take every instance out of service at once, and an instance out of service logs nothing that could
+ * succeed and bring it back.
  *
  * @param status           What the pipeline does about its last transmission attempt
  * @param sinceLastSuccess The time elapsed since documents were last accepted, or since the pipeline was created

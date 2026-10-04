@@ -619,7 +619,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Whether the queue feeding the background thread is full, the next event evicting the oldest one: a
-     * signal an application can poll before events are lost, from a readiness endpoint for instance.
+     * signal an application can poll before events are lost, from a health indicator or an alert for instance,
+     * not from a readiness probe (see {@link DeliveryHealth}).
      *
      * @return {@code true} if the queue is currently full
      */

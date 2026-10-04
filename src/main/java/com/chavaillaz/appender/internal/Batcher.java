@@ -571,7 +571,7 @@ public class Batcher<T> {
     }
 
     /**
-     * Takes the health of this engine, a signal a caller can poll, from a readiness endpoint for instance:
+     * Takes the health of this engine, a signal a caller can poll, from a health indicator for instance:
      * {@link DeliveryHealth.Status#DOWN} once closed, {@link DeliveryHealth.Status#BACKING_OFF} while a backoff
      * delay holds transmissions off after a failure, and otherwise {@link DeliveryHealth.Status#RETRYING} or
      * {@link DeliveryHealth.Status#UP}, whether the last completed transmission attempt failed or not.
