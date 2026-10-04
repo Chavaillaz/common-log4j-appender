@@ -351,6 +351,11 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * the {@link DeliveryOptions#maxConcurrentTransmissions()} slots, and once unanswered requests hold them all,
      * the next batch waits for a slot until this delivery closes. Give the client a timeout.
      * <p>
+     * On Java 21 to 23, a blocking client must not wait while holding a monitor, inside {@code synchronized}
+     * code: the virtual thread then keeps its carrier, and requests waiting on a slow downstream system keep
+     * every other virtual thread of the application from running once they hold all the carriers, one per
+     * processor by default.
+     * <p>
      * It completes with {@link TransmissionResult#success()} when every document was accepted,
      * {@link TransmissionResult#failure(Throwable)} when none was, or
      * {@link TransmissionResult#partialFailure(List, Throwable)} when only some were rejected, a malformed

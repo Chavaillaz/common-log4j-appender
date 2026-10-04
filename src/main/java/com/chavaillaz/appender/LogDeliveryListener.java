@@ -13,7 +13,9 @@ import org.jspecify.annotations.Nullable;
  * Methods are called concurrently, from the threads transmitting, the background threads of the appender and
  * the thread stopping it, and from a thread logging only for an event it logs once the appender stopped, no
  * other thread being left to report it: an implementation must be thread-safe, and return quickly, since a
- * stop waits for its last notifications whatever its budget.
+ * stop waits for its last notifications whatever its budget. Most of them run on virtual threads, which an
+ * implementation blocking inside {@code synchronized} code pins to their carrier on Java 21 to 23, as
+ * {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#sendBulk(List)} explains.
  * <p>
  * An implementation logging what it observes uses {@code StatusLogger.getLogger()}, as this library does: an
  * ordinary logger feeds each message back to the appender as one more document, whose failure logs again, in

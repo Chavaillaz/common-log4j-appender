@@ -169,6 +169,11 @@ Either way the future must complete: a transmission holds one of the `MaxConcurr
 it does, and once unanswered requests hold them all, the pipeline stalls until the appender stops, its queue
 discarding the oldest events meanwhile. Give your client a request timeout.
 
+On Java 21 to 23, a blocking client must not wait inside `synchronized` code, which keeps the virtual thread
+on its carrier thread: with two processors, four requests waiting that way on a slow downstream system keep
+every other virtual thread of the application from running for as long. Prefer an asynchronous client, or
+one blocking through the locks of `java.util.concurrent`.
+
 Every failed attempt is logged with its cause on Log4j2's status logger (see
 [Shutdown and failure handling](#shutdown-and-failure-handling)), so there is no need to log it again. A
 delivery logging anything of its own uses `StatusLogger.getLogger()` too, never an ordinary logger, which
