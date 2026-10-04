@@ -149,12 +149,33 @@ final class DiscardReporter {
             }
             List<Map<String, Object>> documents = new ArrayList<>(events.size());
             for (LogEvent event : events) {
-                documents.add(converter.convert(event));
+                @Nullable Map<String, Object> document = convert(event);
+                if (document != null) {
+                    documents.add(document);
+                }
             }
-            listener.onDocumentsDropped(List.copyOf(documents), reason);
+            if (!documents.isEmpty()) {
+                listener.onDocumentsDropped(List.copyOf(documents), reason);
+            }
         } catch (Throwable e) {
             // Throwable: a listener failing must not end the thread reporting, nor escape a stop
             appender.error("Failed to report a discarded logging event to the delivery listener", e);
+        }
+    }
+
+    /**
+     * Converts a discarded event, which only an event of a custom {@code LogEventFactory} or memory running out
+     * can make fail: then reported and left out, rather than costing the events reported along with it.
+     *
+     * @param event The logging event being discarded
+     * @return Its document, or {@code null} if it failed to convert
+     */
+    private @Nullable Map<String, Object> convert(LogEvent event) {
+        try {
+            return converter.convert(event);
+        } catch (Throwable e) {
+            appender.error("Failed to convert a discarded logging event, the delivery listener will not receive it", e);
+            return null;
         }
     }
 

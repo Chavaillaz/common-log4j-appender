@@ -111,6 +111,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Reports an event appended once stopped as rejected, without formatting its message
 - Attempts to interrupt a still-running task once the shutdown timeout elapses
 - Reports events still queued behind a stuck task as dropped instead of losing them silently
+- Still reports the events abandoned along with one that fails to convert
 - Interrupts a still-running task and reports the queued events when the stop is interrupted
 - Reports the discards still waiting for a slow listener before it returns, once its budget is spent
 - Never reports the listener as still notified once its budget is spent, when it returned already
@@ -631,8 +632,6 @@ The scenarios that can hurt, left for now, with what could be done about them.
 
 ### Minor
 
-- **One event failing to convert while discards are reported** costs the listener the whole group reported with
-  it. Only an event of a custom `LogEventFactory`, or memory running out, can make `DefaultLogConverter` fail.
 - **An event of a custom `LogEventFactory` whose `toImmutable()` returns itself** is queued as it is, not copied,
   so that the factory reusing it changes what is sent.
 - **A subclass returning `0` from `getMaxPendingDocuments()`** discards everything while transmissions are held

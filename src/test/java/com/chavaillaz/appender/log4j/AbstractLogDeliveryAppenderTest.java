@@ -2031,6 +2031,43 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Still reports the events abandoned along with one that fails to convert")
+        void testStopReportsTheEventsAbandonedWithOneFailingToConvert() throws Exception {
+            // given: a task blocking the worker, with an event failing to convert queued between two others, as
+            // an event of a custom LogEventFactory whose getters throw does
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var interrupted = new CountDownLatch(1);
+            var appender = new StuckLogDeliveryAppender("appender-name", null, configuration, interrupted);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                }
+            });
+            var unconvertible = mockLogEvent();
+            when(unconvertible.getInstant()).thenThrow(new IllegalStateException("Simulated unreadable instant"));
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent()); // occupies the worker thread forever
+            appender.append(realLogEvent("queued-1"));
+            appender.append(unconvertible);
+            appender.append(realLogEvent("queued-2"));
+            appender.stop(200, MILLISECONDS);
+
+            // then: the event failing to convert costs only itself, rather than every event reported with it, a
+            // full queue at most
+            assertThat(interrupted.await(2, SECONDS)).isTrue();
+            assertThat(dropped.stream().map(d -> d.get("logmessage")).toList()).containsExactly("queued-1", "queued-2");
+            assertThat(errors).hasAtLeastOneElementOfType(IllegalStateException.class);
+        }
+
+        @Test
         @DisplayName("Interrupts a still-running task and reports the queued events when the stop is interrupted")
         void testInterruptedStopAbandonsTheQueueAsATimeoutDoes() throws Exception {
             // given: a task blocking the worker until interrupted, with two events queued behind it
