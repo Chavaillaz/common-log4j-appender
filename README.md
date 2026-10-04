@@ -315,6 +315,10 @@ LogDeliveryListener.compose(
         new FileDeadLetterListener(Path.of("/var/log/myapp/dead-letters.ndjson")));
 ```
 
+The `Failover` appender of Log4j2 cannot stand in for it: it switches to its failovers once the appender it
+wraps throws, and this one never fails a call to `append()`, its transmissions failing later on threads of
+their own.
+
 The file rotates every day, the date being inserted before its extension: the documents dropped on 28
 September 2026 go to `dead-letters-2026-09-28.ndjson`, so that each day can be replayed, archived or deleted
 on its own. A day starts at midnight in the default time zone of the system, or in the one of the `Clock`
