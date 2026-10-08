@@ -524,15 +524,13 @@ class DefaultLogConverterTest {
             // when
             var document = converter.convert(event);
 
-            // then: only the fields the configuration could not provide are omitted, instead of the whole
-            // document -- the log message included -- being lost with it
+            // then: only the field the configuration could not provide is left null, instead of the whole
+            // document -- the log message included -- being lost with it, or the fields read after it
             assertThat(document.get("logmessage")).isEqualTo("Correct horse battery staple");
             assertThat(document.get("level")).isEqualTo("ERROR");
-            assertThat(document.get("host"))
-                    .as("The field read before the failure should be kept")
-                    .isEqualTo("my-host");
-            assertThat(document.get("environment")).isNull();
-            assertThat(document.get("application")).isNull();
+            assertThat(document).containsEntry("environment", null);
+            assertThat(document.get("host")).isEqualTo("my-host");
+            assertThat(document.get("application")).isEqualTo("my-application");
         }
 
         @Test

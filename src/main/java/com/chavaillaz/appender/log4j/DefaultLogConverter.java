@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
@@ -125,28 +126,34 @@ public class DefaultLogConverter implements LogConverter {
      * @param event    The logging event
      */
     protected void writeBasic(Map<String, Object> document, LogEvent event) {
-        String host = null;
-        String environment = null;
-        String application = null;
-        try {
-            host = configuration.getHost();
-            environment = configuration.getEnvironment();
-            application = configuration.getApplication();
-        } catch (Throwable e) {
-            // A configuration resolving a value on demand can fail: the fields read before are kept
-            log.warn("Unable to read the host/environment/application from the configuration, "
-                    + "the fields it did not provide will be omitted", e);
-        }
         document.put("datetime", Instant.ofEpochMilli(event.getInstant().getEpochMillisecond()).toString());
-        document.put("host", host);
-        document.put("environment", environment);
-        document.put("application", application);
+        document.put("host", readConfiguration("host", configuration::getHost));
+        document.put("environment", readConfiguration("environment", configuration::getEnvironment));
+        document.put("application", readConfiguration("application", configuration::getApplication));
         String loggerName = event.getLoggerName();
         document.put("logger", loggerName != null ? loggerName : event.getLoggerFqcn());
         Level level = event.getLevel();
         document.put("level", level != null ? level.toString() : null);
         document.put("logmessage", formatMessage(event.getMessage()));
         document.put("thread", event.getThreadName());
+    }
+
+    /**
+     * Reads one value of the configuration, each on its own, so that a configuration resolving its values on
+     * demand and failing on one of them costs the document that field alone.
+     *
+     * @param field The field the value is written to, named in the warning if reading it fails
+     * @param value The reading of the value from the configuration
+     * @return The value, or {@code null} if reading it failed
+     */
+    private @Nullable String readConfiguration(String field, Supplier<@Nullable String> value) {
+        try {
+            return value.get();
+        } catch (Throwable e) {
+            // Throwable, a configuration running code of the application
+            log.warn("Unable to read the {} from the configuration, the field is left null", field, e);
+            return null;
+        }
     }
 
     /**
