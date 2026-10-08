@@ -974,18 +974,14 @@ class AbstractBatchLogDeliveryTest {
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(200));
 
             // when
-            var start = System.nanoTime();
             for (int i = 0; i < 4; i++) {
                 logDelivery.send(Map.of("id", i));
             }
             logDelivery.awaitPendingTransmissions();
-            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-            // then: sequential chunking would take at least 4 * 200ms = 800ms
+            // then: all four in flight at once, where sequential chunking would have one at a time
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(4);
-            assertThat(elapsedMillis)
-                    .as("Chunks should transmit concurrently, took " + elapsedMillis + "ms")
-                    .isLessThan(600);
+            assertThat(logDelivery.peakInFlight.get()).as("Chunks transmitted at the same time at most").isEqualTo(4);
         }
 
         @Test
@@ -1252,16 +1248,14 @@ class AbstractBatchLogDeliveryTest {
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(200));
 
             // when sending 4 messages (the default concurrency limit), all transmissions should overlap
-            var start = System.nanoTime();
             for (int i = 0; i < 4; i++) {
                 logDelivery.send(Map.of());
             }
             logDelivery.awaitPendingTransmissions();
-            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-            // then: sequential transmission would take at least 4 * 200ms = 800ms
+            // then: all four in flight at once, where waiting for each before the next would have one at a time
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(4);
-            assertThat(elapsedMillis).as("Transmissions should overlap, took " + elapsedMillis + "ms").isLessThan(600);
+            assertThat(logDelivery.peakInFlight.get()).as("Transmissions in flight at the same time at most").isEqualTo(4);
         }
 
         @Test
@@ -1272,23 +1266,14 @@ class AbstractBatchLogDeliveryTest {
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(150));
 
             // when
-            var start = System.nanoTime();
             for (int i = 0; i < 8; i++) {
                 logDelivery.send(Map.of());
             }
             logDelivery.awaitPendingTransmissions();
-            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-            // then: bounded to 4 concurrent transmissions means roughly 2 waves of 150ms are needed (~300ms),
-            // well under a fully sequential execution (8 * 150ms = 1200ms) but above a single wave (150ms),
-            // showing that concurrency is capped rather than unlimited
+            // then: never more than the limit in flight at once, and that many while there was enough to send
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(8);
-            assertThat(elapsedMillis)
-                    .as("Expected at least two waves given the concurrency bound, took " + elapsedMillis + "ms")
-                    .isGreaterThanOrEqualTo(250);
-            assertThat(elapsedMillis)
-                    .as("Transmissions within a wave should overlap, took " + elapsedMillis + "ms")
-                    .isLessThan(1_000);
+            assertThat(logDelivery.peakInFlight.get()).as("Transmissions in flight at the same time at most").isEqualTo(4);
         }
 
         @Test
@@ -1301,19 +1286,14 @@ class AbstractBatchLogDeliveryTest {
             var logDelivery = new SlowTestLogDelivery(configuration, Duration.ofMillis(150));
 
             // when sending 4 messages, twice the configured limit
-            var start = System.nanoTime();
             for (int i = 0; i < 4; i++) {
                 logDelivery.send(Map.of());
             }
             logDelivery.awaitPendingTransmissions();
-            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-            // then: bounded to 2 concurrent transmissions means 2 waves of 150ms are needed (~300ms),
-            // instead of the ~150ms a single wave would take with the default limit of 4
+            // then: the configured limit, rather than the default of 4, in flight at once at most
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(4);
-            assertThat(elapsedMillis)
-                    .as("Expected at least two waves given the configured limit of 2, took " + elapsedMillis + "ms")
-                    .isGreaterThanOrEqualTo(250);
+            assertThat(logDelivery.peakInFlight.get()).as("Transmissions in flight at the same time at most").isEqualTo(2);
         }
 
         @Test
@@ -1564,9 +1544,15 @@ class AbstractBatchLogDeliveryTest {
 
     }
 
+    /**
+     * A delivery whose transmissions each take the given time, recording how many of them ran at the same time
+     * at most, so that a test asserts the concurrency itself rather than inferring it from how long they took.
+     */
     static class SlowTestLogDelivery extends AbstractBatchLogDelivery<TestLogConfiguration> {
 
         AtomicInteger countBulkSent = new AtomicInteger();
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger peakInFlight = new AtomicInteger();
         Duration delay;
 
         protected SlowTestLogDelivery(TestLogConfiguration configuration, Duration delay) {
@@ -1576,10 +1562,13 @@ class AbstractBatchLogDeliveryTest {
 
         @Override
         protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+            peakInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            } finally {
+                inFlight.decrementAndGet();
             }
             countBulkSent.incrementAndGet();
             return completedFuture(TransmissionResult.success());
