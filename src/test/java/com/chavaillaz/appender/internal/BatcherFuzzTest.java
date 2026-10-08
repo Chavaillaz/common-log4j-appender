@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -27,29 +28,36 @@ import com.chavaillaz.appender.TransmissionResult;
  * third-party contract it cannot enforce at compile time, and exactly where the two bugs fixed alongside
  * this test lived: a malformed {@code rejected} list could throw from inside a {@code whenComplete()}
  * callback nobody observes, silently losing the whole chunk with no trace at all (see
- * {@link BatcherTest#testMalformedPartialFailureDoesNotLoseElements()} for the specific regression this
- * generalizes).
+ * {@link BatcherTest.PartialTransmissionFailure#testMalformedPartialFailureDoesNotLoseElements()} for the
+ * specific regression this generalizes).
  * <p>
  * Every element handed to a trial's {@link Batcher} is tracked by reference identity, independently of
  * {@code Batcher}'s own bookkeeping: the fake transport itself decides, as ground truth, which elements a
- * given attempt genuinely accepts (removed from {@link #stillPending}), while a {@link BatcherListener}
- * records every element the {@code Batcher} eventually reports through {@link BatcherListener#onDropped}.
- * After driving each trial through enough retries to force a resolution one way or another, every element
- * must appear in exactly one of those two sets: genuinely accepted at some point, or explicitly reported
- * dropped. An element in neither is exactly what "silently lost" means.
+ * given attempt genuinely accepts, recording each acceptance, while a {@link BatcherListener} records every
+ * element the {@code Batcher} reports through {@link BatcherListener#onDropped}. After driving each trial
+ * through enough retries to force a resolution one way or another, every element must have been accepted
+ * or reported dropped exactly once: in neither, it was silently lost; accepted and reported, or either one
+ * twice, it was sent again once accepted or reported for nothing. No element foreign to the trial may be
+ * accepted or reported at all, which would mean the malformed list smuggled it into the batch.
  */
 @DisplayName("Batcher fuzzing")
 class BatcherFuzzTest {
 
     /**
-     * A single fuzzed element, deliberately not overriding {@code equals()}/{@code hashCode()} so this
-     * class's own reference-identity tracking (via {@link IdentityHashMap}) matches the reference-identity
-     * semantics {@link Batcher} itself uses to match a {@link TransmissionResult.PartialFailure}'s
-     * {@code rejected} list back against a dispatched chunk.
-     *
-     * @param id Only used to make failure messages readable; never compared
+     * A single fuzzed element, a class rather than a record, so that two of them are equal only when they are
+     * the same instance, as {@link Batcher} matches a {@link TransmissionResult.PartialFailure}'s
+     * {@code rejected} list against a dispatched chunk.
      */
-    private record Elem(int id) {
+    private static final class Elem {
+
+        /**
+         * Only used to make failure messages readable; never compared.
+         */
+        private final int id;
+
+        private Elem(int id) {
+            this.id = id;
+        }
 
         @Override
         public String toString() {
@@ -93,8 +101,7 @@ class BatcherFuzzTest {
         // Foreign elements a buggy transport could mistakenly reference: never part of any dispatched chunk.
         List<Elem> foreignPool = List.of(new Elem(-1), new Elem(-2));
 
-        Set<Elem> stillPending = Collections.newSetFromMap(new IdentityHashMap<>());
-        stillPending.addAll(elements);
+        List<Elem> accepted = new CopyOnWriteArrayList<>();
         List<Elem> dropped = new CopyOnWriteArrayList<>();
         AtomicInteger transmitCount = new AtomicInteger();
 
@@ -105,7 +112,7 @@ class BatcherFuzzTest {
                 .transmissionThreadPrefix("batcher-fuzz-")
                 .transport(chunk -> {
                     transmitCount.incrementAndGet();
-                    return completedFuture(fuzzedResult(random, chunk, foreignPool, stillPending));
+                    return completedFuture(fuzzedResult(random, chunk, foreignPool, accepted));
                 })
                 .listener(new BatcherListener<>() {
                     @Override
@@ -118,8 +125,8 @@ class BatcherFuzzTest {
         batcher.add(elements);
         batcher.awaitPendingTransmissions();
 
-        // Drive a fixed, generous number of retry cycles unconditionally (not just until stillPending looks
-        // empty: a corrupted rejected list could smuggle a foreign element into the live batch, which would
+        // Drive a fixed, generous number of retry cycles unconditionally (not just until every element looks
+        // resolved: a corrupted rejected list could smuggle a foreign element into the live batch, which would
         // then keep cycling through retries on its own even after every real element has resolved). Every
         // round sends the whole batch, and each element still rejected adds one to its own streak, so
         // maxConsecutiveFailures rounds are always enough to force a give-up; the margin is only a margin.
@@ -128,15 +135,29 @@ class BatcherFuzzTest {
             batcher.awaitPendingTransmissions();
         }
 
-        // then: every element ended up either genuinely accepted (no longer pending) or explicitly reported
-        // dropped - never neither, which is exactly what "silently lost" would look like
-        Set<Elem> unaccountedFor = Collections.newSetFromMap(new IdentityHashMap<>());
-        unaccountedFor.addAll(stillPending);
-        Set<Elem> droppedIdentity = Collections.newSetFromMap(new IdentityHashMap<>());
-        droppedIdentity.addAll(dropped);
-        unaccountedFor.removeAll(droppedIdentity);
-        assertThat(unaccountedFor)
-                .as(seedMessage + ": elements neither accepted nor dropped: " + unaccountedFor)
+        // then: every element was either genuinely accepted or reported dropped, exactly once
+        Map<Elem, Integer> timesAccepted = countByIdentity(accepted);
+        Map<Elem, Integer> timesDropped = countByIdentity(dropped);
+        List<String> misaccounted = new ArrayList<>();
+        for (Elem element : elements) {
+            int acceptances = timesAccepted.getOrDefault(element, 0);
+            int drops = timesDropped.getOrDefault(element, 0);
+            if (acceptances + drops != 1) {
+                misaccounted.add(element + " (accepted " + acceptances + " times, dropped " + drops + " times)");
+            }
+        }
+        assertThat(misaccounted)
+                .as(seedMessage + ": elements not accepted or dropped exactly once")
+                .isEmpty();
+
+        // and: nothing foreign to the trial ever made it into a request or a report
+        Set<Elem> real = Collections.newSetFromMap(new IdentityHashMap<>());
+        real.addAll(elements);
+        List<Elem> foreign = new ArrayList<>();
+        timesAccepted.keySet().stream().filter(element -> !real.contains(element)).forEach(foreign::add);
+        timesDropped.keySet().stream().filter(element -> !real.contains(element)).forEach(foreign::add);
+        assertThat(foreign)
+                .as(seedMessage + ": elements foreign to the trial accepted or dropped")
                 .isEmpty();
 
         // and: the batch actually drained, instead of an element being stuck in limbo forever, retried but
@@ -150,22 +171,21 @@ class BatcherFuzzTest {
     }
 
     /**
-     * Builds a randomized, occasionally-malformed {@link TransmissionResult} for the given chunk, updating
-     * {@code stillPending} to reflect which elements the fake transport genuinely (as ground truth) accepts
-     * this round.
+     * Builds a randomized, occasionally-malformed {@link TransmissionResult} for the given chunk, recording in
+     * {@code accepted} the elements the fake transport genuinely (as ground truth) accepts this round.
      *
      * @param random      The source of randomness for this trial
      * @param chunk       The chunk handed to this transmission attempt
      * @param foreignPool Elements never part of any real chunk, occasionally injected as noise
-     * @param stillPending The set of elements not yet genuinely accepted, updated in place
+     * @param accepted    Every element accepted so far, once per acceptance, added to in place
      * @return The (possibly malformed) result to complete this attempt's future with
      */
     private TransmissionResult<Elem> fuzzedResult(Random random, List<Elem> chunk, List<Elem> foreignPool,
-            Set<Elem> stillPending) {
+            List<Elem> accepted) {
         int outcome = random.nextInt(3);
         if (outcome == 0) {
             // Whole chunk genuinely accepted.
-            stillPending.removeAll(chunk);
+            accepted.addAll(chunk);
             return TransmissionResult.success();
         }
         if (outcome == 1) {
@@ -178,8 +198,7 @@ class BatcherFuzzTest {
         Collections.shuffle(shuffled, random);
         int rejectedCount = 1 + random.nextInt(shuffled.size());
         List<Elem> realRejected = new ArrayList<>(shuffled.subList(0, rejectedCount));
-        List<Elem> realAccepted = shuffled.subList(rejectedCount, shuffled.size());
-        stillPending.removeAll(realAccepted);
+        accepted.addAll(shuffled.subList(rejectedCount, shuffled.size()));
 
         // Corrupt the reported rejected list with noise a well-behaved transport would never produce: a
         // duplicate reference and/or a foreign element, occasionally pushing its size past the chunk's own,
@@ -192,6 +211,18 @@ class BatcherFuzzTest {
             reported.add(foreignPool.get(random.nextInt(foreignPool.size())));
         }
         return TransmissionResult.partialFailure(reported, null);
+    }
+
+    /**
+     * Counts how many times each instance appears in the given list, equal instances counted apart.
+     *
+     * @param list The list to count
+     * @return The number of times each instance appears
+     */
+    private static Map<Elem, Integer> countByIdentity(List<Elem> list) {
+        Map<Elem, Integer> counts = new IdentityHashMap<>();
+        list.forEach(element -> counts.merge(element, 1, Integer::sum));
+        return counts;
     }
 
 }

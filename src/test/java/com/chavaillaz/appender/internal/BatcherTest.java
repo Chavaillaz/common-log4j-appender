@@ -571,12 +571,13 @@ class BatcherTest {
                 batcher.awaitPendingTransmissions();
             }
 
-            // then: "a" was retried (not lost after the very first malformed response) and eventually reported
-            // dropped once MaxConsecutiveFailures was reached, instead of vanishing without a trace
+            // then: "a" was retried (not lost after the very first malformed response) and reported dropped once
+            // MaxConsecutiveFailures was reached, instead of vanishing without a trace, and once only, whatever
+            // the number of times the transport named it
             assertThat(attempts.get())
-                    .as("The malformed chunk should have been retried, not discarded outright")
-                    .isGreaterThanOrEqualTo(2);
-            assertThat(dropped).as("\"a\" should have been reported dropped instead of lost silently").contains("a");
+                    .as("The malformed chunk should have been retried until given up on, not discarded outright")
+                    .isEqualTo(2);
+            assertThat(dropped).as("\"a\" should have been reported dropped once").containsExactly("a");
         }
 
         @Test
