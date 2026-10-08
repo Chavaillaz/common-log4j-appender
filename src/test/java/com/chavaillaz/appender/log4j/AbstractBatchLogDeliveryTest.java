@@ -586,6 +586,63 @@ class AbstractBatchLogDeliveryTest {
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(3);
         }
 
+        @Test
+        @DisplayName("Holds off retrying for the configured RetryBackoff, until closed")
+        void testRetryIsHeldOffForTheConfiguredBackoff() throws Exception {
+            // given: a backoff of a day, each delay being drawn at random up to it, so that none elapses during
+            // this test, and a first attempt failing
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .retryBackoff(Duration.ofDays(1)).build();
+            var logDelivery = new TestLogDelivery(configuration);
+            logDelivery.bulkResult = false;
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // when: flushed again once the downstream system is back
+            logDelivery.bulkResult = true;
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then: held off, as the health says
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
+            assertThat(logDelivery.getHealth().status()).isEqualTo(DeliveryHealth.Status.BACKING_OFF);
+
+            // when
+            logDelivery.close();
+
+            // then: closing being the last chance to send it, the backoff no longer holds it off
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
+            assertThat(logDelivery.lastBulkDocuments).containsExactly(Map.of("id", 1));
+        }
+
+        @Test
+        @DisplayName("Retries at the next flush while RetryBackoff is zero, whatever MaxRetryBackoff")
+        void testZeroRetryBackoffDisablesTheBackoffWhateverItsMaximum() throws Exception {
+            // given: no backoff, but a maximum one of a day, and a first attempt failing
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .retryBackoff(Duration.ZERO)
+                    .maxRetryBackoff(Duration.ofDays(1)).build();
+            var logDelivery = new TestLogDelivery(configuration);
+            logDelivery.bulkResult = false;
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+            var afterFailure = logDelivery.getHealth().status();
+
+            // when
+            logDelivery.bulkResult = true;
+            logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
+
+            // then: retried right away, the maximum only capping a backoff there is none of
+            assertThat(afterFailure).isEqualTo(DeliveryHealth.Status.RETRYING);
+            assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
+            assertThat(logDelivery.lastBulkDocuments).containsExactly(Map.of("id", 1));
+        }
+
     }
 
     @Nested
