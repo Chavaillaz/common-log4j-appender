@@ -138,6 +138,21 @@ class AbstractLogDeliveryAppenderTest {
     }
 
     /**
+     * Waits until the given errors hold one of the given type, an error of the reporter of discarded events
+     * reaching the handler from its own thread.
+     */
+    private static void awaitErrorOfType(List<Throwable> errors, Class<? extends Throwable> type)
+            throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        while (errors.stream().noneMatch(type::isInstance)) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new AssertionError("Timed out waiting for " + type.getSimpleName() + ", got " + errors);
+            }
+            sleep(1);
+        }
+    }
+
+    /**
      * The executor of the worker of an appender, which reports a full queue through the policy it was built with.
      */
     private static ThreadPoolExecutor workerExecutorOf(AbstractLogDeliveryAppender<?> appender)
@@ -1123,37 +1138,48 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
-        @DisplayName("Never fails the application thread when the listener notified of a discard throws an Error")
-        void testListenerThrowingAnErrorOnDiscardDoesNotReachTheApplicationThread() throws Exception {
+        @DisplayName("Keeps reporting discards once the listener threw an Error on one of them")
+        void testListenerThrowingAnErrorOnDiscardDoesNotStopTheReport() throws Exception {
             // given: the same full-queue setup as above, with a listener throwing an Error rather than an
-            // exception, as one walking a self-referencing document into a dead-letter sink would
+            // exception on the first discard, as one walking a self-referencing document into a dead-letter
+            // sink would, and recording the next ones
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10))
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
             var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
+            var firstCall = new AtomicBoolean(true);
+            var reported = new CopyOnWriteArrayList<Object>();
             LogDeliveryListener listener = new LogDeliveryListener() {
                 @Override
                 public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
-                    throw new StackOverflowError("listener blew up");
+                    if (firstCall.getAndSet(false)) {
+                        throw new StackOverflowError("listener blew up");
+                    }
+                    documents.forEach(document -> reported.add(document.get("logmessage")));
                 }
             };
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
-
-            // when
             appender.start();
             appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
             awaitEmptyQueue(appender);
             appender.append(realLogEvent("B")); // fills the one-slot queue
 
-            // then: the discard reaches the error handler, not whatever application code called append()
-            assertThatNoException().isThrownBy(() -> appender.append(realLogEvent("C")));
-            assertThat(errors)
-                    .as("The listener failure should have been reported through the error handler")
-                    .isNotEmpty();
+            // when: the listener fails on the discard of B
+            appender.append(realLogEvent("C")); // evicts B
+
+            // then: the Error reaches the error handler, rather than ending the thread reporting the discards
+            awaitErrorOfType(errors, StackOverflowError.class);
+
+            // when
+            appender.append(realLogEvent("D")); // evicts C
+
+            // then: the next discard is still reported
+            awaitSize(reported, 1);
+            assertThat(reported).containsExactly("C");
 
             // cleanup
             releaseTask.countDown();
@@ -1957,6 +1983,31 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: reported for what happened to it, right away since nothing is left to report it later
             assertThat(droppedReasons).containsExactly("appender no longer accepting events");
+        }
+
+        @Test
+        @DisplayName("Never fails the application thread when the listener throws an Error on an event appended once stopped")
+        void testListenerThrowingAnErrorOnAnEventAppendedOnceStoppedDoesNotReachTheApplicationThread() {
+            // given: a stopped appender, which reports an event appended to it on the thread logging it, and a
+            // listener throwing an Error, as one walking a self-referencing document into a dead-letter sink does
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
+            var errors = new CopyOnWriteArrayList<Throwable>();
+            appender.setHandler(recordingErrorHandler(errors));
+            when(appender.getLogDeliveryHandler().getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    throw new StackOverflowError("listener blew up");
+                }
+            });
+            appender.start();
+            appender.stop(1, SECONDS);
+
+            // when / then: the Error reaches the error handler, not the application code logging
+            assertThatNoException().isThrownBy(() -> appender.append(realLogEvent("too late")));
+            assertThat(errors).hasAtLeastOneElementOfType(StackOverflowError.class);
         }
 
         @Test

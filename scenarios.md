@@ -34,7 +34,7 @@ group holding them: a test added, renamed or removed changes this list too.
 **Bounded queue of the worker**
 
 - Discards an event without blocking once the queue capacity is exceeded, reporting it as dropped
-- Never fails the application thread when the listener notified of a discard throws an Error
+- Keeps reporting discards once the listener threw an Error on one of them
 - Discards the oldest queued event to make room for the newest instead of rejecting it
 - Claims the slot freed by an eviction before notifying the listener about it
 - Discards the newest event when another one takes the slot its eviction freed
@@ -109,6 +109,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Finishes stopping even when closing the delivery fails with an Error
 - Rejects further appends without throwing back to the calling thread
 - Reports an event appended once stopped as rejected, without formatting its message
+- Never fails the application thread when the listener throws an Error on an event appended once stopped
 - Attempts to interrupt a still-running task once the shutdown timeout elapses
 - Reports events still queued behind a stuck task as dropped instead of losing them silently
 - Still reports the events abandoned along with one that fails to convert
