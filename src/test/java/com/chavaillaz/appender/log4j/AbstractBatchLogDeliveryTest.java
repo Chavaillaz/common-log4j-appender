@@ -60,27 +60,29 @@ class AbstractBatchLogDeliveryTest {
 
         @Test
         @DisplayName("Does not trigger a transmission")
-        void testNotSendingBelowThreshold() {
+        void testNotSendingBelowThreshold() throws Exception {
             // given
             var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
             logDelivery.send(Map.of());
+            logDelivery.awaitPendingTransmissions();
 
-            // then
+            // then: waited for, a transmission running on a thread of its own once dispatched
             assertThat(logDelivery.countBulkSent.get()).isZero();
         }
 
         @Test
         @DisplayName("Flushing an empty batch does not trigger a transmission")
-        void testNotSendingEmpty() {
+        void testNotSendingEmpty() throws Exception {
             // given
             var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
             logDelivery.flush();
+            logDelivery.awaitPendingTransmissions();
 
             // then
             assertThat(logDelivery.countBulkSent.get()).isZero();
@@ -89,13 +91,14 @@ class AbstractBatchLogDeliveryTest {
         @ParameterizedTest(name = "documents = {0}")
         @NullAndEmptySource
         @DisplayName("Sending null or no documents does not trigger a transmission")
-        void testNotSendingNullOrEmptyList(List<Map<String, Object>> documents) {
+        void testNotSendingNullOrEmptyList(List<Map<String, Object>> documents) throws Exception {
             // given
             var configuration = TestLogConfiguration.builder().flushThreshold(2).build();
             var logDelivery = new TestLogDelivery(configuration);
 
             // when
             logDelivery.send(documents);
+            logDelivery.awaitPendingTransmissions();
 
             // then
             assertThat(logDelivery.countBulkSent.get()).isZero();
@@ -550,6 +553,7 @@ class AbstractBatchLogDeliveryTest {
             for (int i = 0; i < 20; i++) {
                 logDelivery.send(Map.of());
             }
+            logDelivery.awaitPendingTransmissions();
 
             // then only the first attempt was made, avoiding hammering the downstream system on every message
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
@@ -731,6 +735,7 @@ class AbstractBatchLogDeliveryTest {
             for (int i = 1; i < 4; i++) {
                 logDelivery.send(Map.of("id", i));
             }
+            logDelivery.awaitPendingTransmissions();
 
             // then the oldest document (id=0) was discarded once the cap of 3 was exceeded, with no attempt
             // since the failed one; awaited rather than asserted immediately since this particular notification

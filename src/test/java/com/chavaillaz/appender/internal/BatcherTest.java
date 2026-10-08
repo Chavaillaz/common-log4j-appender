@@ -110,6 +110,7 @@ class BatcherTest {
 
             // when: "c" alone is below the threshold, so it stays pending until explicitly flushed
             batcher.add(List.of("c"));
+            batcher.awaitPendingTransmissions();
             assertThat(transmitted).hasSize(1);
             batcher.flush();
             batcher.awaitPendingTransmissions();
