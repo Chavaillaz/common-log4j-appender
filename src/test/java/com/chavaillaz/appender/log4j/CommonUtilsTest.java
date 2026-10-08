@@ -3,11 +3,15 @@ package com.chavaillaz.appender.log4j;
 import static com.chavaillaz.appender.log4j.CommonUtils.await;
 import static com.chavaillaz.appender.log4j.CommonUtils.getInitialHostname;
 import static com.chavaillaz.appender.log4j.CommonUtils.getProperty;
+import static com.chavaillaz.appender.log4j.CommonUtils.lookUpCanonicalHostName;
+import static com.chavaillaz.appender.log4j.CommonUtils.lookUpOnce;
 import static com.chavaillaz.appender.log4j.CommonUtils.start;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.net.InetAddress;
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -55,18 +59,30 @@ class CommonUtilsTest {
     @Test
     @DisplayName("Returns the canonical host name of the local machine")
     void testHostname() throws Exception {
-        // when
-        var hostname = getInitialHostname();
+        // when: looked up for as long as it takes, as getInitialHostname() has it looked up in the background
+        var hostname = lookUpCanonicalHostName();
 
         // then
         assertThat(hostname).isEqualTo(InetAddress.getLocalHost().getCanonicalHostName());
+
+        // and: the name getInitialHostname() gives, unless its wait for that lookup ran out first, as it does on
+        // a machine whose own name takes more than 5 seconds to resolve
+        assertThat(getInitialHostname()).isIn(hostname, "localhost");
     }
 
     @Test
     @DisplayName("Looks the host name up once, every later call sharing its result")
     void testHostnameIsLookedUpOnce() {
-        // when / then: the result of the one lookup, whichever call asks for it
-        assertThat(getInitialHostname()).isSameAs(getInitialHostname());
+        // given: a lookup counting how many times it runs, and naming its result after it
+        var lookups = new AtomicInteger();
+        var hostname = lookUpOnce(() -> "host-" + lookups.incrementAndGet(), Duration.ofSeconds(5));
+
+        // when
+        var results = List.of(hostname.get(), hostname.get(), hostname.get());
+
+        // then: the result of the one lookup, whichever call asks for it
+        assertThat(results).containsOnly("host-1");
+        assertThat(lookups).hasValue(1);
     }
 
     @Nested

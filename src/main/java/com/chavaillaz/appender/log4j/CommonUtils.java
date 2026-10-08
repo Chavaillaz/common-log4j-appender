@@ -7,6 +7,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import org.jspecify.annotations.Nullable;
 
@@ -52,7 +53,7 @@ public final class CommonUtils {
      * @return The host name, or {@code localhost} if it cannot be determined within a reasonable time
      */
     public static String getInitialHostname() {
-        return await(HostName.LOOKUP, HOSTNAME_LOOKUP_TIMEOUT);
+        return HostName.LOOKUP.get();
     }
 
     /**
@@ -60,14 +61,35 @@ public final class CommonUtils {
      */
     private static final class HostName {
 
-        private static final Future<String> LOOKUP = start(() -> {
-            try {
-                return InetAddress.getLocalHost().getCanonicalHostName();
-            } catch (UnknownHostException e) {
-                return "localhost";
-            }
-        });
+        private static final Supplier<String> LOOKUP =
+                lookUpOnce(CommonUtils::lookUpCanonicalHostName, HOSTNAME_LOOKUP_TIMEOUT);
 
+    }
+
+    /**
+     * Looks up the name of the host the application runs on, for as long as the reverse DNS lookup takes.
+     *
+     * @return The canonical host name, or {@code localhost} if the host cannot be resolved
+     */
+    static String lookUpCanonicalHostName() {
+        try {
+            return InetAddress.getLocalHost().getCanonicalHostName();
+        } catch (UnknownHostException e) {
+            return "localhost";
+        }
+    }
+
+    /**
+     * Starts the given lookup once, and gives its result to every later call, each waiting at most the given
+     * timeout for it (see {@link #await(Future, Duration)}).
+     *
+     * @param lookup  The lookup to run, expected to already have a fallback for its own failures
+     * @param timeout The maximum time each call waits for the lookup to complete
+     * @return The result of the lookup, waited for on every call
+     */
+    static Supplier<String> lookUpOnce(Callable<String> lookup, Duration timeout) {
+        Future<String> started = start(lookup);
+        return () -> await(started, timeout);
     }
 
     /**
