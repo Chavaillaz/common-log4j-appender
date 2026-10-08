@@ -16,6 +16,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.DisplayName;
@@ -1276,13 +1277,14 @@ class AbstractBatchLogDeliveryTest {
             var ready = new CountDownLatch(threads);
             var start = new CountDownLatch(1);
 
-            // when
+            // when: each document carrying an id of its own
             for (int t = 0; t < threads; t++) {
+                int firstId = t * messagesPerThread;
                 pool.submit(() -> {
                     ready.countDown();
                     await(start);
                     for (int i = 0; i < messagesPerThread; i++) {
-                        logDelivery.send(Map.of());
+                        logDelivery.send(Map.of("id", firstId + i));
                     }
                 });
             }
@@ -1293,8 +1295,14 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.flush();
             logDelivery.awaitPendingTransmissions();
 
-            // then
-            assertThat(logDelivery.totalDocumentsSent.get()).isEqualTo(threads * messagesPerThread);
+            // then: every one of them sent exactly once, rather than as many documents as were sent, which a
+            // lost one and a duplicated one would add up to as well
+            List<Integer> sentIds = logDelivery.allBulkDocuments.stream()
+                    .flatMap(List::stream)
+                    .map(document -> (Integer) document.get("id"))
+                    .sorted()
+                    .toList();
+            assertThat(sentIds).isEqualTo(IntStream.range(0, threads * messagesPerThread).boxed().toList());
         }
 
         @Test

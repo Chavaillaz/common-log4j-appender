@@ -3,6 +3,9 @@ package com.chavaillaz.appender.log4j;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.List;
+import java.util.stream.IntStream;
+
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.LoggerContext;
@@ -72,8 +75,13 @@ class PluginIntegrationTest {
         // passing the appender 0, which Log4j2 documents as leaving the timeout to each appender
         context.stop();
 
-        // then: the queue was processed and the batch flushed, rather than abandoned on the way out
-        assertThat(PluginIntegrationTestAppender.RECEIVED_DOCUMENTS).hasSize(2_000);
+        // then: the queue was processed and the batch flushed, rather than abandoned on the way out, every
+        // message delivered exactly once, rather than as many documents as were logged, which a lost one and a
+        // duplicated one would add up to as well
+        List<String> expected = IntStream.range(0, 2_000).mapToObj(i -> "message " + i).toList();
+        assertThat(PluginIntegrationTestAppender.RECEIVED_DOCUMENTS)
+                .extracting(document -> document.get("logmessage"))
+                .containsExactlyInAnyOrderElementsOf(expected);
     }
 
     /**
