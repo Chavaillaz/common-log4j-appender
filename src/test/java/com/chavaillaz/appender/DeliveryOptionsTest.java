@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
+import java.lang.reflect.RecordComponent;
 import java.time.Duration;
 import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
@@ -75,22 +76,34 @@ class DeliveryOptionsTest {
 
     @Test
     @DisplayName("Derives a new instance overriding one setting and carrying the rest over")
-    void testWithCarriesEveryOtherSettingOver() {
-        // given
+    void testWithCarriesEveryOtherSettingOver() throws Exception {
+        // given: every setting away from its default, so that one left behind comes back as another value
         DeliveryOptions original = DeliveryOptions.builder()
                 .flushThreshold(500)
+                .flushInterval(Duration.ofSeconds(7))
                 .flushLevel(Level.WARN)
+                .maxConcurrentTransmissions(2)
                 .maxPendingDocuments(1_000)
+                .maxRequestDocuments(250)
+                .maxPendingBytes(4_000_000)
+                .maxRequestBytes(1_000_000)
+                .maxConsecutiveFailures(9)
+                .maxQueuedEvents(3_000)
+                .retryBackoff(Duration.ofMillis(300))
+                .maxRetryBackoff(Duration.ofMinutes(2))
                 .closeTimeout(null)
                 .build();
+        for (RecordComponent setting : DeliveryOptions.class.getRecordComponents()) {
+            assertThat(setting.getAccessor().invoke(original))
+                    .as("The " + setting.getName() + " this test derives from should not be the default one")
+                    .isNotEqualTo(setting.getAccessor().invoke(DeliveryOptions.defaults()));
+        }
 
         // when
         DeliveryOptions derived = original.with().maxPendingDocuments(50_000).build();
 
         // then: only the overridden setting differs, the rest (including a deliberately null one) is kept
         assertThat(derived.maxPendingDocuments()).isEqualTo(50_000);
-        assertThat(derived.flushThreshold()).isEqualTo(500);
-        assertThat(derived.flushLevel()).isEqualTo(Level.WARN);
         assertThat(derived.closeTimeout()).isNull();
         assertThat(derived.with().maxPendingDocuments(1_000).build()).isEqualTo(original);
         assertThat(derived).isNotSameAs(original);
