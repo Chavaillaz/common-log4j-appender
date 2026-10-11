@@ -2139,6 +2139,8 @@ class AbstractLogDeliveryAppenderTest {
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
             appender.start();
             appender.append(mockLogEvent());
+            // Taken by the worker before the stop, which gives it no time at all and would abandon it with the rest
+            awaitEmptyQueue(appender);
             appender.append(realLogEvent("queued-1"));
             appender.append(realLogEvent("queued-2"));
 
