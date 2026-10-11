@@ -8,6 +8,7 @@ import static com.chavaillaz.appender.log4j.CommonUtils.lookUpOnce;
 import static com.chavaillaz.appender.log4j.CommonUtils.start;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
@@ -58,6 +59,30 @@ class CommonUtilsTest {
 
         // then
         assertThat(value).isEqualTo("systemValue");
+    }
+
+    @Test
+    @DisplayName("Returns the environment variable of that name before the system property")
+    void testProperty_Environment() {
+        // given: an environment variable of this process, whichever comes first, and a system property of its name
+        assumeThat(System.getenv()).as("Environment variables of this process").isNotEmpty();
+        var variable = System.getenv().entrySet().iterator().next();
+        var previousProperty = System.getProperty(variable.getKey());
+        System.setProperty(variable.getKey(), "systemValue");
+
+        try {
+            // when
+            var value = getProperty(variable.getKey(), "defaultValue");
+
+            // then: what the environment says, which is how a container overrides what an image sets
+            assertThat(value).isEqualTo(variable.getValue());
+        } finally {
+            if (previousProperty == null) {
+                System.clearProperty(variable.getKey());
+            } else {
+                System.setProperty(variable.getKey(), previousProperty);
+            }
+        }
     }
 
     @Test
