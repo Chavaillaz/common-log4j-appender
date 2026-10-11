@@ -165,19 +165,26 @@ class BackoffPolicyTest {
      * @param ceiling             The expected upper bound of the delay, in milliseconds
      */
     private static void assertCeiling(BackoffPolicy policy, int consecutiveFailures, long ceiling) {
+        long min = Long.MAX_VALUE;
         long max = -1;
         for (int i = 0; i < 500; i++) {
             long delay = policy.delayMillis(consecutiveFailures);
             assertThat(delay)
                     .as("Delay should be within [0, " + ceiling + "] but was " + delay)
                     .isBetween(0L, ceiling);
+            min = Math.min(min, delay);
             max = Math.max(max, delay);
         }
         // Sampling 500 times, the odds of never exceeding half the ceiling by chance are negligible; this
-        // catches a policy that silently degenerated to a constant (or a much smaller range) instead.
+        // catches a policy that silently degenerated to a much smaller range instead.
         assertThat(max)
                 .as("Delays should be spread across the range up to " + ceiling + ", but never exceeded " + max)
                 .isGreaterThan(ceiling / 2);
+        // So are the odds of never falling under half of it; this catches a policy returning the ceiling
+        // itself, or anything near it, every retry of every instance then coming at the same time.
+        assertThat(min)
+                .as("Delays should be spread across the range up to " + ceiling + ", but never fell under " + min)
+                .isLessThan(ceiling / 2);
     }
 
 }
