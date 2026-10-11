@@ -187,6 +187,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Is retried on every message when batching is disabled (flush threshold of 1)
 - Holds off retrying for the configured RetryBackoff, until closed
 - Retries at the next flush while RetryBackoff is zero, whatever MaxRetryBackoff
+- Draws its retry delays under RetryBackoff at first, and under MaxRetryBackoff as failures follow
 
 **Safety limits**
 

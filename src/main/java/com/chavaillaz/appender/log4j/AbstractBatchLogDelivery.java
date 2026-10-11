@@ -102,7 +102,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                 .elementSize(this::measureIfBounded)
                 // Fixed once, unlike the limits above
                 .maxConcurrentTransmissions(options.maxConcurrentTransmissions())
-                .backoff(BackoffPolicy.exponential(options.retryBackoff(), options.maxRetryBackoff()))
+                .backoff(backoffOf(options))
                 .transmissionThreadPrefix("log-delivery-transmission-")
                 .elementNoun("document")
                 .transport(this::sendBulk)
@@ -123,6 +123,17 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                     }
                 })
                 .build();
+    }
+
+    /**
+     * The policy holding off the retries of a delivery with the given options: a delay drawn at random up to
+     * {@code RetryBackoff}, which doubles with each consecutive failure up to {@code MaxRetryBackoff}.
+     *
+     * @param options The options of the delivery
+     * @return The backoff policy of its batching engine
+     */
+    static BackoffPolicy backoffOf(DeliveryOptions options) {
+        return BackoffPolicy.exponential(options.retryBackoff(), options.maxRetryBackoff());
     }
 
     /**

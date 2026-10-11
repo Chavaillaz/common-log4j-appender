@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.DisplayName;
@@ -31,6 +32,7 @@ import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDeliveryListener;
 import com.chavaillaz.appender.TransmissionResult;
+import com.chavaillaz.appender.internal.BackoffPolicy;
 
 @Slf4j
 @DisplayName("AbstractBatchLogDelivery")
@@ -642,6 +644,25 @@ class AbstractBatchLogDeliveryTest {
             assertThat(afterFailure).isEqualTo(DeliveryHealth.Status.RETRYING);
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(2);
             assertThat(logDelivery.lastBulkDocuments).containsExactly(Map.of("id", 1));
+        }
+
+        @Test
+        @DisplayName("Draws its retry delays under RetryBackoff at first, and under MaxRetryBackoff as failures follow")
+        void testRetryBackoffGrowsUpToItsConfiguredMaximum() {
+            // given: a backoff of 100 ms, growing up to 800
+            var options = DeliveryOptions.builder()
+                    .retryBackoff(Duration.ofMillis(100))
+                    .maxRetryBackoff(Duration.ofMillis(800)).build();
+
+            // when: the policy a delivery hands its engine is asked for many delays, each one drawn at random
+            BackoffPolicy backoff = AbstractBatchLogDelivery.backoffOf(options);
+            long largestAfterOneFailure = LongStream.range(0, 500).map(i -> backoff.delayMillis(1)).max().orElseThrow();
+            long largestAfterTenFailures = LongStream.range(0, 500).map(i -> backoff.delayMillis(10)).max().orElseThrow();
+
+            // then: up to 100 ms after a first failure, and up to 800 ms once doubling it reached the maximum,
+            // which a delivery leaving the maximum out, or taking one setting for the other, would not draw
+            assertThat(largestAfterOneFailure).isBetween(51L, 100L);
+            assertThat(largestAfterTenFailures).isBetween(401L, 800L);
         }
 
     }
