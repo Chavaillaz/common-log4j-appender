@@ -14,6 +14,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -101,6 +102,22 @@ class CommonUtilsTest {
 
             // then
             assertThat(hostname).isEqualTo("my-host.example.com");
+        }
+    }
+
+    @Test
+    @DisplayName("Falls back to localhost when the local machine has no name that resolves")
+    void testHostnameOfAnUnknownLocalHost() {
+        // given: a machine whose own name resolves to no address, as in a container given a host name its
+        // resolver knows nothing of
+        try (var addresses = mockStatic(InetAddress.class)) {
+            addresses.when(InetAddress::getLocalHost).thenThrow(new UnknownHostException("my-host: Name or service not known"));
+
+            // when
+            var hostname = lookUpCanonicalHostName();
+
+            // then
+            assertThat(hostname).isEqualTo("localhost");
         }
     }
 

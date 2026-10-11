@@ -511,6 +511,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Returns the system property value when the key is found
 - Returns the environment variable of that name before the system property
 - Returns the canonical host name of the local machine
+- Falls back to localhost when the local machine has no name that resolves
 - Gives the host name its lookup finds, and localhost to a call made before it found it
 - Looks the host name up once, every later call sharing its result
 - Returns the lookup's result when it completes before the timeout
