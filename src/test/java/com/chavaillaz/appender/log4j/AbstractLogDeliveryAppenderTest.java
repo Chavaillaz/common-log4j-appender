@@ -225,19 +225,35 @@ class AbstractLogDeliveryAppenderTest {
         @Test
         @DisplayName("Builds a single delivery handler and scheduler however many times it is started")
         void testStartingTwiceDoesNotLeakTheFirstHandlerAndScheduler() throws Exception {
-            // given: batching enabled, so start() also creates the periodic flush scheduler
+            // given: batching enabled, so start() also creates the periodic flush scheduler, and an appender
+            // creating a new delivery handler each time it is asked for one
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofMillis(200)).build();
-            var appender = new LogDeliveryAppender("started-twice", null, configuration);
+            var created = new CopyOnWriteArrayList<LogDelivery>();
+            var appender = new AbstractLogDeliveryAppender<>("started-twice", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    LogDelivery handler = mock(LogDelivery.class);
+                    created.add(handler);
+                    return handler;
+                }
+
+                @Override
+                protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                    return () -> {
+                    };
+                }
+            };
 
             // when: started again, as nothing in Log4j2's lifecycle rules out
             appender.start();
-            var handler = appender.getLogDeliveryHandler();
             appender.start();
 
-            // then: still the same handler, rather than a second one leaving the first with no reference
-            // left to close it
+            // then: still the first handler, rather than a second one leaving it with no reference left to close
+            // it
+            assertThat(created).hasSize(1);
+            LogDelivery handler = created.getFirst();
             assertThat(appender.getLogDeliveryHandler()).isSameAs(handler);
             assertThat(appender.isStarted()).isTrue();
 
@@ -249,11 +265,11 @@ class AbstractLogDeliveryAppenderTest {
 
             // and: that scheduler is running, waited for rather than slept through for the same reason
             appender.append(mockLogEvent());
-            verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeastOnce()).flush();
+            verify(handler, timeout(5_000).atLeastOnce()).flush();
 
             // cleanup
             appender.stop();
-            verify(appender.getLogDeliveryHandler()).close(any());
+            verify(handler).close(any());
         }
 
         @Test
