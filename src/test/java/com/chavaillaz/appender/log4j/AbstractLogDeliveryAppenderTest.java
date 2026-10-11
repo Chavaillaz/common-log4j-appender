@@ -1729,7 +1729,7 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10))
-                    .closeTimeout(Duration.ofMillis(200)).build();
+                    .closeTimeout(Duration.ofMillis(500)).build();
             var interrupted = new CountDownLatch(1);
             var appender = new StuckLogDeliveryAppender("appender-name", null, configuration, interrupted);
 
@@ -1740,13 +1740,14 @@ class AbstractLogDeliveryAppenderTest {
             appender.stop(0, MILLISECONDS);
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-            // then: gave up once the close timeout elapsed, instead of waiting on the stuck task forever
+            // then: gave up once the close timeout elapsed, neither before nor long after, instead of waiting on
+            // the stuck task forever
             assertThat(interrupted.await(2, SECONDS))
                     .as("The stuck task should have been interrupted after the timeout")
                     .isTrue();
             assertThat(elapsedMillis)
                     .as("stop() should have given up after the close timeout, took " + elapsedMillis + "ms")
-                    .isLessThan(5_000);
+                    .isBetween(500L, 950L);
         }
 
         @Test

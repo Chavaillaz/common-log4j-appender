@@ -960,13 +960,14 @@ class BatcherTest {
             // when: closing, which must both wait for a permit the stuck transmission never gives back and then
             // wait for that transmission itself, neither of which can be allowed to block a JVM shutdown forever
             long start = System.nanoTime();
-            batcher.close(Duration.ofMillis(200));
+            batcher.close(Duration.ofMillis(500));
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
-            // then: both the element never handed to the stuck transport and the one it holds are reported
+            // then: it waited that long and no more, a close waiting twice its timeout taking a second, and both
+            // the element never handed to the stuck transport and the one it holds are reported
             assertThat(elapsedMillis)
-                    .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
-                    .isLessThan(5_000);
+                    .as("close() should have given up once its timeout elapsed, but took " + elapsedMillis + "ms")
+                    .isBetween(500L, 950L);
             assertThat(dropped).containsExactly("pending", "stuck");
         }
 
@@ -1308,13 +1309,13 @@ class BatcherTest {
 
             // when
             long start = System.nanoTime();
-            batcher.close(Duration.ofMillis(200));
+            batcher.close(Duration.ofMillis(500));
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: the wait is bounded like any other of the close, which still reports what is pending
             assertThat(elapsedMillis)
-                    .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
-                    .isLessThan(5_000);
+                    .as("close() should have given up once its timeout elapsed, but took " + elapsedMillis + "ms")
+                    .isBetween(500L, 950L);
             assertThat(saved).containsExactly("second");
             release.countDown();
         }

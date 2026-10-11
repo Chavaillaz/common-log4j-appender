@@ -426,7 +426,7 @@ class AbstractBatchLogDeliveryTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .maxConcurrentTransmissions(1)
-                    .closeTimeout(Duration.ofMillis(200))
+                    .closeTimeout(Duration.ofMillis(500))
                     .build();
             var listener = new RecordingListener();
             var logDelivery = new StuckTestLogDelivery(configuration, listener);
@@ -442,11 +442,11 @@ class AbstractBatchLogDeliveryTest {
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then: an application's shutdown is not held hostage by a downstream system that never answers,
-            // and both the document never dispatched and the one the stuck transmission holds get their last
-            // chance, rather than the latter vanishing with it
+            // waiting the configured timeout and no more, and both the document never dispatched and the one the
+            // stuck transmission holds get their last chance, rather than the latter vanishing with it
             assertThat(elapsedMillis)
-                    .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
-                    .isLessThan(5_000);
+                    .as("close() should have given up once its timeout elapsed, but took " + elapsedMillis + "ms")
+                    .isBetween(500L, 950L);
             assertThat(listener.dropped).hasSize(2);
             assertThat(listener.dropped.get(0).documents()).containsExactly(pending);
             assertThat(listener.dropped.get(1).documents()).containsExactly(inFlight);
@@ -473,13 +473,13 @@ class AbstractBatchLogDeliveryTest {
 
             // when
             long start = System.nanoTime();
-            logDelivery.close(Duration.ofMillis(200));
+            logDelivery.close(Duration.ofMillis(500));
             long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
 
             // then
             assertThat(elapsedMillis)
-                    .as("close() should have given up quickly, but took " + elapsedMillis + "ms")
-                    .isLessThan(5_000);
+                    .as("close() should have given up once its timeout elapsed, but took " + elapsedMillis + "ms")
+                    .isBetween(500L, 950L);
             assertThat(listener.dropped).hasSize(2);
             assertThat(listener.dropped.get(0).documents()).containsExactly(pending);
             assertThat(listener.dropped.get(1).documents()).containsExactly(inFlight);
