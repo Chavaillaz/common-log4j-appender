@@ -513,23 +513,8 @@ class AbstractLogDeliveryAppenderTest {
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(1)
                     .flushInterval(Duration.ofMillis(100)).build();
-            var attempts = new AtomicInteger();
             var delivered = new CountDownLatch(1);
-            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
-                @Override
-                protected LogDelivery createLogDeliveryHandler() {
-                    return new AbstractBatchLogDelivery<>(configuration) {
-                        @Override
-                        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
-                            if (attempts.incrementAndGet() == 1) {
-                                return CompletableFuture.completedFuture(TransmissionResult.failure(new IllegalStateException("Simulated outage")));
-                            }
-                            delivered.countDown();
-                            return CompletableFuture.completedFuture(TransmissionResult.success());
-                        }
-                    };
-                }
-            };
+            var appender = appenderFailingItsFirstRequest(configuration, delivered);
 
             // when: a single event, the application falling quiet after it
             appender.start();
@@ -544,30 +529,54 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
-        @DisplayName("Schedules a periodic flush when batching is disabled but a retry backoff can hold documents back")
-        void testSchedulesPeriodicFlushForRetryBackoffWithoutBatching() throws Exception {
-            // given: no batching, but a retry backoff (enabled by default in production, unlike in this test
-            // configuration) stacks documents while it holds off transmissions, and once it elapses nothing
-            // sends them until the next document happens to arrive. Under low traffic the periodic flush is the
-            // only thing that ever will.
-            var logEvent = mockLogEvent();
+        @DisplayName("Retries a failed document once its retry backoff elapsed, before any other event comes")
+        void testRetriesADocumentHeldBackByABackoffWithoutAnotherEvent() throws Exception {
+            // given: no batching, a first attempt failing, and a retry backoff (enabled by default in production,
+            // unlike in this test configuration) of up to 300 ms, drawn at random, which most often holds off the
+            // flushes of the first periods
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(1)
-                    .retryBackoff(Duration.ofSeconds(1))
-                    .maxRetryBackoff(Duration.ofSeconds(1))
-                    .flushInterval(Duration.ofMillis(200)).build();
-            var appender = new LogDeliveryAppender("appender-name", null, configuration);
+                    .retryBackoff(Duration.ofMillis(300))
+                    .maxRetryBackoff(Duration.ofMillis(300))
+                    .flushInterval(Duration.ofMillis(20)).build();
+            var delivered = new CountDownLatch(1);
+            var appender = appenderFailingItsFirstRequest(configuration, delivered);
 
-            // when
+            // when: a single event, the application falling quiet after it
             appender.start();
-            appender.append(logEvent);
+            appender.append(realLogEvent("last words"));
 
-            // then
-            verify(appender.getLogDeliveryHandler(), timeout(5_000)).flush();
-            assertThat(appender.getCountTaskExecuted().get()).isEqualTo(1);
+            // then: once the backoff elapsed, nothing sends the document until the next one happens to arrive.
+            // Under low traffic the periodic flush is the only thing that ever will, a flush held off by the
+            // backoff being followed by the one of the next period
+            assertThat(delivered.await(5, SECONDS)).as("The failed document should have been retried").isTrue();
 
             // cleanup
-            appender.stop();
+            appender.stop(1, SECONDS);
+        }
+
+        /**
+         * An appender whose delivery fails its first request, as during a short outage, and releases the given
+         * latch once a later one is accepted.
+         */
+        private AbstractLogDeliveryAppender<TestLogConfiguration> appenderFailingItsFirstRequest(
+                TestLogConfiguration configuration, CountDownLatch delivered) {
+            var attempts = new AtomicInteger();
+            return new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return new AbstractBatchLogDelivery<>(configuration) {
+                        @Override
+                        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                            if (attempts.incrementAndGet() == 1) {
+                                return CompletableFuture.completedFuture(TransmissionResult.failure(new IllegalStateException("Simulated outage")));
+                            }
+                            delivered.countDown();
+                            return CompletableFuture.completedFuture(TransmissionResult.success());
+                        }
+                    };
+                }
+            };
         }
 
     }

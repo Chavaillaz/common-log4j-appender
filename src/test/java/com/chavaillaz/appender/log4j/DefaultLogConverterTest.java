@@ -1,20 +1,26 @@
 package com.chavaillaz.appender.log4j;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.AbstractLogEvent;
 import org.apache.logging.log4j.core.impl.JdkMapAdapterStringMap;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.SimpleMessage;
+import org.apache.logging.log4j.status.StatusData;
+import org.apache.logging.log4j.status.StatusListener;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.apache.logging.log4j.util.BiConsumer;
 import org.apache.logging.log4j.util.ReadOnlyStringMap;
 import org.apache.logging.log4j.util.StringMap;
@@ -96,19 +102,41 @@ class DefaultLogConverterTest {
         }
 
         @Test
-        @DisplayName("Does not fail when the event carries no MDC context data")
+        @DisplayName("Converts an event carrying no MDC context data at all, without a warning")
         void testConversionWithoutMdc() {
-            // given
+            // given: an event answering null for its context data, as one of a custom LogEventFactory may, where a
+            // Log4jLogEvent carries a map at least, though an empty one
             var configuration = TestLogConfiguration.builder().build();
             var converter = new DefaultLogConverter(configuration);
-            var event = Log4jLogEvent.newBuilder()
-                    .setMessage(new SimpleMessage("No MDC here"))
-                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
-                    .setLevel(Level.INFO)
-                    .build();
+            var event = new AbstractLogEvent() {
+                @Override
+                public Level getLevel() {
+                    return Level.INFO;
+                }
 
-            // when / then
-            assertThatNoException().isThrownBy(() -> converter.convert(event));
+                @Override
+                public String getLoggerName() {
+                    return "com.chavaillaz.appender.log4j.MyClass";
+                }
+
+                @Override
+                public Message getMessage() {
+                    return new SimpleMessage("No MDC here");
+                }
+            };
+            assertThat(event.getContextData()).as("This event should carry no context data").isNull();
+
+            // when
+            var documents = new ArrayList<Map<String, Object>>();
+            List<StatusData> statuses = captureStatuses(() -> documents.add(converter.convert(event)));
+
+            // then: the fields of the event alone, and nothing said of context data it has no reason to carry
+            assertThat(documents).singleElement().satisfies(document -> {
+                assertThat(document).containsOnlyKeys(
+                        "datetime", "host", "environment", "application", "logger", "level", "logmessage", "thread");
+                assertThat(document).containsEntry("logmessage", "No MDC here");
+            });
+            assertThat(statuses).extracting(StatusData::getFormattedStatus).isEmpty();
         }
 
         @Test
@@ -637,6 +665,36 @@ class DefaultLogConverterTest {
             assertThat(document.get("logmessage")).isEqualTo("Message");
         }
 
+    }
+
+    /**
+     * Runs the given action while capturing what is logged on the status channel of Log4j2 from warnings up.
+     */
+    private static List<StatusData> captureStatuses(Runnable action) {
+        var statuses = new CopyOnWriteArrayList<StatusData>();
+        var statusListener = new StatusListener() {
+            @Override
+            public void log(StatusData data) {
+                statuses.add(data);
+            }
+
+            @Override
+            public Level getStatusLevel() {
+                return Level.WARN;
+            }
+
+            @Override
+            public void close() {
+                // Nothing to release
+            }
+        };
+        StatusLogger.getLogger().registerListener(statusListener);
+        try {
+            action.run();
+        } finally {
+            StatusLogger.getLogger().removeListener(statusListener);
+        }
+        return statuses;
     }
 
     private static class ThrowingMessage implements Message {

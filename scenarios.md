@@ -56,7 +56,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Keeps flushing periodically once an event evicted the queued flush from a full queue
 - Runs a periodic flush the full queue had no room for even while the options cannot be read
 - Retries a failed document without batching nor backoff, before any other event comes
-- Schedules a periodic flush when batching is disabled but a retry backoff can hold documents back
+- Retries a failed document once its retry backoff elapsed, before any other event comes
 
 **Flush on a severe event**
 
@@ -126,7 +126,7 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Converts every field of a fully populated logging event
 - Does not include exception fields when the event carries no exception
-- Does not fail when the event carries no MDC context data
+- Converts an event carrying no MDC context data at all, without a warning
 - Does not let an MDC entry override a reserved field
 - Does not let an MDC entry fill a reserved field left null
 - Prefers the logger name over the internal fully qualified caller class name
