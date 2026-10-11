@@ -106,6 +106,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Never keeps the JVM alive on its own once the application is done
 - Names its threads after the appender, telling two appenders apart in a thread dump
 - Never keeps the context of the first thread to log for as long as it runs
+- Never keeps the context of the thread starting it, which creates its worker and its scheduler
 - Finishes stopping even when closing the delivery fails with an Error
 - Rejects further appends without throwing back to the calling thread
 - Reports an event appended once stopped as rejected, without formatting its message

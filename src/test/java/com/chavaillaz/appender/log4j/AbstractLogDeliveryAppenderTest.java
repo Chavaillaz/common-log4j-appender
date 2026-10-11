@@ -1930,6 +1930,53 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Never keeps the context of the thread starting it, which creates its worker and its scheduler")
+        void testThreadsDoNotTakeAfterTheThreadStartingIt() throws Exception {
+            // given: a worker task reporting the context it runs with
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10)).build();
+            var deploymentContext = new InheritableThreadLocal<String>();
+            var applicationClassLoader = new ClassLoader() {
+            };
+            var workerContext = new CompletableFuture<List<Object>>();
+            var appender = new LogDeliveryAppender("started-with-a-context", null, configuration) {
+                @Override
+                protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                    return () -> workerContext.complete(Arrays.asList(
+                            deploymentContext.get(), Thread.currentThread().getContextClassLoader()));
+                }
+            };
+
+            // when: started by a thread carrying a context of its own, as the thread deploying a web application
+            // does, with an inheritable thread-local and the class loader of the application
+            Thread.ofPlatform().start(() -> {
+                deploymentContext.set("deployment-1");
+                Thread.currentThread().setContextClassLoader(applicationClassLoader);
+                appender.start();
+            }).join();
+            appender.append(mockLogEvent());
+
+            // then: both threads run until the appender stops, so a context they took from that thread would be
+            // kept alive as long, the class loader of an application undeployed since included
+            var context = workerContext.get(5, SECONDS);
+            assertThat(context.get(0))
+                    .as("The worker should not see the inheritable thread-locals of that thread")
+                    .isNull();
+            assertThat(context.get(1))
+                    .as("The worker should not use the class loader of that thread")
+                    .isNotSameAs(applicationClassLoader);
+            assertThat(liveThreadsNamed("log-delivery-flush-scheduler-started-with-a-context"))
+                    .singleElement()
+                    .extracting(Thread::getContextClassLoader)
+                    .as("The flush scheduler should not use the class loader of that thread")
+                    .isNotSameAs(applicationClassLoader);
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        @Test
         @DisplayName("Finishes stopping even when closing the delivery fails with an Error")
         void testStopCompletesWhenClosingTheDeliveryThrowsAnError() {
             // given: closing a delivery releases its transport client, and a class that client only needs on
