@@ -61,6 +61,7 @@ group holding them: a test added, renamed or removed changes this list too.
 **Flush on a severe event**
 
 - Triggers an immediate flush right after an event at least as severe as FlushLevel
+- Triggers an immediate flush right after an event exactly at FlushLevel
 - Flushes right after an urgent event even when the queue has no room for anything else
 - Does not flush for an event less severe than FlushLevel
 - Never flushes on severity alone while FlushLevel is left disabled
@@ -137,10 +138,12 @@ group holding them: a test added, renamed or removed changes this list too.
 - Truncates the message once it exceeds the configured maximum length
 - Cuts before a surrogate pair rather than splitting one at the limit
 - Does not truncate a message within the configured maximum length
+- Does not truncate a message exactly at the configured maximum length
 - Disables message truncation entirely when the configured maximum length is zero or negative
 - Truncates the stack trace once it exceeds the configured maximum length
 - Stops printing a stack trace once past the configured maximum length rather than printing it all
 - Does not truncate a stack trace within the configured maximum length
+- Does not truncate a stack trace exactly at the configured maximum length
 - Disables truncation entirely when the configured maximum length is zero or negative
 - Falls back to a placeholder instead of losing the whole document when a message fails to format
 - Names the failure of a message by its class when the failure cannot describe itself either
@@ -295,9 +298,11 @@ group holding them: a test added, renamed or removed changes this list too.
 **Request and pending size limits**
 
 - Splits a batch into chunks that each stay under the maximum request size
+- Fills a chunk up to the maximum request size exactly, cutting only past it
 - Sends an element larger than the maximum request size on its own rather than never at all
 - Sends elements measured at the largest size apart rather than adding them up past overflow
 - Measures each element once when splitting a batch, whatever the number of chunks
+- Sends a batch weighing the maximum pending size exactly, as it sends one past it
 - Discards the oldest elements once the pending batch weighs more than allowed while held off
 - Discards the oldest elements a failed request puts back past the maximum pending size
 - Never measures an element when no measurement was supplied at all

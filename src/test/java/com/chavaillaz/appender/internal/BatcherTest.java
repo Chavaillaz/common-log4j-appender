@@ -893,6 +893,31 @@ class BatcherTest {
         }
 
         @Test
+        @DisplayName("Fills a chunk up to the maximum request size exactly, cutting only past it")
+        void testChunkExactlyAtRequestBytesIsNotCut() throws Exception {
+            // given: elements measured at 10 bytes each and a 20 byte request limit, which two of them reach exactly
+            var attempts = new CopyOnWriteArrayList<List<String>>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 5)
+                    // One at a time, so the chunks arrive in the order they were cut rather than racing each other
+                    .maxConcurrentTransmissions(1)
+                    .elementSize(element -> 10)
+                    .maxRequestBytes(() -> 20L)
+                    .transport(elements -> {
+                        attempts.add(elements);
+                        return completedFuture(TransmissionResult.success());
+                    })
+                    .build();
+
+            // when
+            batcher.add(List.of("a", "b", "c", "d", "e"));
+            batcher.awaitPendingTransmissions();
+
+            // then: a request of the maximum size is still within it, rather than cut one element early
+            assertThat(attempts).containsExactly(List.of("a", "b"), List.of("c", "d"), List.of("e"));
+        }
+
+        @Test
         @DisplayName("Sends an element larger than the maximum request size on its own rather than never at all")
         void testOversizedElementIsStillDispatchedAlone() throws Exception {
             // given: "big" alone weighs more than a whole request is allowed to, and cannot be split any further
@@ -975,6 +1000,33 @@ class BatcherTest {
             // then: measured on the way in, then once more when split, an element starting a chunk included
             assertThat(attempts).containsExactly(List.of("a", "b"), List.of("c", "d"), List.of("e"));
             assertThat(measured).containsExactly("a", "b", "c", "d", "e", "a", "b", "c", "d", "e");
+        }
+
+        @Test
+        @DisplayName("Sends a batch weighing the maximum pending size exactly, as it sends one past it")
+        void testBatchExactlyAtPendingBytesCapIsSent() throws Exception {
+            // given: elements measured at 10 bytes each, a batch capped at 20 bytes, and a threshold it never reaches
+            var transmitted = new CopyOnWriteArrayList<List<String>>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 100)
+                    .elementSize(element -> 10)
+                    .maxPendingBytes(() -> 20L)
+                    .transport(elements -> {
+                        transmitted.add(elements);
+                        return completedFuture(TransmissionResult.success());
+                    })
+                    .build();
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+            assertThat(transmitted).isEmpty();
+
+            // when: a second element brings the batch to its cap
+            batcher.add(List.of("b"));
+            batcher.awaitPendingTransmissions();
+
+            // then: it is sent, a batch that reached its cap having no room for anything but what would push its
+            // oldest element out
+            assertThat(transmitted).containsExactly(List.of("a", "b"));
         }
 
         @Test

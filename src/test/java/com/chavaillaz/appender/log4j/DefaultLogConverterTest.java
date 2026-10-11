@@ -313,6 +313,29 @@ class DefaultLogConverterTest {
             assertThat(document.get("logmessage")).isEqualTo("A perfectly ordinary log line");
         }
 
+        @Test
+        @DisplayName("Does not truncate a message exactly at the configured maximum length")
+        void testConversionDoesNotTruncateAMessageAtTheMaximumLength() {
+            // given: a message of as many characters as the maximum allows
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter(configuration) {
+                @Override
+                protected int getMaxMessageLength() {
+                    return 10;
+                }
+            };
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("0123456789"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertThat(document.get("logmessage")).isEqualTo("0123456789");
+        }
+
         @ParameterizedTest
         @ValueSource(ints = {0, -1})
         @DisplayName("Disables message truncation entirely when the configured maximum length is zero or negative")
@@ -421,6 +444,36 @@ class DefaultLogConverterTest {
 
             // then
             assertThat(document.get("stacktrace").toString()).doesNotContain("truncated");
+        }
+
+        @Test
+        @DisplayName("Does not truncate a stack trace exactly at the configured maximum length")
+        void testConversionDoesNotTruncateAStackTraceAtTheMaximumLength() {
+            // given: a stack trace of as many characters as the maximum allows
+            var exception = new RuntimeException("my-exception");
+            exception.setStackTrace(new StackTraceElement[]{
+                    new StackTraceElement("com.chavaillaz.appender.log4j.MyClass", "myMethod", "MyClass.java", 42)
+            });
+            var fullStackTrace = new StringWriter();
+            exception.printStackTrace(new PrintWriter(fullStackTrace));
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter(configuration) {
+                @Override
+                protected int getMaxStackTraceLength() {
+                    return fullStackTrace.toString().length();
+                }
+            };
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(exception)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertThat(document.get("stacktrace")).isEqualTo(fullStackTrace.toString());
         }
 
         @ParameterizedTest(name = "maxStackTraceLength = {0}")

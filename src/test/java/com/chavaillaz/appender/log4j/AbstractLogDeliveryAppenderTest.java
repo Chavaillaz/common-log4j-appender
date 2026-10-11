@@ -621,6 +621,27 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Triggers an immediate flush right after an event exactly at FlushLevel")
+        void testEventAtFlushLevelTriggersImmediateFlush() throws Exception {
+            // given: the same setting, FlushLevel being the least severe level that flushes
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(100)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .flushLevel(Level.WARN).build();
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
+
+            // when
+            appender.start();
+            appender.append(mockLogEvent(Level.WARN));
+
+            // then
+            verify(appender.getLogDeliveryHandler(), timeout(5_000)).flush();
+
+            // cleanup
+            appender.stop();
+        }
+
+        @Test
         @DisplayName("Flushes right after an urgent event even when the queue has no room for anything else")
         void testUrgentEventFlushesDespiteAFullQueue() throws Exception {
             // given: a queue of a single event, which an urgent one fills while a first event holds up the
