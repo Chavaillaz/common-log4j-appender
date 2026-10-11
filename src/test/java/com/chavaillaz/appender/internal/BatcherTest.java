@@ -19,6 +19,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.Level;
@@ -2274,6 +2275,65 @@ class BatcherTest {
 
             // then
             assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.DOWN);
+        }
+
+        @Test
+        @DisplayName("Counts the time since its last success from a request accepted in part too")
+        void testPartialSuccessIsTheLastSuccess() throws Exception {
+            // given: a transport accepting "a" and rejecting "b", in an engine built a while before it is used
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 2)
+                    .transport(elements -> completedFuture(
+                            TransmissionResult.partialFailure(elements.stream().filter("b"::equals).toList(), null)))
+                    .build();
+            assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.UP);
+            Thread.sleep(100);
+            long sentAfter = System.nanoTime();
+
+            // when
+            batcher.add(List.of("a", "b"));
+            batcher.awaitPendingTransmissions();
+
+            // then: retrying what was rejected, and counting from that request, the transport having accepted
+            // an element then, rather than from the time the engine was built
+            DeliveryHealth health = batcher.health();
+            long checkedBy = System.nanoTime();
+            assertThat(health.status()).isEqualTo(DeliveryHealth.Status.RETRYING);
+            assertThat(health.sinceLastSuccess().toNanos()).isLessThanOrEqualTo(checkedBy - sentAfter);
+        }
+
+        @Test
+        @DisplayName("Tells the listener how long an accepted transmission took")
+        void testListenerIsToldHowLongATransmissionTook() throws Exception {
+            // given: a transport taking a tenth of a second to accept a request, and measuring it
+            var transportMillis = new AtomicLong();
+            var durations = new CopyOnWriteArrayList<Long>();
+            Batcher<String> batcher = batcher(1, elements -> {
+                long began = System.nanoTime();
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                transportMillis.set((System.nanoTime() - began) / 1_000_000);
+                return completedFuture(TransmissionResult.success());
+            }, new BatcherListener<>() {
+                @Override
+                public void onSucceeded(int count, long durationMillis) {
+                    durations.add(durationMillis);
+                }
+            });
+
+            // when
+            long start = System.nanoTime();
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+            long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+
+            // then: at least the time the transport took, and at most the time it all took, which is what a
+            // listener feeding the latency of the downstream system to a metrics library relies on
+            assertThat(durations).singleElement()
+                    .satisfies(duration -> assertThat(duration).isBetween(transportMillis.get(), elapsedMillis));
         }
 
         @Test

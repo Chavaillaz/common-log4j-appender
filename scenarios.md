@@ -353,6 +353,8 @@ group holding them: a test added, renamed or removed changes this list too.
 **Health, metrics and diagnostics**
 
 - Reports itself retrying after a failed transmission, up once one succeeds, and down once closed
+- Counts the time since its last success from a request accepted in part too
+- Tells the listener how long an accepted transmission took
 - Reports itself backing off while a failure holds transmissions off, whatever succeeded meanwhile
 - Reports its own diagnostics on Log4j2's status channel, not through an application logger
 - Takes a snapshot of what it holds right now, and of what it did so far
