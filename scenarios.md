@@ -486,6 +486,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Falls back to the given default value when the key is not found
 - Returns the system property value when the key is found
 - Returns the canonical host name of the local machine
+- Gives the host name its lookup finds, and localhost to a call made before it found it
 - Looks the host name up once, every later call sharing its result
 - Returns the lookup's result when it completes before the timeout
 - Falls back to localhost instead of waiting when the lookup exceeds the timeout

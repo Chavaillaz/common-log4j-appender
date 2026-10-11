@@ -6,7 +6,11 @@ import static com.chavaillaz.appender.log4j.CommonUtils.getProperty;
 import static com.chavaillaz.appender.log4j.CommonUtils.lookUpCanonicalHostName;
 import static com.chavaillaz.appender.log4j.CommonUtils.lookUpOnce;
 import static com.chavaillaz.appender.log4j.CommonUtils.start;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.when;
 
 import java.net.InetAddress;
 import java.time.Duration;
@@ -59,15 +63,41 @@ class CommonUtilsTest {
     @Test
     @DisplayName("Returns the canonical host name of the local machine")
     void testHostname() throws Exception {
-        // when: looked up for as long as it takes, as getInitialHostname() has it looked up in the background
+        // given: a local machine known by a short name and a canonical one
+        var localHost = mock(InetAddress.class);
+        when(localHost.getHostName()).thenReturn("my-host");
+        when(localHost.getCanonicalHostName()).thenReturn("my-host.example.com");
+
+        try (var addresses = mockStatic(InetAddress.class)) {
+            addresses.when(InetAddress::getLocalHost).thenReturn(localHost);
+
+            // when
+            var hostname = lookUpCanonicalHostName();
+
+            // then
+            assertThat(hostname).isEqualTo("my-host.example.com");
+        }
+    }
+
+    @Test
+    @DisplayName("Gives the host name its lookup finds, and localhost to a call made before it found it")
+    void testInitialHostnameIsTheOneLookedUp() throws Exception {
+        // given: the name of this machine, looked up for as long as it takes
         var hostname = lookUpCanonicalHostName();
 
-        // then
-        assertThat(hostname).isEqualTo(InetAddress.getLocalHost().getCanonicalHostName());
+        // when: asked until the lookup it started in the background is over, which takes more than the 5 seconds a
+        // call waits for it on a machine slow to resolve its own name
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(30);
+        var initialHostname = getInitialHostname();
+        while (!initialHostname.equals(hostname) && System.nanoTime() < deadlineNanos) {
+            assertThat(initialHostname).as("The name given while the lookup goes on").isEqualTo("localhost");
+            Thread.sleep(100);
+            initialHostname = getInitialHostname();
+        }
 
-        // and: the name getInitialHostname() gives, unless its wait for that lookup ran out first, as it does on
-        // a machine whose own name takes more than 5 seconds to resolve
-        assertThat(getInitialHostname()).isIn(hostname, "localhost");
+        // then: the name it found, rather than localhost for good. Where localhost is the name of the machine, as
+        // without a network, this cannot tell them apart
+        assertThat(initialHostname).isEqualTo(hostname);
     }
 
     @Test
