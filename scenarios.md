@@ -444,6 +444,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Keeps each line whole while another listener appends to the same file
 - Writes one line per document when multiple are dropped together
 - Escapes characters JSON requires escaping in string values
+- Escapes control characters too, which JSON does not allow raw in a string
 - Saves half of a surrogate pair as its JSON escape rather than losing it
 - Serializes nested maps, lists, numbers, booleans and null correctly
 - Writes an array as a JSON array rather than as its identity hash

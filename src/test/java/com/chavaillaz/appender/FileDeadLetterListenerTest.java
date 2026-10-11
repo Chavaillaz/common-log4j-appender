@@ -278,6 +278,32 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Escapes control characters too, which JSON does not allow raw in a string")
+    void testEscapesControlCharacters(@TempDir Path tempDir) throws Exception {
+        // given: a message carrying a carriage return, a NUL, the escape starting a terminal color, a backspace, a
+        // form feed and a unit separator, as the output of a command or a binary payload logged as text does
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("logmessage", "one\r\ntwo" + (char) 0x00 + (char) 0x1b + "[31mred\b\f" + (char) 0x1f + "end");
+
+        // when
+        listener.onDocumentsDropped(List.of(document), "reason");
+
+        // then: the carriage return and the line feed by their own escapes, the others by their code, so that
+        // the document stays on one line
+        String content = Files.readString(file, UTF_8);
+        assertThat(content)
+                .as("Unexpected content: " + content)
+                .contains("\"logmessage\":\"one\\r\\ntwo\\u0000\\u001b[31mred\\u0008\\u000c\\u001fend\"");
+
+        // and: nothing a JSON parser refuses is left raw in it, the end of the line aside
+        assertThat(content.stripTrailing().chars().filter(character -> character < 0x20).boxed().toList())
+                .as("Control characters left raw in the line")
+                .isEmpty();
+    }
+
+    @Test
     @DisplayName("Saves half of a surrogate pair as its JSON escape rather than losing it")
     void testLoneSurrogateDoesNotFailTheBatch(@TempDir Path tempDir) throws Exception {
         // given: a message cut in the middle of an emoji, as any substring() of user content can produce,
