@@ -1269,11 +1269,13 @@ class AbstractLogDeliveryAppenderTest {
         @Test
         @DisplayName("Discards the newest event when another one takes the slot its eviction freed")
         void testEventLosingTheFreedSlotIsDiscardedAsTheNewest() throws Exception {
-            // given: a one-slot queue in which another thread appends D right as the eviction frees the slot
+            // given: a one-slot queue in which another thread appends D right as the eviction frees the slot. The
+            // setting sizes the discards waiting to be reported too, two here: B and C are discarded one right
+            // after the other, and C would only be logged if the report of B had not begun by then
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10))
-                    .maxQueuedEvents(1).build();
+                    .maxQueuedEvents(2).build();
             var releaseFirstTask = new CountDownLatch(1);
             var appender = new RecordingBlockingLogDeliveryAppender<>(
                     "appender-name", null, configuration, releaseFirstTask);
