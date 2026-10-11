@@ -488,6 +488,34 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Keeps flushing periodically once a full queue refused the flush of a period")
+        void testPeriodicFlushSurvivesItsRejection() throws Exception {
+            // given: a queue of a single entry, taken by a second event while a first one holds up the worker, so
+            // that the flush of a period going by meanwhile finds no room in it and is refused
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(20))
+                    .maxQueuedEvents(1).build();
+            var releaseFirstTask = new CountDownLatch(1);
+            var appender = new RecordingBlockingLogDeliveryAppender<>("appender-name", null, configuration, releaseFirstTask);
+            appender.start();
+            appender.append(realLogEvent("first"));
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("second"));
+            sleep(100);
+
+            // when
+            releaseFirstTask.countDown();
+
+            // then: the worker, idle once both events are processed, still flushes every period, where the
+            // refused flush kept counting as queued, the one following the first event being the last
+            verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeast(4)).flush();
+
+            // cleanup
+            appender.stop(1, SECONDS);
+        }
+
+        @Test
         @DisplayName("Runs a periodic flush the full queue had no room for even while the options cannot be read")
         void testPeriodicFlushIsNotLostToUnreadableOptions() throws Exception {
             // given: the test above, with delivery options that stop resolving once the flush is requested,

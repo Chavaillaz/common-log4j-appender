@@ -54,6 +54,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Runs a periodic flush the full queue had no room for right after the event in progress
 - Keeps a single periodic flush in a queue backlogged for many periods
 - Keeps flushing periodically once an event evicted the queued flush from a full queue
+- Keeps flushing periodically once a full queue refused the flush of a period
 - Runs a periodic flush the full queue had no room for even while the options cannot be read
 - Retries a failed document without batching nor backoff, before any other event comes
 - Retries a failed document once its retry backoff elapsed, before any other event comes
