@@ -1661,14 +1661,16 @@ class AbstractLogDeliveryAppenderTest {
             assertThat(events.stream().filter("send"::equals).count()).isEqualTo(5);
             assertThat(events.get(events.size() - 1)).isEqualTo("close");
 
-            // and: closed the delivery within what the tasks left of it, rather than a whole one of its own
-            assertClosedWithin(appender, Duration.ofSeconds(10).minusMillis(250));
+            // and: closed the delivery within what the tasks left of it, rather than a whole one of its own. They
+            // take 250 ms of the stop, which the bound leaves a margin under
+            assertClosedWithin(appender, Duration.ofSeconds(10).minusMillis(200));
         }
 
         @Test
         @DisplayName("Closes the delivery within what processing the queued events left of the stop budget")
         void testStopClosesTheDeliveryWithinWhatIsLeftOfItsBudget() throws Exception {
-            // given: slow tasks queued right before stopping, taking a quarter of the budget between them
+            // given: slow tasks queued right before stopping, taking a quarter of the budget between them once it
+            // began
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(100)
                     .flushInterval(Duration.ofSeconds(10)).build();
@@ -1685,7 +1687,7 @@ class AbstractLogDeliveryAppenderTest {
             // then: the delivery got the rest of that second, rather than its own CloseTimeout on top of it,
             // which let a stop take twice as long as the shutdownTimeout Log4j2 was configured with
             assertThat(events.stream().filter("send"::equals).count()).isEqualTo(5);
-            assertClosedWithin(appender, Duration.ofMillis(750));
+            assertClosedWithin(appender, Duration.ofMillis(800));
         }
 
         /**
@@ -2874,6 +2876,10 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
+    /**
+     * Records the events it processes and the closing of its delivery, each event taking the given time once the
+     * appender began stopping, so that all of that time is spent within the stop, whatever ran before it.
+     */
     @Getter
     static class RecordingLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
@@ -2923,6 +2929,9 @@ class AbstractLogDeliveryAppenderTest {
         protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
             return () -> {
                 try {
+                    while (isStarted()) {
+                        sleep(1);
+                    }
                     sleep(taskDelayMillis);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
