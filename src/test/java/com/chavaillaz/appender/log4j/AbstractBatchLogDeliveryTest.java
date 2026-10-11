@@ -1364,43 +1364,38 @@ class AbstractBatchLogDeliveryTest {
         @Test
         @DisplayName("Does not block accumulation of the next batch while notifying a slow listener of dropped documents")
         void testSlowListenerDoesNotBlockBatchAccumulation() throws Exception {
-            // given: batching disabled (threshold of 1) and a maximum pending documents of 1, so that a
-            // second failed document overflows the batch and triggers a drop notification; the listener
-            // blocks until released, to prove send() does not need to wait for it to return
+            // given: a batch of one document at most, a first document failing, which holds the next ones off
+            // until a flush, and a listener that does not return from a drop until released
             var configuration = TestLogConfiguration.builder()
-                    .flushThreshold(1)
+                    .flushThreshold(100)
                     .maxPendingDocuments(1).build();
-            var listenerEntered = new CountDownLatch(1);
+            var listenerThread = new CompletableFuture<Thread>();
             var releaseListener = new CountDownLatch(1);
             var listener = new LogDeliveryListener() {
                 @Override
                 public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
-                    listenerEntered.countDown();
+                    listenerThread.complete(Thread.currentThread());
                     await(releaseListener);
                 }
             };
             var logDelivery = new TestLogDelivery(configuration, listener);
             logDelivery.bulkResult = false;
-
-            // when: the first failed document is requeued without overflowing yet, then a second one
-            // overflows the batch of size 1, triggering a drop whose listener notification blocks
             logDelivery.send(Map.of("id", 1));
             logDelivery.awaitPendingTransmissions();
-            logDelivery.send(Map.of("id", 2));
-            assertThat(listenerEntered.await(2, SECONDS)).as("The listener should have been entered by now").isTrue();
 
-            // then: send() must still be able to accumulate a new document promptly, proving it does not
-            // hold (or wait for) the same lock as the still-blocked listener call
-            var start = System.nanoTime();
-            logDelivery.send(Map.of("id", 3));
-            var elapsedMillis = (System.nanoTime() - start) / 1_000_000;
-            assertThat(elapsedMillis)
-                    .as("send() should not wait for the listener, took " + elapsedMillis + "ms")
-                    .isLessThan(500);
+            try {
+                // when: a second document pushes the first one out of the batch as it is accumulated, from a
+                // thread of its own, which a listener notified on the sending thread would hold for as long as it
+                // takes
+                var sender = Thread.ofPlatform().daemon().start(() -> logDelivery.send(Map.of("id", 2)));
+                sender.join(SECONDS.toMillis(5));
 
-            // cleanup
-            releaseListener.countDown();
-            logDelivery.awaitPendingTransmissions();
+                // then: the sender is back while the listener is still busy with the drop, on another thread
+                assertThat(listenerThread.get(5, SECONDS)).isNotSameAs(sender);
+                assertThat(sender.isAlive()).as("send() should not wait for the listener").isFalse();
+            } finally {
+                releaseListener.countDown();
+            }
         }
 
         @Test

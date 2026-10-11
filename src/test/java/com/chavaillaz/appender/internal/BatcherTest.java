@@ -1389,7 +1389,13 @@ class BatcherTest {
                     .build();
             batcher.add(List.of("first"));
             batcher.awaitPendingTransmissions();
-            batcher.add(List.of("second"));
+            // From a thread of its own: notified on the calling thread, the discard would hold it for as long as the
+            // listener, this test with it
+            Thread adder = Thread.ofPlatform().daemon().start(() -> batcher.add(List.of("second")));
+            adder.join(SECONDS.toMillis(5));
+            assertThat(adder.isAlive())
+                    .as("add() should not wait for the listener notified of the element it discarded")
+                    .isFalse();
             return batcher;
         }
 
