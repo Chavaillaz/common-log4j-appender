@@ -208,6 +208,33 @@ class AbstractBatchLogDeliveryTest {
             assertThat(logDelivery.countBulkSent.get()).isEqualTo(1);
         }
 
+        @Test
+        @DisplayName("Follows a flush threshold the configuration changes once the delivery is built")
+        void testFlushThresholdIsReadAgainForEveryDocument() throws Exception {
+            // given: a configuration answering from options it replaces at runtime, with a threshold of ten for now
+            var configuration = new ChangingOptionsConfiguration(DeliveryOptions.builder().flushThreshold(10).build());
+            var sent = new CopyOnWriteArrayList<List<Map<String, Object>>>();
+            var logDelivery = new AbstractBatchLogDelivery<>(configuration) {
+                @Override
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                    sent.add(documents);
+                    return completedFuture(TransmissionResult.success());
+                }
+            };
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.send(Map.of("id", 2));
+            logDelivery.awaitPendingTransmissions();
+            assertThat(sent).isEmpty();
+
+            // when: the threshold is lowered to three, and a third document comes
+            configuration.options = configuration.options.with().flushThreshold(3).build();
+            logDelivery.send(Map.of("id", 3));
+            logDelivery.awaitPendingTransmissions();
+
+            // then: the batch goes out at the new threshold, rather than at the one the delivery was built with
+            assertThat(sent).containsExactly(List.of(Map.of("id", 1), Map.of("id", 2), Map.of("id", 3)));
+        }
+
     }
 
     @Nested
@@ -392,16 +419,23 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Still closes, and still reports what was pending, when the close timeout cannot be read")
+        @DisplayName("Closes within the timeout it was built with, and reports what was pending, when the current one cannot be read")
         void testCloseReportsPendingDocumentsWhenTheTimeoutCannotBeRead() throws Exception {
             // given: the same "downstream is down, nothing can be retried" setup as above, plus a
             // configuration that stops resolving right before the delivery is closed
             var configuration = new FlakyCloseTimeoutConfiguration();
             var listener = new RecordingListener();
+            var closedWithin = new CopyOnWriteArrayList<Duration>();
             var logDelivery = new AbstractBatchLogDelivery<FlakyCloseTimeoutConfiguration>(configuration, listener) {
                 @Override
                 protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
                     return completedFuture(TransmissionResult.failure(null));
+                }
+
+                @Override
+                public void close(Duration timeout) throws Exception {
+                    super.close(timeout);
+                    closedWithin.add(timeout);
                 }
             };
             var document = Map.<String, Object>of("logmessage", "last words");
@@ -418,6 +452,9 @@ class AbstractBatchLogDeliveryTest {
             assertThat(listener.dropped).hasSize(1);
             assertThat(listener.dropped.get(0).documents()).containsExactly(document);
             assertThat(listener.dropped.get(0).reason()).isEqualTo("still pending when closed");
+
+            // and: closed within the timeout the delivery was built with, ten seconds, rather than without bound
+            assertThat(closedWithin).containsExactly(Duration.ofSeconds(10));
         }
 
         @Test
@@ -508,6 +545,34 @@ class AbstractBatchLogDeliveryTest {
 
             // then
             assertThat(closedWithin).containsExactly(Duration.ofSeconds(3));
+        }
+
+        @Test
+        @DisplayName("Closes with the close timeout configured by then, rather than the one it was built with")
+        void testCloseTimeoutIsReadWhenClosing() throws Exception {
+            // given: a delivery built with a close timeout of ten seconds, lowered to seven since
+            var configuration = new ChangingOptionsConfiguration(
+                    DeliveryOptions.builder().closeTimeout(Duration.ofSeconds(10)).build());
+            var closedWithin = new CopyOnWriteArrayList<Duration>();
+            var logDelivery = new AbstractBatchLogDelivery<>(configuration) {
+                @Override
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                    return completedFuture(TransmissionResult.success());
+                }
+
+                @Override
+                public void close(Duration timeout) throws Exception {
+                    super.close(timeout);
+                    closedWithin.add(timeout);
+                }
+            };
+            configuration.options = configuration.options.with().closeTimeout(Duration.ofSeconds(7)).build();
+
+            // when
+            logDelivery.close();
+
+            // then
+            assertThat(closedWithin).containsExactly(Duration.ofSeconds(7));
         }
 
     }
@@ -1463,6 +1528,40 @@ class AbstractBatchLogDeliveryTest {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+        }
+
+    }
+
+    /**
+     * A configuration answering from delivery options it replaces at runtime, held in a volatile field as
+     * {@link com.chavaillaz.appender.LogConfiguration} asks of one varying them.
+     */
+    static class ChangingOptionsConfiguration implements LogConfiguration {
+
+        volatile DeliveryOptions options;
+
+        ChangingOptionsConfiguration(DeliveryOptions options) {
+            this.options = options;
+        }
+
+        @Override
+        public String getApplication() {
+            return "test-application";
+        }
+
+        @Override
+        public String getHost() {
+            return "test-host";
+        }
+
+        @Override
+        public String getEnvironment() {
+            return "test-environment";
+        }
+
+        @Override
+        public DeliveryOptions getDeliveryOptions() {
+            return options;
         }
 
     }

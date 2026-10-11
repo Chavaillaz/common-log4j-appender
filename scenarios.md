@@ -179,6 +179,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Triggers a single transmission of the accumulated batch
 - Is also reached when several documents are sent in a single call
 - Can also be forced early by calling flush()
+- Follows a flush threshold the configuration changes once the delivery is built
 
 **Failed transmissions**
 
@@ -219,10 +220,11 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Flushes and waits for the remaining batch to be transmitted before returning
 - Reports the documents still pending once closed instead of discarding them silently
-- Still closes, and still reports what was pending, when the close timeout cannot be read
+- Closes within the timeout it was built with, and reports what was pending, when the current one cannot be read
 - Gives up after the configured close timeout instead of waiting forever on a stuck transmission
 - Gives up after the timeout it is closed with, however long the configured one
 - Closes through close(Duration) with the configured timeout, so an override releasing resources runs
+- Closes with the close timeout configured by then, rather than the one it was built with
 
 **Health and metrics**
 
