@@ -44,36 +44,49 @@ class DocumentSizeEstimatorTest {
     @Test
     @DisplayName("Counts every separator of the compact JSON rendering once")
     void testCountsEachSeparatorOnce() {
-        // given: strings, a number, and values rendered as strings, in the object and in arrays
+        // given: strings, a number and a value rendered as a string, in an object
         Instant instant = Instant.parse("2026-09-28T10:15:30Z");
-        Map<String, Object> document = new LinkedHashMap<>();
-        document.put("level", "ERROR");
-        document.put("count", 3);
-        document.put("tags", List.of("a", "b"));
-        document.put("when", instant);
-        document.put("seen", List.of(instant));
-        String json = "{\"level\":\"ERROR\",\"count\":3,\"tags\":[\"a\",\"b\"],"
-                + "\"when\":\"2026-09-28T10:15:30Z\",\"seen\":[\"2026-09-28T10:15:30Z\"]}";
+        Map<String, Object> scalars = new LinkedHashMap<>();
+        scalars.put("level", "ERROR");
+        scalars.put("count", 3);
+        scalars.put("when", instant);
+        String scalarsJson = "{\"level\":\"ERROR\",\"count\":3,\"when\":\"2026-09-28T10:15:30Z\"}";
+
+        // and: arrays on their own, long enough for the separators between their elements to outnumber the one
+        // an object counts in excess, which would otherwise make up for them
+        Map<String, Object> arrays = new LinkedHashMap<>();
+        arrays.put("tags", List.of("a", "b", "c", "d", "e"));
+        arrays.put("seen", List.of(instant, instant, instant));
+        String arraysJson = "{\"tags\":[\"a\",\"b\",\"c\",\"d\",\"e\"],\"seen\":[\"2026-09-28T10:15:30Z\","
+                + "\"2026-09-28T10:15:30Z\",\"2026-09-28T10:15:30Z\"]}";
 
         // when
-        long overhead = DocumentSizeEstimator.estimate(document) - json.getBytes(UTF_8).length;
+        long scalarsOverhead = DocumentSizeEstimator.estimate(scalars) - scalarsJson.getBytes(UTF_8).length;
+        long arraysOverhead = DocumentSizeEstimator.estimate(arrays) - arraysJson.getBytes(UTF_8).length;
 
-        // then: never under it, and over it by no more than the comma counted after the last element of each of
-        // the three containers
-        assertThat(overhead)
-                .as("Estimated " + overhead + " bytes more than the JSON takes")
+        // then: never under it, and over it by no more than the comma counted after the last element of each
+        // container, the object for one, the object and its two arrays for the other
+        assertThat(scalarsOverhead)
+                .as("Estimated " + scalarsOverhead + " bytes more than the JSON of the entries takes")
+                .isBetween(0L, 1L);
+        assertThat(arraysOverhead)
+                .as("Estimated " + arraysOverhead + " bytes more than the JSON of the arrays takes")
                 .isBetween(0L, 3L);
     }
 
     @Test
     @DisplayName("Counts null and booleans as the JSON literals they are written as")
     void testCountsNullAndBooleansAsLiterals() {
-        // given: a field a configuration left unset, as the default converter writes it, and two flags
+        // given: a field a configuration left unset, as the default converter writes it, and four flags, more
+        // of them false than true, so that one literal counted for the length of the other shows
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("host", null);
         document.put("retried", true);
         document.put("truncated", false);
-        String json = "{\"host\":null,\"retried\":true,\"truncated\":false}";
+        document.put("sampled", false);
+        document.put("delayed", false);
+        String json = "{\"host\":null,\"retried\":true,\"truncated\":false,\"sampled\":false,"
+                + "\"delayed\":false}";
 
         // when
         long overhead = DocumentSizeEstimator.estimate(document) - json.getBytes(UTF_8).length;
