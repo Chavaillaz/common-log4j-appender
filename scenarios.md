@@ -41,6 +41,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Skips converting an event discarded while nothing listens for discards
 - Reports a discard on another thread than the one logging, however slow the listener
 - Logs a discard instead of waiting once as many as the queue holds wait for the listener
+- Reports discards waiting together apart when their reasons differ, each under its own
 - Reports discards on a thread that does not take after the first thread to have one
 - Reports an event the worker shut down under while it was being queued, rather than stranding it
 

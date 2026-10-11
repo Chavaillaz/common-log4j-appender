@@ -1543,6 +1543,75 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
+        @DisplayName("Reports discards waiting together apart when their reasons differ, each under its own")
+        void testDiscardsOfDifferentReasonsAreReportedApart() throws Exception {
+            // given: a queue of two events behind a blocked worker, an appender failing to create the task of
+            // some events, and a listener held on the first discard it is told of, the next ones waiting together
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxQueuedEvents(2).build();
+            var releaseTask = new CountDownLatch(1);
+            var releaseListener = new CountDownLatch(1);
+            var listenerCalled = new CountDownLatch(1);
+            var reports = new CopyOnWriteArrayList<String>();
+            var handler = mock(LogDelivery.class);
+            when(handler.getListener()).thenReturn(new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    reports.add(documents.stream().map(document -> document.get("logmessage")).toList() + " " + reason);
+                    listenerCalled.countDown();
+                    try {
+                        releaseListener.await(5, SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            });
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return handler;
+                }
+
+                @Override
+                protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
+                    if (loggingEvent.getMessage().getFormattedMessage().startsWith("uncreatable")) {
+                        throw new IllegalStateException("Simulated failure creating the task");
+                    }
+                    return () -> {
+                        try {
+                            releaseTask.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    };
+                }
+            };
+            appender.setHandler(recordingErrorHandler(new CopyOnWriteArrayList<>()));
+            appender.start();
+            appender.append(realLogEvent("A")); // occupies the worker thread (blocked until released)
+            awaitEmptyQueue(appender);
+            appender.append(realLogEvent("uncreatable-1")); // discarded, which the listener then holds on to
+            assertThat(listenerCalled.await(5, SECONDS)).as("The listener should have been told about it").isTrue();
+
+            // when: two more events are discarded meanwhile, one for its task and one for the room it took
+            appender.append(realLogEvent("uncreatable-2"));
+            appender.append(realLogEvent("B"));
+            appender.append(realLogEvent("C")); // fills the queue
+            appender.append(realLogEvent("D")); // evicts B
+            releaseListener.countDown();
+            releaseTask.countDown();
+            appender.stop(2, SECONDS);
+
+            // then: each is reported for what happened to it, rather than both under the reason of the last
+            assertThat(reports).containsExactly(
+                    "[uncreatable-1] log delivery task creation error",
+                    "[uncreatable-2] log delivery task creation error",
+                    "[B] internal queue capacity exceeded, discarding the oldest pending event");
+        }
+
+        @Test
         @DisplayName("Reports discards on a thread that does not take after the first thread to have one")
         void testDiscardReporterDoesNotTakeAfterTheFirstThreadToHaveADiscard() throws Exception {
             // given: the same full-queue setup, with a listener reporting the context it runs with
