@@ -17,8 +17,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -33,6 +36,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
@@ -51,14 +55,17 @@ import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.message.SimpleMessage;
+import org.apache.logging.log4j.util.SortedArrayStringMap;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
+import com.chavaillaz.appender.FileDeadLetterListener;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
@@ -2798,6 +2805,93 @@ class AbstractLogDeliveryAppenderTest {
             assertThat(errors).as("The failure should still have been reported through the error handler").isNotEmpty();
             assertThat(appender.getCountTaskExecuted().get()).as("The event should have been processed").isEqualTo(1);
             assertThat(dropped).isEmpty();
+        }
+
+        @Test
+        @DisplayName("Logs nothing of its own failures back into the appender, whatever fails while it delivers an event")
+        void testFailuresOfThePipelineAreNotLoggedBackIntoIt(@TempDir Path tempDir) throws Exception {
+            // given: an appender counting the events it is given, with everything failing around the one it gets:
+            // its message does not format, one of its values does not render, each of its requests is refused,
+            // and two of its three listeners throw, the third one saving it to a file once it is given up on
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .flushInterval(Duration.ofMillis(20))
+                    .maxConsecutiveFailures(2).build();
+            var throwing = new LogDeliveryListener() {
+                @Override
+                public void onTransmissionFailed(int documentCount, @Nullable Throwable cause) {
+                    throw new IllegalStateException("Simulated misbehaving listener");
+                }
+
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    throw new IllegalStateException("Simulated misbehaving listener");
+                }
+            };
+            var deadLetters = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"));
+            var appended = new AtomicInteger();
+            var appender = new AbstractLogDeliveryAppender<>("logged-back-into", null, configuration) {
+                @Override
+                public void append(LogEvent loggingEvent) {
+                    appended.incrementAndGet();
+                    super.append(loggingEvent);
+                }
+
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return new AbstractBatchLogDelivery<>(configuration, LogDeliveryListener.compose(throwing, throwing, deadLetters)) {
+                        @Override
+                        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                            return CompletableFuture.completedFuture(TransmissionResult.failure(new IOException("Connection refused")));
+                        }
+                    };
+                }
+            };
+            var message = mock(Message.class);
+            when(message.getFormattedMessage()).thenThrow(new IllegalStateException("cannot format"));
+            var contextData = new SortedArrayStringMap();
+            contextData.putValue("payload", new Object() {
+                @Override
+                public String toString() {
+                    throw new IllegalStateException("cannot render");
+                }
+            });
+            var loggingEvent = Log4jLogEvent.newBuilder()
+                    .setMessage(message)
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setLevel(Level.INFO)
+                    .setContextData(contextData)
+                    .build();
+
+            // and: that appender on the root logger of the context the classes of this library would log to, were
+            // one of them to use an ordinary logger, which is where an application puts such an appender
+            LoggerContext context = LoggerContext.getContext(false);
+            appender.start();
+            context.getConfiguration().getRootLogger().addAppender(appender, Level.ALL, null);
+            context.updateLoggers();
+            try {
+                // when: the event is refused twice, given up on and saved, each failure on the way being logged
+                appender.append(loggingEvent);
+                long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+                while (isEmptyDirectory(tempDir)) {
+                    assertThat(System.nanoTime()).as("The event should have been saved by now").isLessThan(deadlineNanos);
+                    sleep(1);
+                }
+                appender.stop(2, SECONDS);
+            } finally {
+                context.getConfiguration().getRootLogger().removeAppender("logged-back-into");
+                context.updateLoggers();
+            }
+
+            // then: the status logger of Log4j2 took every one of those logs, feeding nothing back. Through an
+            // ordinary logger each would be one more event to deliver, whose own failures are logged in turn
+            assertThat(appended).as("Events the appender was given").hasValue(1);
+        }
+
+        private static boolean isEmptyDirectory(Path directory) throws IOException {
+            try (Stream<Path> files = Files.list(directory)) {
+                return files.findAny().isEmpty();
+            }
         }
 
     }

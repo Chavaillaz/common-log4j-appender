@@ -79,6 +79,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Reports an exception thrown while creating a task without propagating it to the caller
 - Reports an event whose task comes back null as dropped, as a task failing to be created
 - Never reports an event as dropped once it has already been handed to the worker
+- Logs nothing of its own failures back into the appender, whatever fails while it delivers an event
 
 **Delivery failing to be created**
 
