@@ -278,6 +278,8 @@ group holding them: a test added, renamed or removed changes this list too.
 **Partly failed transmissions**
 
 - Retries only the rejected elements of a PartialFailure, reporting the rest as succeeded
+- Treats a PartialFailure rejecting none of its elements as a success
+- Counts no success for a PartialFailure rejecting every one of its elements
 - Treats a PartialFailure reporting more rejected elements than were dispatched as a failure instead of losing them silently
 - Never requeues an element a PartialFailure referenced but the chunk never contained
 - Warns of a rejected element the request never held, such as an equal copy of one it did

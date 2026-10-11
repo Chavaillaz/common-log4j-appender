@@ -541,6 +541,86 @@ class BatcherTest {
         }
 
         @Test
+        @DisplayName("Treats a PartialFailure rejecting none of its elements as a success")
+        void testPartialFailureRejectingNothingIsASuccess() throws Exception {
+            // given: a transport answering every request with the elements it rejected, none of them here, as one
+            // built on a bulk API listing the items that failed does
+            var succeeded = new CopyOnWriteArrayList<Integer>();
+            var failed = new CopyOnWriteArrayList<Integer>();
+            var attempts = new CopyOnWriteArrayList<List<String>>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 2)
+                    .transport(elements -> {
+                        attempts.add(elements);
+                        return completedFuture(TransmissionResult.partialFailure(List.of(), null));
+                    })
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onSucceeded(int count, long durationMillis) {
+                            succeeded.add(count);
+                        }
+
+                        @Override
+                        public void onFailed(int count, @Nullable Throwable cause) {
+                            failed.add(count);
+                        }
+                    })
+                    .build();
+
+            // when: sent, then flushed for what would be left to retry
+            batcher.add(List.of("a", "b"));
+            batcher.awaitPendingTransmissions();
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+
+            // then: both were accepted, nothing failed nor is retried, and the transport is not held as failing
+            assertThat(succeeded).containsExactly(2);
+            assertThat(failed).isEmpty();
+            assertThat(attempts).containsExactly(List.of("a", "b"));
+            assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.UP);
+            assertThat(batcher.metrics()).isEqualTo(new Batcher.Metrics(0, 0, 0, 2, 0, 0));
+        }
+
+        @Test
+        @DisplayName("Counts no success for a PartialFailure rejecting every one of its elements")
+        void testPartialFailureRejectingEverythingIsNoSuccess() throws Exception {
+            // given: a transport rejecting every element it is given, each by name
+            var succeeded = new CopyOnWriteArrayList<Integer>();
+            var failed = new CopyOnWriteArrayList<Integer>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 2)
+                    .transport(elements -> completedFuture(TransmissionResult.partialFailure(elements, null)))
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onSucceeded(int count, long durationMillis) {
+                            succeeded.add(count);
+                        }
+
+                        @Override
+                        public void onFailed(int count, @Nullable Throwable cause) {
+                            failed.add(count);
+                        }
+                    })
+                    .build();
+            long builtBy = System.nanoTime();
+            // Long enough for the attempt below to be told apart from the time the engine was built
+            Thread.sleep(20);
+
+            // when
+            batcher.add(List.of("a", "b"));
+            batcher.awaitPendingTransmissions();
+
+            // then: a failure of both, with no success of none of them to notify nor to count from
+            long checkedAfter = System.nanoTime();
+            DeliveryHealth health = batcher.health();
+            assertThat(succeeded).isEmpty();
+            assertThat(failed).containsExactly(2);
+            assertThat(health.status()).isEqualTo(DeliveryHealth.Status.RETRYING);
+            assertThat(health.sinceLastSuccess().toNanos()).isGreaterThanOrEqualTo(checkedAfter - builtBy);
+            assertThat(batcher.metrics()).isEqualTo(new Batcher.Metrics(2, 0, 0, 0, 1, 0));
+        }
+
+        @Test
         @DisplayName("Treats a PartialFailure reporting more rejected elements than were dispatched as a failure instead of losing them silently")
         void testMalformedPartialFailureDoesNotLoseElements() throws Exception {
             // given: a misbehaving transport reporting "a" as rejected twice for a chunk that only contains it
