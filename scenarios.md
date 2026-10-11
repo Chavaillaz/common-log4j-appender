@@ -268,6 +268,9 @@ group holding them: a test added, renamed or removed changes this list too.
 - Retries the batch on the next flush when a transmission fails
 - Reports dropped elements through the listener once MaxConsecutiveFailures is exceeded
 - Holds off retrying while the backoff policy says to wait, then retries once it elapses
+- Ends the backoff of a failure once a transmission still in flight succeeds
+- Keeps the longest backoff when a later failure asks for a shorter one
+- Asks the backoff policy for a delay matching the consecutive failures of its elements
 - Retries the elements of a transport returning no future, as a failure without cause
 - Retries the elements of a future completed without result, as a failure without cause
 - Reports the cause of a failure a future derived by the transport wraps, rather than its wrapper

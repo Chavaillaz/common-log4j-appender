@@ -291,6 +291,120 @@ class BatcherTest {
         }
 
         @Test
+        @DisplayName("Ends the backoff of a failure once a transmission still in flight succeeds")
+        void testSuccessEndsTheBackoff() throws Exception {
+            // given: two transmissions in flight, each answered once told to, and a backoff far longer than this
+            // test
+            var slowAnswer = new CompletableFuture<TransmissionResult<String>>();
+            var failingAnswer = new CompletableFuture<TransmissionResult<String>>();
+            var attempts = new CopyOnWriteArrayList<List<String>>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 1)
+                    .maxConsecutiveFailures(() -> 0)
+                    .backoff(consecutiveFailures -> 60_000)
+                    .transport(elements -> {
+                        attempts.add(elements);
+                        if (elements.contains("slow")) {
+                            return slowAnswer;
+                        }
+                        return attempts.size() <= 2 ? failingAnswer : completedFuture(TransmissionResult.success());
+                    })
+                    .build();
+            batcher.add(List.of("slow"));
+            batcher.add(List.of("fails"));
+
+            // when: one fails, which holds transmissions off for a minute
+            failingAnswer.complete(TransmissionResult.failure(null));
+            awaitStatus(batcher, DeliveryHealth.Status.BACKING_OFF);
+
+            // and: the other one, sent before that failure, succeeds
+            slowAnswer.complete(TransmissionResult.success());
+            batcher.awaitPendingTransmissions();
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+
+            // then: the transport answering again, the failed element went out with that flush rather than a
+            // minute later
+            assertThat(attempts).containsExactlyInAnyOrder(List.of("slow"), List.of("fails"), List.of("fails"));
+            assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.UP);
+        }
+
+        @Test
+        @DisplayName("Keeps the longest backoff when a later failure asks for a shorter one")
+        void testShorterBackoffDoesNotCutALongerOneShort() throws Exception {
+            // given: two transmissions in flight, each answered once told to, and a policy asking for a minute
+            // after the first failure it is told of, and for a millisecond after the next
+            var firstAnswer = new CompletableFuture<TransmissionResult<String>>();
+            var secondAnswer = new CompletableFuture<TransmissionResult<String>>();
+            var attempts = new CopyOnWriteArrayList<List<String>>();
+            var delaysAsked = new AtomicInteger();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 1)
+                    .maxConsecutiveFailures(() -> 0)
+                    .backoff(consecutiveFailures -> delaysAsked.incrementAndGet() == 1 ? 60_000 : 1)
+                    .transport(elements -> {
+                        attempts.add(elements);
+                        if (elements.equals(List.of("a"))) {
+                            return firstAnswer;
+                        }
+                        return elements.equals(List.of("b")) ? secondAnswer : completedFuture(TransmissionResult.failure(null));
+                    })
+                    .build();
+            batcher.add(List.of("a"));
+            batcher.add(List.of("b"));
+
+            // when: both fail, one after the other, and the millisecond of the second failure elapses
+            firstAnswer.complete(TransmissionResult.failure(null));
+            awaitStatus(batcher, DeliveryHealth.Status.BACKING_OFF);
+            secondAnswer.complete(TransmissionResult.failure(null));
+            batcher.awaitPendingTransmissions();
+            Thread.sleep(50);
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+
+            // then: the minute of the first one still holds transmissions off, a chunk failing for the first time
+            // not ending the backoff of one that failed many times
+            assertThat(delaysAsked).hasValue(2);
+            assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.BACKING_OFF);
+            assertThat(attempts).containsExactlyInAnyOrder(List.of("a"), List.of("b"));
+        }
+
+        @Test
+        @DisplayName("Asks the backoff policy for a delay matching the consecutive failures of its elements")
+        void testBackoffPolicyIsAskedForTheFailureStreak() throws Exception {
+            // given: a policy recording the number of consecutive failures it is asked a delay for, and holding
+            // nothing off
+            var failuresAsked = new CopyOnWriteArrayList<Integer>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 10)
+                    .maxConsecutiveFailures(() -> 0)
+                    .backoff(consecutiveFailures -> {
+                        failuresAsked.add(consecutiveFailures);
+                        return 0;
+                    })
+                    .transport(elements -> completedFuture(TransmissionResult.failure(null)))
+                    .build();
+            batcher.add(List.of("a"));
+
+            // when: an element fails three times in a row
+            for (int i = 0; i < 3; i++) {
+                batcher.flush();
+                batcher.awaitPendingTransmissions();
+            }
+
+            // then: asked for each of them in turn, which is what lets a policy grow its delay as an outage lasts
+            assertThat(failuresAsked).containsExactly(1, 2, 3);
+
+            // when: an element that never failed joins it, and both fail
+            batcher.add(List.of("b"));
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+
+            // then: asked for the longest streak among them, rather than starting over with the newcomer
+            assertThat(failuresAsked).containsExactly(1, 2, 3, 4);
+        }
+
+        @Test
         @DisplayName("Retries the elements of a transport returning no future, as a failure without cause")
         void testTransportReturningNoFutureIsAFailure() throws Exception {
             assertRetriedAfterFailureWithoutCause(null);
@@ -447,6 +561,16 @@ class BatcherTest {
             // then: they are given up on in turn, the accepted one never being
             assertThat(Set.copyOf(dropped)).isEqualTo(Set.of("old-1", "old-2", "old-3", "fresh-2", "fresh-3"));
             assertThat(dropped).hasSize(5);
+        }
+
+        private static void awaitStatus(Batcher<String> batcher, DeliveryHealth.Status status) throws InterruptedException {
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+            while (batcher.health().status() != status) {
+                if (System.nanoTime() > deadlineNanos) {
+                    throw new AssertionError("Timed out waiting for the engine to be " + status);
+                }
+                Thread.sleep(1);
+            }
         }
 
         private static void awaitBackoffElapsed(Batcher<String> batcher) throws InterruptedException {
