@@ -105,6 +105,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Falls back to the close timeout it was built with when the current one cannot be read
 - Never keeps the JVM alive on its own once the application is done
 - Names its threads after the appender, telling two appenders apart in a thread dump
+- Ends its worker and its flush scheduler once stopped, leaving no thread behind
 - Never keeps the context of the first thread to log for as long as it runs
 - Never keeps the context of the thread starting it, which creates its worker and its scheduler
 - Finishes stopping even when closing the delivery fails with an Error

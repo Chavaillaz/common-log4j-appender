@@ -110,6 +110,19 @@ class AbstractLogDeliveryAppenderTest {
     }
 
     /**
+     * Waits until no live platform thread bears the given name, a thread ending shortly after it was told to.
+     */
+    private static void awaitNoLiveThreadNamed(String name) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+        while (!liveThreadsNamed(name).isEmpty()) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new AssertionError("Timed out waiting for the thread " + name + " to end");
+            }
+            sleep(1);
+        }
+    }
+
+    /**
      * Waits until the worker has taken every queued event, so a blocking one it runs no longer holds a queue
      * slot: the worker already runs when the appender starts, and takes each event from the queue.
      */
@@ -1895,6 +1908,29 @@ class AbstractLogDeliveryAppenderTest {
             for (var appender : appenders) {
                 appender.stop(1, SECONDS);
             }
+        }
+
+        @Test
+        @DisplayName("Ends its worker and its flush scheduler once stopped, leaving no thread behind")
+        void testStopEndsTheThreadsOfTheAppender() throws Exception {
+            // given: an appender logged to and flushed, its worker and its flush scheduler both running
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(10)
+                    .flushInterval(Duration.ofMillis(20)).build();
+            var appender = new LogDeliveryAppender("stopped-for-good", null, configuration);
+            appender.start();
+            appender.append(mockLogEvent());
+            verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeastOnce()).flush();
+            assertThat(liveThreadsNamed("log-delivery-worker-stopped-for-good")).hasSize(1);
+            assertThat(liveThreadsNamed("log-delivery-flush-scheduler-stopped-for-good")).hasSize(1);
+
+            // when
+            appender.stop(2, SECONDS);
+
+            // then: both end. Log4j2 stops the appenders of a configuration it replaces and starts new ones, so
+            // that a thread left running would be one more at every reconfiguration
+            awaitNoLiveThreadNamed("log-delivery-worker-stopped-for-good");
+            awaitNoLiveThreadNamed("log-delivery-flush-scheduler-stopped-for-good");
         }
 
         @Test
