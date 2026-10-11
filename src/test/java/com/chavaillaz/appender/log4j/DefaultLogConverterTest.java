@@ -271,6 +271,25 @@ class DefaultLogConverterTest {
         }
 
         @Test
+        @DisplayName("Truncates a message at 32'768 characters by default")
+        void testConversionTruncatesAMessageAtTheDefaultMaximumLength() {
+            // given: a converter left as it is, and a message past the length it keeps by default
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter(configuration);
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("x".repeat(40_000)))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then
+            assertThat(document.get("logmessage"))
+                    .isEqualTo("x".repeat(32_768) + "... (truncated, 7232 more characters)");
+        }
+
+        @Test
         @DisplayName("Cuts before a surrogate pair rather than splitting one at the limit")
         void testConversionDoesNotSplitASurrogatePair() {
             // given: a message whose limit falls between the two halves of an emoji, which is a matter of
@@ -387,6 +406,63 @@ class DefaultLogConverterTest {
             exception.printStackTrace(new PrintWriter(fullStackTrace));
             assertThat(document.get("stacktrace"))
                     .isEqualTo(fullStackTrace.toString().substring(0, 50) + "... (truncated)");
+        }
+
+        @Test
+        @DisplayName("Truncates a stack trace at 8'192 characters by default")
+        void testConversionTruncatesAStackTraceAtTheDefaultMaximumLength() {
+            // given: a converter left as it is, and a cause chain deep enough to print past the length it keeps by
+            // default
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter(configuration);
+            Throwable exception = new RuntimeException("innermost");
+            for (int i = 0; i < 200; i++) {
+                exception = new RuntimeException("wrapper-" + i, exception);
+            }
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(exception)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: its first characters, as printed in full
+            var fullStackTrace = new StringWriter();
+            exception.printStackTrace(new PrintWriter(fullStackTrace));
+            assertThat(fullStackTrace.toString()).hasSizeGreaterThan(8_192);
+            assertThat(document.get("stacktrace"))
+                    .isEqualTo(fullStackTrace.toString().substring(0, 8_192) + "... (truncated)");
+        }
+
+        @Test
+        @DisplayName("Cuts a stack trace before a surrogate pair too, rather than splitting one at the limit")
+        void testConversionDoesNotSplitASurrogatePairOfAStackTrace() {
+            // given: an exception whose message holds an emoji, and a limit falling between its two halves
+            var exception = new RuntimeException("ab😀cd");
+            var fullStackTrace = new StringWriter();
+            exception.printStackTrace(new PrintWriter(fullStackTrace));
+            int emoji = fullStackTrace.toString().indexOf("😀");
+            var configuration = TestLogConfiguration.builder().build();
+            var converter = new DefaultLogConverter(configuration) {
+                @Override
+                protected int getMaxStackTraceLength() {
+                    return emoji + 1;
+                }
+            };
+            var event = Log4jLogEvent.newBuilder()
+                    .setMessage(new SimpleMessage("Message"))
+                    .setLoggerName("com.chavaillaz.appender.log4j.MyClass")
+                    .setThrown(exception)
+                    .build();
+
+            // when
+            var document = converter.convert(event);
+
+            // then: the emoji is dropped whole, as from a message
+            assertThat(document.get("stacktrace"))
+                    .isEqualTo(fullStackTrace.toString().substring(0, emoji) + "... (truncated)");
         }
 
         @Test

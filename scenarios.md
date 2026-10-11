@@ -137,11 +137,14 @@ group holding them: a test added, renamed or removed changes this list too.
 - Converts a null message to a null logmessage field
 - Cannot be built without a configuration, rather than converting without it
 - Truncates the message once it exceeds the configured maximum length
+- Truncates a message at 32'768 characters by default
 - Cuts before a surrogate pair rather than splitting one at the limit
 - Does not truncate a message within the configured maximum length
 - Does not truncate a message exactly at the configured maximum length
 - Disables message truncation entirely when the configured maximum length is zero or negative
 - Truncates the stack trace once it exceeds the configured maximum length
+- Truncates a stack trace at 8'192 characters by default
+- Cuts a stack trace before a surrogate pair too, rather than splitting one at the limit
 - Stops printing a stack trace once past the configured maximum length rather than printing it all
 - Does not truncate a stack trace within the configured maximum length
 - Does not truncate a stack trace exactly at the configured maximum length
