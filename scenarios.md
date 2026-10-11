@@ -23,7 +23,7 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Formats a message with its arguments as they were when logged, not when processed
 - Still hands off an event whose message fails to format on the calling thread
-- Records the thread that logged an event, even one resolving its thread lazily
+- Records the name, id and priority of the thread that logged an event, even one resolving them lazily
 - Leaves out the caller location, found by walking the stack, for the appenders after it too
 - Keeps the caller location for an appender requiring it
 

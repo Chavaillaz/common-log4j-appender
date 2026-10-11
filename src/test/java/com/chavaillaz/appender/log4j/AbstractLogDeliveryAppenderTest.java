@@ -1013,11 +1013,12 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
-        @DisplayName("Records the thread that logged an event, even one resolving its thread lazily")
+        @DisplayName("Records the name, id and priority of the thread that logged an event, even one resolving them lazily")
         void testEventRecordsTheThreadThatLoggedIt() throws Exception {
-            // given: an event reading its thread from whichever thread asks first, and whose snapshot is the
-            // event itself, as the Log4jLogEvent of Log4j2 before 2.25 does, which Log4j2 creates whenever its
-            // thread locals are off (by default, whenever the Servlet API is on the classpath)
+            // given: an event reading the name, the id and the priority of its thread from whichever thread asks
+            // for each first, and whose snapshot is the event itself, as the Log4jLogEvent of Log4j2 before 2.25
+            // does, which Log4j2 creates whenever its thread locals are off (by default, whenever the Servlet API
+            // is on the classpath)
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(10)
                     .flushInterval(Duration.ofSeconds(10)).build();
@@ -1031,19 +1032,22 @@ class AbstractLogDeliveryAppenderTest {
                 @Override
                 protected LogConverter getLogConverter() {
                     return event -> {
-                        threads.add(event.getThreadName());
+                        threads.add(event.getThreadName() + " " + event.getThreadId() + " " + event.getThreadPriority());
                         return null;
                     };
                 }
             };
 
-            // when
+            // when: logged by a thread of another priority than the worker
             appender.start();
-            Thread.ofPlatform().name("application-thread").start(() -> appender.append(new LazyThreadLogEvent())).join();
+            Thread application = Thread.ofPlatform().name("application-thread").priority(Thread.NORM_PRIORITY + 2)
+                    .start(() -> appender.append(new LazyThreadLogEvent()));
+            application.join();
             appender.stop(2, SECONDS);
 
-            // then: rather than the worker, which reads it first otherwise
-            assertThat(threads).containsExactly("application-thread");
+            // then: rather than those of the worker, which reads them first otherwise
+            assertThat(threads).containsExactly(
+                    "application-thread " + application.threadId() + " " + (Thread.NORM_PRIORITY + 2));
         }
 
         @Test
@@ -1143,12 +1147,30 @@ class AbstractLogDeliveryAppenderTest {
     }
 
     /**
-     * A logging event reading its thread from whichever thread asks first, and whose snapshot is the event
-     * itself, as the {@code Log4jLogEvent} of Log4j2 before 2.25 does.
+     * A logging event reading the name, the id and the priority of its thread, each from whichever thread asks for
+     * it first, and whose snapshot is the event itself, as the {@code Log4jLogEvent} of Log4j2 before 2.25 does.
      */
     static class LazyThreadLogEvent extends AbstractLogEvent {
 
         private @Nullable String threadName;
+        private @Nullable Long threadId;
+        private @Nullable Integer threadPriority;
+
+        @Override
+        public long getThreadId() {
+            if (threadId == null) {
+                threadId = Thread.currentThread().threadId();
+            }
+            return threadId;
+        }
+
+        @Override
+        public int getThreadPriority() {
+            if (threadPriority == null) {
+                threadPriority = Thread.currentThread().getPriority();
+            }
+            return threadPriority;
+        }
 
         @Override
         public String getThreadName() {
