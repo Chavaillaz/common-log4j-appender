@@ -17,9 +17,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.Level;
@@ -617,6 +619,250 @@ class BatcherTest {
             assertThat(failures).containsExactly(Optional.empty());
             assertThat(afterFirstAttempt).isEqualTo(DeliveryHealth.Status.RETRYING);
             assertThat(transmitted).containsExactly(List.of("a"), List.of("a", "b"));
+        }
+
+    }
+
+    @Nested
+    @DisplayName("When a transmission is not answered in time")
+    class TransmissionTimeout {
+
+        @Test
+        @DisplayName("Fails a transmission not answered within its timeout, and retries its elements")
+        void testUnansweredTransmissionFailsAndIsRetried() throws Exception {
+            // given: a transport never answering its first request
+            var transmitted = new CopyOnWriteArrayList<List<String>>();
+            var failures = new CopyOnWriteArrayList<Throwable>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .transmissionTimeout(Duration.ofMillis(50))
+                    .transport(elements -> {
+                        transmitted.add(elements);
+                        return transmitted.size() == 1 ? new CompletableFuture<>() : completedFuture(TransmissionResult.success());
+                    })
+                    .listener(recordingFailures(failures))
+                    .build();
+
+            // when: its slot is waited for, which the timeout alone frees
+            long start = System.nanoTime();
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+            long waitedMillis = (System.nanoTime() - start) / 1_000_000;
+            DeliveryHealth.Status afterTheTimeout = batcher.health().status();
+            Batcher.Metrics metricsAfterTheTimeout = batcher.metrics();
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+
+            // then: a failure like any other, telling how long the answer was waited for
+            assertThat(waitedMillis).isGreaterThanOrEqualTo(50);
+            assertThat(failures).singleElement().isInstanceOf(TimeoutException.class)
+                    .extracting(Throwable::getMessage).asString().contains("1 element(s)", "PT0.05S");
+            assertThat(afterTheTimeout).isEqualTo(DeliveryHealth.Status.RETRYING);
+            assertThat(metricsAfterTheTimeout.failedTransmissions()).isEqualTo(1);
+            assertThat(metricsAfterTheTimeout.transmissionsInFlight()).isZero();
+            assertThat(metricsAfterTheTimeout.pendingElements()).isEqualTo(1);
+            assertThat(transmitted).containsExactly(List.of("a"), List.of("a"));
+            assertThat(batcher.metrics().transmittedElements()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("Interrupts a transport still blocked past the timeout, freeing its slot")
+        void testBlockedTransportIsInterrupted() throws Exception {
+            // given: a blocking client waiting for an answer that never comes
+            var interrupted = new CountDownLatch(1);
+            var failures = new CopyOnWriteArrayList<Throwable>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .transmissionTimeout(Duration.ofMillis(50))
+                    .maxConcurrentTransmissions(1)
+                    .transport(elements -> {
+                        try {
+                            new CountDownLatch(1).await();
+                        } catch (InterruptedException e) {
+                            interrupted.countDown();
+                            throw new IllegalStateException("Interrupted while waiting for an answer", e);
+                        }
+                        return completedFuture(TransmissionResult.success());
+                    })
+                    .listener(recordingFailures(failures))
+                    .build();
+
+            // when
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+
+            // then: the failure is the timeout, not what the client threw once interrupted
+            assertThat(interrupted.await(2, SECONDS)).as("The blocked transport should have been interrupted").isTrue();
+            assertThat(failures).singleElement().isInstanceOf(TimeoutException.class);
+            assertThat(batcher.metrics().failedTransmissions()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("Cancels the future of a transmission that timed out")
+        void testTimedOutFutureIsCancelled() throws Exception {
+            // given
+            var answer = new CompletableFuture<TransmissionResult<String>>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .transmissionTimeout(Duration.ofMillis(50))
+                    .transport(elements -> answer)
+                    .build();
+
+            // when
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+
+            // then: a client aborting its request on a cancellation is told to
+            assertThat(answer).isCancelled();
+        }
+
+        @Test
+        @DisplayName("Ignores the answer of a transmission coming after its timeout")
+        void testLateAnswerIsIgnored() throws Exception {
+            // given: a client that cannot abort its request, and answers once the timeout elapsed
+            var answer = new CompletableFuture<TransmissionResult<String>>() {
+                @Override
+                public boolean cancel(boolean mayInterruptIfRunning) {
+                    return false;
+                }
+            };
+            var succeeded = new AtomicInteger();
+            var failures = new CopyOnWriteArrayList<Throwable>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .transmissionTimeout(Duration.ofMillis(50))
+                    .transport(elements -> answer)
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onSucceeded(int count, long durationMillis) {
+                            succeeded.addAndGet(count);
+                        }
+
+                        @Override
+                        public void onFailed(int count, @Nullable Throwable cause) {
+                            failures.add(cause);
+                        }
+                    })
+                    .build();
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+
+            // when
+            answer.complete(TransmissionResult.success());
+            batcher.awaitPendingTransmissions();
+
+            // then: the element stays what the timeout made of it, failed once and waiting for its retry
+            assertThat(succeeded).hasValue(0);
+            assertThat(failures).hasSize(1);
+            assertThat(batcher.metrics().transmittedElements()).isZero();
+            assertThat(batcher.metrics().pendingElements()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("Leaves a transmission answered in time alone, neither failed nor cancelled once its timeout elapses")
+        void testTransmissionAnsweredInTimeIsLeftAlone() throws Exception {
+            // given
+            var answer = new CompletableFuture<TransmissionResult<String>>();
+            var succeeded = new AtomicInteger();
+            var failures = new CopyOnWriteArrayList<Throwable>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .transmissionTimeout(Duration.ofMillis(50))
+                    .transport(elements -> answer)
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onSucceeded(int count, long durationMillis) {
+                            succeeded.addAndGet(count);
+                        }
+
+                        @Override
+                        public void onFailed(int count, @Nullable Throwable cause) {
+                            failures.add(cause);
+                        }
+                    })
+                    .build();
+
+            // when: answered right away, then left for longer than the timeout
+            batcher.add(List.of("a"));
+            answer.complete(TransmissionResult.success());
+            batcher.awaitPendingTransmissions();
+            Thread.sleep(150);
+
+            // then
+            assertThat(succeeded).hasValue(1);
+            assertThat(failures).isEmpty();
+            assertThat(answer.isCancelled()).isFalse();
+            assertThat(batcher.health().status()).isEqualTo(DeliveryHealth.Status.UP);
+        }
+
+        @Test
+        @DisplayName("Still ends what a transport does for a transmission a close gave up on, without handling it again")
+        void testTimeoutOutlivesAClose() throws Exception {
+            // given: a blocking client waiting for good, behind a close that does not wait for it
+            var interrupted = new CountDownLatch(1);
+            var dropped = new CopyOnWriteArrayList<String>();
+            var failures = new CopyOnWriteArrayList<Throwable>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .transmissionTimeout(Duration.ofMillis(200))
+                    .transport(elements -> {
+                        try {
+                            new CountDownLatch(1).await();
+                        } catch (InterruptedException e) {
+                            interrupted.countDown();
+                        }
+                        return completedFuture(TransmissionResult.success());
+                    })
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onFailed(int count, @Nullable Throwable cause) {
+                            failures.add(cause);
+                        }
+
+                        @Override
+                        public void onDropped(List<String> elements, String reason) {
+                            dropped.addAll(elements);
+                        }
+                    })
+                    .build();
+            batcher.add(List.of("a"));
+
+            // when
+            batcher.close(Duration.ofMillis(10));
+
+            // then: reported by the close, once, and its transport interrupted when its timeout comes
+            assertThat(dropped).containsExactly("a");
+            assertThat(interrupted.await(2, SECONDS)).as("The blocked transport should have been interrupted").isTrue();
+            assertThat(failures).isEmpty();
+            assertThat(dropped).containsExactly("a");
+        }
+
+        @Test
+        @DisplayName("Waits for the answer for as long as it takes without a timeout, or with one that is not positive")
+        void testWaitsWithoutBoundWithoutATimeout() throws Exception {
+            for (Duration noTimeout : Arrays.asList(null, Duration.ZERO, Duration.ofSeconds(-1))) {
+                // given
+                var failures = new CopyOnWriteArrayList<Throwable>();
+                Batcher<String> batcher = Batcher.<String>builder()
+                        .transmissionTimeout(noTimeout)
+                        .transport(elements -> new CompletableFuture<>())
+                        .listener(recordingFailures(failures))
+                        .build();
+
+                // when: left unanswered for longer than the shortest timeout there is
+                batcher.add(List.of("a"));
+                Thread.sleep(100);
+
+                // then
+                assertThat(batcher.metrics().transmissionsInFlight()).as("Transmissions in flight with " + noTimeout).isEqualTo(1);
+                assertThat(failures).as("Failures with " + noTimeout).isEmpty();
+
+                // cleanup
+                batcher.close(Duration.ZERO);
+            }
+        }
+
+        private static BatcherListener<String> recordingFailures(List<Throwable> failures) {
+            return new BatcherListener<>() {
+                @Override
+                public void onFailed(int count, @Nullable Throwable cause) {
+                    failures.add(cause);
+                }
+            };
         }
 
     }
@@ -1662,6 +1908,45 @@ class BatcherTest {
     @Nested
     @DisplayName("Against faulty collaborators")
     class FaultyCollaborators {
+
+        @Test
+        @DisplayName("Counts a future that cannot be listened to as a failure, releasing its slot")
+        void testFutureThatCannotBeListenedToIsAFailure() throws Exception {
+            // given: a transport answering its first request with a future of its own making, which throws
+            var transmitted = new CopyOnWriteArrayList<List<String>>();
+            var failures = new CopyOnWriteArrayList<Throwable>();
+            var broken = new CompletableFuture<TransmissionResult<String>>() {
+                @Override
+                public CompletableFuture<TransmissionResult<String>> whenComplete(
+                        BiConsumer<? super TransmissionResult<String>, ? super Throwable> action) {
+                    throw new IllegalStateException("Simulated faulty future");
+                }
+            };
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .maxConcurrentTransmissions(1)
+                    .transport(elements -> {
+                        transmitted.add(elements);
+                        return transmitted.size() == 1 ? broken : completedFuture(TransmissionResult.success());
+                    })
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onFailed(int count, @Nullable Throwable cause) {
+                            failures.add(cause);
+                        }
+                    })
+                    .build();
+
+            // when: the single slot is waited for, which a transmission left without an outcome would keep
+            batcher.add(List.of("a"));
+            batcher.awaitPendingTransmissions();
+            batcher.flush();
+            batcher.awaitPendingTransmissions();
+
+            // then
+            assertThat(failures).singleElement().isInstanceOf(IllegalStateException.class);
+            assertThat(transmitted).containsExactly(List.of("a"), List.of("a"));
+            assertThat(batcher.metrics().transmittedElements()).isEqualTo(1);
+        }
 
         @Test
         @DisplayName("Keeps the elements of a failed request whose transport tried to empty the list it was given")

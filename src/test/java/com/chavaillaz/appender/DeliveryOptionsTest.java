@@ -44,6 +44,7 @@ class DeliveryOptionsTest {
         assertThat(options.maxQueuedEvents()).isEqualTo(10_000);
         assertThat(options.retryBackoff()).isEqualTo(Duration.ofSeconds(1));
         assertThat(options.maxRetryBackoff()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(options.transmissionTimeout()).isEqualTo(Duration.ofMinutes(1));
         assertThat(options.closeTimeout()).isEqualTo(Duration.ofSeconds(5));
     }
 
@@ -143,6 +144,7 @@ class DeliveryOptionsTest {
                 arguments("maxQueuedEvents", setting(builder -> builder.maxQueuedEvents(3_001))),
                 arguments("retryBackoff", setting(builder -> builder.retryBackoff(Duration.ofMillis(301)))),
                 arguments("maxRetryBackoff", setting(builder -> builder.maxRetryBackoff(Duration.ofMinutes(3)))),
+                arguments("transmissionTimeout", setting(builder -> builder.transmissionTimeout(null))),
                 arguments("closeTimeout", setting(builder -> builder.closeTimeout(Duration.ofSeconds(1)))));
     }
 
@@ -163,7 +165,7 @@ class DeliveryOptionsTest {
         // then
         assertThat(printed).startsWith("DeliveryOptions[").endsWith("]")
                 .contains("flushThreshold=500", "flushInterval=PT7S", "flushLevel=WARN", "maxPendingBytes=4000000",
-                        "retryBackoff=PT0.3S", "closeTimeout=null");
+                        "retryBackoff=PT0.3S", "transmissionTimeout=PT45S", "closeTimeout=null");
         for (Method setting : settings()) {
             assertThat(printed).contains(setting.getName() + "=");
         }
@@ -198,6 +200,9 @@ class DeliveryOptionsTest {
                 arguments("maxQueuedEvents", setting(builder -> builder.maxQueuedEvents(0))),
                 arguments("retryBackoff", setting(builder -> builder.retryBackoff(Duration.ofMillis(-1)))),
                 arguments("maxRetryBackoff", setting(builder -> builder.maxRetryBackoff(Duration.ofMillis(-1)))),
+                arguments("transmissionTimeout", setting(builder -> builder.transmissionTimeout(Duration.ZERO))),
+                arguments("transmissionTimeout", setting(builder -> builder.transmissionTimeout(Duration.ofNanos(999_999)))),
+                arguments("transmissionTimeout", setting(builder -> builder.transmissionTimeout(Duration.ofMillis(-1)))),
                 arguments("closeTimeout", setting(builder -> builder.closeTimeout(Duration.ofMillis(-1)))));
     }
 
@@ -238,6 +243,7 @@ class DeliveryOptionsTest {
                 .maxQueuedEvents(1)
                 .retryBackoff(Duration.ZERO)
                 .maxRetryBackoff(Duration.ZERO)
+                .transmissionTimeout(Duration.ofMillis(1))
                 .closeTimeout(Duration.ZERO)
                 .build();
         var largest = DeliveryOptions.builder()
@@ -245,12 +251,15 @@ class DeliveryOptionsTest {
                 .maxConcurrentTransmissions(Integer.MAX_VALUE)
                 .maxConsecutiveFailures(Integer.MAX_VALUE)
                 .maxQueuedEvents(Integer.MAX_VALUE)
+                .transmissionTimeout(null)
                 .closeTimeout(null)
                 .build();
 
         // then
         assertThat(smallest.closeTimeout()).isEqualTo(Duration.ZERO);
+        assertThat(smallest.transmissionTimeout()).isEqualTo(Duration.ofMillis(1));
         assertThat(largest.closeTimeout()).isNull();
+        assertThat(largest.transmissionTimeout()).isNull();
     }
 
     /**
@@ -270,6 +279,7 @@ class DeliveryOptionsTest {
                 .maxQueuedEvents(3_000)
                 .retryBackoff(Duration.ofMillis(300))
                 .maxRetryBackoff(Duration.ofMinutes(2))
+                .transmissionTimeout(Duration.ofSeconds(45))
                 .closeTimeout(null)
                 .build();
     }

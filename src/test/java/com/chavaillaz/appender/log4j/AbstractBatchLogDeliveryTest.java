@@ -13,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -769,6 +770,32 @@ class AbstractBatchLogDeliveryTest {
 
             // then
             assertThat(logDelivery.getHealth().status()).isEqualTo(DeliveryHealth.Status.DOWN);
+        }
+
+        @Test
+        @DisplayName("Reports retrying once a request was not answered within TransmissionTimeout, its documents kept")
+        void testHealthReflectsARequestNeverAnswered() throws Exception {
+            // given: a downstream system that never answers, behind a client without a timeout of its own
+            var failures = new CopyOnWriteArrayList<Throwable>();
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(1)
+                    .transmissionTimeout(Duration.ofMillis(50)).build();
+            var logDelivery = new StuckTestLogDelivery(configuration, new LogDeliveryListener() {
+                @Override
+                public void onTransmissionFailed(int documentCount, Throwable cause) {
+                    failures.add(cause);
+                }
+            });
+
+            // when: a request is sent, and its slot waited for, which the timeout alone frees
+            logDelivery.send(Map.of("id", 1));
+            logDelivery.awaitPendingTransmissions();
+
+            // then: an outage that shows, rather than a delivery reading up while it sends nothing
+            assertThat(logDelivery.getHealth().status()).isEqualTo(DeliveryHealth.Status.RETRYING);
+            assertThat(failures).singleElement().isInstanceOf(TimeoutException.class);
+            assertThat(logDelivery.getMetrics())
+                    .isEqualTo(DeliveryMetrics.builder().pendingDocuments(1).failedTransmissions(1).build());
         }
 
         @Test

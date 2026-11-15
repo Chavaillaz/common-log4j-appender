@@ -238,6 +238,7 @@ group holding them: a test added, renamed or removed changes this list too.
 **Health and metrics**
 
 - Reports up before any transmission, retrying after a failure, up once retried, and down once closed
+- Reports retrying once a request was not answered within TransmissionTimeout, its documents kept
 - Reports its pending documents, their estimated size under a byte limit, and what it sent
 
 **Listener**
@@ -290,6 +291,16 @@ group holding them: a test added, renamed or removed changes this list too.
 - Counts the failures of an element joining a failed one from its own first attempt
 - Keeps the failure streak of each element across the requests a batch is split into
 
+**Unanswered transmissions**
+
+- Fails a transmission not answered within its timeout, and retries its elements
+- Interrupts a transport still blocked past the timeout, freeing its slot
+- Cancels the future of a transmission that timed out
+- Ignores the answer of a transmission coming after its timeout
+- Leaves a transmission answered in time alone, neither failed nor cancelled once its timeout elapses
+- Still ends what a transport does for a transmission a close gave up on, without handling it again
+- Waits for the answer for as long as it takes without a timeout, or with one that is not positive
+
 **Partly failed transmissions**
 
 - Retries only the rejected elements of a PartialFailure, reporting the rest as succeeded
@@ -332,6 +343,7 @@ group holding them: a test added, renamed or removed changes this list too.
 
 **Faulty collaborators**
 
+- Counts a future that cannot be listened to as a failure, releasing its slot
 - Keeps the elements of a failed request whose transport tried to empty the list it was given
 - Treats a measurement that throws as weightless instead of failing the pipeline
 - Retries a chunk whose transport threw an Error instead of leaking its transmission permit
@@ -608,9 +620,12 @@ What an application or an implementer has to know, which the README or the Javad
   Kubernetes) reports nothing during an outage. The default `CloseTimeout` of 5 seconds stays under both for one
   appender, but Log4j2 stops appenders one after the other, each with the whole budget: two appenders whose
   requests are never answered took 10,044 ms to stop, the second reporting at 10,043 ms.
-- **Unanswered requests holding every transmission slot.** A future that never completes keeps its slot until the
-  delivery closes, and once all are held, the pipeline stalls, its queue discarding the oldest events. The client
-  needs a timeout.
+- **A request never answered fails once `TransmissionTimeout` elapses,** one minute by default: its slot is freed
+  and its documents are retried, delivered twice if the downstream system accepted them all the same. With that
+  timeout unset and none in the client, it keeps its slot until the delivery closes, and once such requests hold
+  them all, the pipeline stalls, its queue discarding the oldest events.
+- **A transport ignoring interruption keeps its thread past the timeout.** The slot is freed and the documents are
+  retried, but each attempt leaves one more virtual thread waiting in the client, with the documents it was given.
 - **A `Failover` appender never falls back from this one,** which never fails a call to `append()`. A
   `FileDeadLetterListener` is the fallback.
 - **The health of the delivery gating the readiness of the application.** An outage of the downstream system then
@@ -639,7 +654,7 @@ What an application or an implementer has to know, which the README or the Javad
 - **A document heavier than `MaxRequestBytes` is still sent,** alone.
 - **A byte limit coming into effect at runtime** under-counts the documents already pending, and is enforced late.
 - **Some settings are read once,** when the appender or its delivery is created: `FlushInterval`,
-  `MaxConcurrentTransmissions`, `MaxQueuedEvents`, `RetryBackoff` and `MaxRetryBackoff`.
+  `MaxConcurrentTransmissions`, `MaxQueuedEvents`, `RetryBackoff`, `MaxRetryBackoff` and `TransmissionTimeout`.
 - **The time since the last success grows while there is nothing to send,** which is why it is read along with
   the status.
 - **The host name falls back to `localhost`** when its lookup takes more than 5 seconds, a later call getting the
@@ -652,9 +667,6 @@ What an application or an implementer has to know, which the README or the Javad
 
 The scenarios that can hurt, left for now, with what could be done about them.
 
-- **No transmission timeout.** A request never answered holds its slot until the delivery closes, and the health
-  stays `UP` meanwhile, no attempt having failed. An optional timeout, counting such a request as failed, would
-  free the slot and show the outage.
 - **The health stays `RETRYING` once every failed document was given up on,** until the next success: an
   instance logging nothing more keeps the alert of the README example firing, with nothing pending. Reading `UP`
   then would hide an outage that cost every document; a status of its own could tell both apart.
@@ -690,7 +702,6 @@ The scenarios that can hurt, left for now, with what could be done about them.
   so that the factory reusing it changes what is sent.
 - **A subclass returning `0` from `getMaxPendingDocuments()`** discards everything while transmissions are held
   off. `DeliveryOptions` forbids `0`.
-- **A `CompletableFuture` subclass whose `isDone()` throws** keeps its transmission permit for good.
 - **A stop called from a thread of the appender itself,** a converter or a listener stopping Log4j2, waits until
   its budget is spent before giving up on that thread.
 - **A custom `LogDelivery` throwing from `getHealth()` or `getMetrics()`** throws from those of the appender too.

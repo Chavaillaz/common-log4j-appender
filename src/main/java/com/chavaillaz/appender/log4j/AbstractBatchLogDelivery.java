@@ -102,6 +102,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                 .elementSize(this::measureIfBounded)
                 // Fixed once, unlike the limits above
                 .maxConcurrentTransmissions(options.maxConcurrentTransmissions())
+                .transmissionTimeout(options.transmissionTimeout())
                 .backoff(backoffOf(options))
                 .transmissionThreadPrefix("log-delivery-transmission-")
                 .elementNoun("document")
@@ -364,9 +365,14 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * <p>
      * The returned future may be completed before this method returns, by a blocking client holding only that
      * thread, or later by an asynchronous one, the result then being handled on a thread of this delivery rather
-     * than on the one of the client. Either way it must complete: until it does, the transmission holds one of
-     * the {@link DeliveryOptions#maxConcurrentTransmissions()} slots, and once unanswered requests hold them all,
-     * the next batch waits for a slot until this delivery closes. Give the client a timeout.
+     * than on the one of the client.
+     * <p>
+     * A transmission not answered within {@link DeliveryOptions#transmissionTimeout()} counts as failed: its slot
+     * is freed and its documents are retried, the thread still inside this method is interrupted, and the future
+     * it returned is cancelled, an answer coming later being ignored. Give the client a shorter timeout of its
+     * own, whose failure says more. Without either, a request never answered holds one of the
+     * {@link DeliveryOptions#maxConcurrentTransmissions()} slots until this delivery closes, and once such
+     * requests hold them all, the next batch waits for a slot until then.
      * <p>
      * On Java 21 to 23, a blocking client must not wait while holding a monitor, inside {@code synchronized}
      * code: the virtual thread then keeps its carrier, and requests waiting on a slow downstream system keep

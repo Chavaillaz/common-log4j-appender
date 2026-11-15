@@ -135,7 +135,8 @@ implementation can vary a limit at runtime by returning a different instance —
 `volatile` field rather than building a new one on every call. Use
 `options.with().maxPendingDocuments(50_000).build()` to derive one instance from another without restating
 the rest. A few settings are read only once, when the appender or its delivery is created:
-`FlushInterval`, `MaxConcurrentTransmissions`, `MaxQueuedEvents`, `RetryBackoff` and `MaxRetryBackoff`.
+`FlushInterval`, `MaxConcurrentTransmissions`, `MaxQueuedEvents`, `RetryBackoff`, `MaxRetryBackoff` and
+`TransmissionTimeout`.
 
 ### 2. Delivery
 
@@ -165,9 +166,12 @@ public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
 }
 ```
 
-Either way the future must complete: a transmission holds one of the `MaxConcurrentTransmissions` slots until
-it does, and once unanswered requests hold them all, the pipeline stalls until the appender stops, its queue
-discarding the oldest events meanwhile. Give your client a request timeout.
+A request not answered within `TransmissionTimeout`, one minute by default, counts as failed: its slot is
+freed and its documents are retried, the thread still inside `sendBulk` is interrupted, and the future it
+returned is cancelled, an answer coming later being ignored. Give your client a shorter request timeout of its
+own, whose failure says more about what happened. With neither, a request never answered holds one of the
+`MaxConcurrentTransmissions` slots until the appender stops, and once such requests hold them all, the pipeline
+stalls, its queue discarding the oldest events meanwhile.
 
 On Java 21 to 23, a blocking client must not wait inside `synchronized` code, which keeps the virtual thread
 on its carrier thread: with two processors, four requests waiting that way on a slow downstream system keep
@@ -381,6 +385,7 @@ its documentation):
 | `FlushInterval` | Time between two periodic flushes, so that documents aren't delayed indefinitely under low traffic: a batch under `FlushThreshold`, documents stacked while `RetryBackoff` holds off transmissions, and those a failed transmission put back, all waiting for the next log otherwise. Defaults to `5s`; at least `1ms`. |
 | `FlushLevel` | Minimum severity (e.g. `WARN`) that triggers an immediate flush of the whole current batch right after that event, instead of waiting for `FlushThreshold`/`FlushInterval`. Defaults to unset, disabling this behavior. |
 | `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`. |
+| `TransmissionTimeout` | Maximum time a request waits for its answer before it counts as failed: its slot is freed and its documents are retried, an answer coming later being ignored (see [Delivery](#2-delivery)). Kept above the request timeout of the client, whose own failure says more. Defaults to `1min`; `null` waits indefinitely. |
 | `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory: reaching it sends the batch as `FlushThreshold` does, and while retries are held off, the oldest are discarded past it (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`. |
 | `MaxRequestDocuments` | Maximum documents sent together in a single request; a bigger batch is split into chunks of that size (see step 4 above), each retried independently. Defaults to unbounded (no chunking); set to match a downstream system's per-request limit. |
 | `MaxPendingBytes` | Maximum estimated size a pending batch can hold in memory, which it bounds exactly as `MaxPendingDocuments` does by count. Defaults to unbounded. |
@@ -396,8 +401,8 @@ of the `DeliveryOptions` it returns, all with usable defaults. An appender imple
 only some of them as plugin attributes — the rest stay available through `DeliveryOptions.builder()` in your
 own configuration class, whether or not the appender surfaces them.
 
-Every setting is validated when `DeliveryOptions` is built: a count or size below `1`, a negative duration or
-a `FlushInterval` under a millisecond throws an `IllegalArgumentException` naming it, so a misconfiguration
+Every setting is validated when `DeliveryOptions` is built: a count or size below `1`, a negative duration, or
+a `FlushInterval` or `TransmissionTimeout` under a millisecond throws an `IllegalArgumentException` naming it, so a misconfiguration
 fails the Log4j2 configuration rather than the delivery once it runs. A limit meant to be unbounded takes the
 largest value of its type, as its default does.
 
@@ -441,7 +446,8 @@ to split it further.
   up: two of them with the default take 10 seconds during an outage, so it is their sum that must stay under
   the kill. A process killed while the stop still waits reports none of what is pending.
 - **Failures:** if `sendBulk` completes its future with `TransmissionResult.failure(...)` (or throws, or
-  the future completes exceptionally), the batch is kept and retried later instead of lost, up to the
+  the future completes exceptionally, or not within `TransmissionTimeout`), the batch is kept and retried later
+  instead of lost, up to the
   safety limits above; a `TransmissionResult.partialFailure(...)` keeps and retries only the rejected
   documents. Delivery is thus at least once: a request the downstream system processed although its answer
   failed, the client timing out first for instance, is retried, and its documents delivered twice. Any

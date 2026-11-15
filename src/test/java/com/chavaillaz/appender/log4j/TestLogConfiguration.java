@@ -125,6 +125,11 @@ class TestLogConfiguration implements LogConfiguration {
             return this;
         }
 
+        Builder transmissionTimeout(@Nullable Duration transmissionTimeout) {
+            options.transmissionTimeout(transmissionTimeout);
+            return this;
+        }
+
         Builder closeTimeout(@Nullable Duration closeTimeout) {
             options.closeTimeout(closeTimeout);
             return this;

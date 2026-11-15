@@ -16,12 +16,14 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
@@ -48,7 +50,9 @@ import com.chavaillaz.appender.TransmissionResult;
  * {@link TransmissionResult}, handled on a virtual thread rather than on the thread of the client completing
  * it. What failed is put back at the front of the batch, and retried once a
  * {@link BackoffPolicy} allows it: on the next flush while batching, rather than on every new element. A
- * {@link TransmissionResult.PartialFailure} retries only the elements it rejected.
+ * {@link TransmissionResult.PartialFailure} retries only the elements it rejected. A transmission not answered
+ * within {@code transmissionTimeout} fails as well, so that a transport that stops answering cannot hold every
+ * permit for good.
  * <p>
  * Safety limits keep a struggling transport, or an element it never accepts, from growing memory or wedging
  * the pipeline: the pending batch is capped at {@code maxPendingElements}, and at {@code maxPendingBytes}
@@ -163,6 +167,20 @@ public class Batcher<T> {
     private final int maxConcurrentTransmissions;
 
     /**
+     * How long a transmission waits for its answer before it counts as failed, in milliseconds, or {@code 0} to
+     * wait indefinitely. Fixed at construction time.
+     */
+    private final long transmissionTimeoutMillis;
+
+    /**
+     * Times the transmissions out, on a single virtual thread of its own, or {@code null} without a timeout.
+     * Rather than {@link CompletableFuture#orTimeout(long, java.util.concurrent.TimeUnit)}, whose thread is
+     * shared by the whole JVM and outlives every delivery: created by the first transmission to need it, it
+     * would keep what that thread carries, its context class loader included, reachable for good.
+     */
+    private final @Nullable ScheduledThreadPoolExecutor timeouts;
+
+    /**
      * Bounds the number of batches transmitted concurrently to {@link #maxConcurrentTransmissions}.
      */
     private final Semaphore transmissionPermits;
@@ -245,6 +263,11 @@ public class Batcher<T> {
                 builder.maxPendingBytes, builder.maxRequestBytes);
         this.elementSize = builder.elementSize;
         this.maxConcurrentTransmissions = builder.maxConcurrentTransmissions;
+        Duration timeout = builder.transmissionTimeout;
+        this.transmissionTimeoutMillis = timeout != null && timeout.isPositive()
+                ? Math.max(1, Durations.toMillisWithinYear(timeout))
+                : 0;
+        this.timeouts = transmissionTimeoutMillis > 0 ? newTimeoutScheduler(builder.transmissionThreadPrefix) : null;
         this.backoff = builder.backoff;
         this.elementNoun = builder.elementNoun;
         this.transport = Objects.requireNonNull(builder.transport, "transport must not be null");
@@ -254,6 +277,22 @@ public class Batcher<T> {
                 ? builder.transmissionThreadFactory
                 : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).inheritInheritableThreadLocals(false).factory());
         this.notifier = new ListenerNotifier<>(builder.listener, transmissionExecutor, elementNoun);
+    }
+
+    /**
+     * Creates the scheduler timing the transmissions out, whose single thread is a virtual one, started with
+     * the first transmission and taking nothing of the thread starting it.
+     *
+     * @param threadPrefix The name prefix of the threads running transmissions, which its thread is named after
+     * @return The scheduler
+     */
+    private static ScheduledThreadPoolExecutor newTimeoutScheduler(String threadPrefix) {
+        ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1,
+                Thread.ofVirtual().name(threadPrefix + "timeout").inheritInheritableThreadLocals(false).factory());
+        // A transmission answered in time leaves nothing behind, where its timeout would otherwise keep its
+        // elements reachable until it elapses
+        scheduler.setRemoveOnCancelPolicy(true);
+        return scheduler;
     }
 
     /**
@@ -283,6 +322,7 @@ public class Batcher<T> {
         private LongSupplier maxRequestBytes = () -> Long.MAX_VALUE;
         private @Nullable ToLongFunction<T> elementSize;
         private int maxConcurrentTransmissions = 4;
+        private @Nullable Duration transmissionTimeout;
         private BackoffPolicy backoff = BackoffPolicy.none();
         private String transmissionThreadPrefix = "batcher-transmission-";
         private @Nullable ThreadFactory transmissionThreadFactory;
@@ -401,6 +441,20 @@ public class Batcher<T> {
         }
 
         /**
+         * Sets how long a transmission waits for its answer before it counts as failed, fixed once built. Its
+         * permit is then released and its elements are retried as after any failure, the thread still calling
+         * the transport is interrupted and the future it returned is cancelled, an answer coming later being
+         * ignored. Defaults to {@code null}, waiting indefinitely, as a duration that is not positive does.
+         *
+         * @param transmissionTimeout The transmission timeout, or {@code null} to wait indefinitely
+         * @return This builder
+         */
+        public Builder<T> transmissionTimeout(@Nullable Duration transmissionTimeout) {
+            this.transmissionTimeout = transmissionTimeout;
+            return this;
+        }
+
+        /**
          * Sets how long to hold off transmissions after a failure. Defaults to {@link BackoffPolicy#none()}.
          *
          * @param backoff The backoff policy
@@ -452,8 +506,9 @@ public class Batcher<T> {
          * Sets the transport function, called on a virtual thread of its own with a batch (or chunk) to
          * transmit, as an unmodifiable list. It may complete the returned future before returning, blocking
          * that thread only, or later, the result then being handled on a virtual thread of this engine rather
-         * than on the thread completing it. A future never completed holds its transmission permit for good,
-         * {@link Batcher#close(Duration)} only ceasing to wait for it. Required, having no sensible default.
+         * than on the thread completing it. A future never completed holds its transmission permit until the
+         * transmission timeout elapses, or for good without one, {@link Batcher#close(Duration)} only ceasing to
+         * wait for it. Required, having no sensible default.
          *
          * @param transport The transport function
          * @return This builder
@@ -855,57 +910,191 @@ public class Batcher<T> {
     }
 
     /**
-     * Calls the transport function and handles the result once its future completes: on this virtual thread
-     * if the transport completed it before returning, or on a virtual thread of its own otherwise, never on
-     * the thread of the client completing it.
+     * Calls the transport function and handles the outcome of the attempt, its answer or its timeout, whichever
+     * comes first: on this virtual thread if the transport answered before returning, or on a virtual thread of
+     * its own otherwise, never on the thread of the client completing the future, nor on the one timing it out.
      *
      * @param chunk The chunk to transmit, registered as in flight
      */
     private void transmit(Chunk<T> chunk) {
         long start = System.nanoTime();
-        CompletableFuture<TransmissionResult<T>> future;
+        TransportCall<T> call = new TransportCall<>();
+        CompletableFuture<TransmissionResult<T>> outcome = new CompletableFuture<>();
+        outcome.whenComplete((result, throwable) -> {
+            Runnable handling = () -> handleOutcome(chunk, result, throwable, start);
+            if (Thread.currentThread() == call.thread) {
+                // Answered before the transport returned
+                handling.run();
+            } else {
+                // The thread completing it belongs to the client, an I/O thread serving other requests, or times
+                // every transmission out: neither is held up by the listener, a dead-letter write or a requeue
+                // waiting for the lock
+                executeOffTheCompletingThread(handling);
+            }
+        });
+        scheduleTimeout(chunk, outcome, call);
         try {
             // Unmodifiable (see Chunk), what the transport is handed being what gets retried or reported
-            CompletableFuture<TransmissionResult<T>> applied = transport.apply(chunk.elements());
-            future = applied != null ? applied : CompletableFuture.completedFuture(null);
-        } catch (Throwable e) {
-            // Throwable: an Error, from a class of the transport missing say, would otherwise skip the release
-            // of the permit below, and a few of them wedge every later dispatch
-            future = CompletableFuture.failedFuture(e);
-        }
-        BiConsumer<TransmissionResult<T>, Throwable> handler = (result, throwable) -> {
-            try {
-                if (!inFlight.remove(chunk)) {
-                    log.debug("Ignoring the result of a transmission of {} {}(s) that closing reported as dropped already",
-                            chunk.size(), elementNoun);
-                    return;
-                }
-                long durationMillis = (System.nanoTime() - start) / 1_000_000;
-                handleResult(chunk, normalizeResult(chunk, result, throwable), durationMillis);
-            } catch (Throwable e) {
-                // Defensive: a bug in handleResult(), or a result inconsistent with the chunk, degrades it to
-                // a failure rather than losing it without a trace
-                log.warn("Unhandled exception while processing the result of a transmitted batch of {} {}(s), treating it as a failure",
-                        chunk.size(), elementNoun, e);
-                notifier.failed(chunk.size(), e);
-                onTransmissionFailure(chunk, e);
-            } finally {
-                transmissionPermits.release();
+            CompletableFuture<TransmissionResult<T>> answer = transport.apply(chunk.elements());
+            call.returned(answer);
+            if (answer == null) {
+                outcome.complete(null);
+                return;
             }
-        };
-        if (future.isDone()) {
-            future.whenComplete(handler);
-        } else {
-            // The thread completing it belongs to the client, an I/O thread serving other requests, which the
-            // listener, a dead-letter write or a requeue waiting for the lock must not hold up
-            future.whenCompleteAsync(handler, this::executeOffTheCompletingThread);
+            answer.whenComplete((result, throwable) -> {
+                if (throwable != null) {
+                    outcome.completeExceptionally(throwable);
+                } else {
+                    outcome.complete(result);
+                }
+            });
+            if (outcome.isDone() && !answer.isDone()) {
+                // Timed out as the transport returned, before its timeout could see this future
+                answer.cancel(true);
+            }
+        } catch (Throwable e) {
+            // Throwable: an Error, from a class of the transport missing say, would otherwise leave the attempt
+            // without an outcome and its permit taken for good, a few of them wedging every later dispatch
+            call.returned(null);
+            outcome.completeExceptionally(e);
         }
     }
 
     /**
-     * Runs the handling of a transmission result on a virtual thread of its own, or on the calling thread once
-     * that fails, the executor being shut down by a close whose wait is over: a result never handled would
-     * lose its elements, and the permit it holds.
+     * What a transmission knows of its call to the transport, for its timeout to end what the transport still
+     * does: the thread calling it, until it returns, then the future it returned.
+     *
+     * @param <T> The type of element transmitted
+     */
+    private static final class TransportCall<T> {
+
+        /**
+         * The thread calling the transport, the one running the transmission.
+         */
+        private final Thread thread = Thread.currentThread();
+
+        /**
+         * Whether the transport returned, or threw.
+         */
+        private volatile boolean over;
+
+        /**
+         * The future the transport returned, {@code null} until it does, or if it returned none.
+         */
+        private volatile @Nullable CompletableFuture<TransmissionResult<T>> answer;
+
+        /**
+         * Records that the transport returned, or threw.
+         *
+         * @param answer The future it returned, or {@code null} if it returned none, or threw
+         */
+        private void returned(@Nullable CompletableFuture<TransmissionResult<T>> answer) {
+            this.answer = answer;
+            this.over = true;
+        }
+
+        /**
+         * Ends what the transport still does for a transmission that timed out: interrupts the thread it keeps
+         * waiting, and cancels the future it returned, which a client aborts its request on if it can.
+         */
+        private void abandon() {
+            if (!over) {
+                thread.interrupt();
+            }
+            CompletableFuture<TransmissionResult<T>> pending = answer;
+            if (pending != null) {
+                pending.cancel(true);
+            }
+        }
+
+    }
+
+    /**
+     * Schedules the timeout of a transmission, which its outcome cancels when the answer comes first. Without
+     * {@link #timeouts}, the transmission waits for its answer for as long as it takes.
+     *
+     * @param chunk   The chunk being transmitted
+     * @param outcome The outcome of the attempt, which the timeout completes as a failure
+     * @param call    The call to the transport, which the timeout ends
+     */
+    private void scheduleTimeout(Chunk<T> chunk, CompletableFuture<TransmissionResult<T>> outcome, TransportCall<T> call) {
+        ScheduledThreadPoolExecutor scheduler = timeouts;
+        if (scheduler == null) {
+            return;
+        }
+        try {
+            ScheduledFuture<?> timeout = scheduler.schedule(() -> timeOut(chunk, outcome, call),
+                    transmissionTimeoutMillis, MILLISECONDS);
+            outcome.whenComplete((result, throwable) -> timeout.cancel(false));
+        } catch (Throwable e) {
+            // Throwable: an Error starting the thread of the scheduler. Transmitted without a timeout rather
+            // than not at all, as when a close, which reports the transmission itself, shut the scheduler down
+            if (!(e instanceof RejectedExecutionException)) {
+                log.warn("Unable to schedule the timeout of a transmission of {} {}(s), waiting for its answer without one",
+                        chunk.size(), elementNoun, e);
+            }
+        }
+    }
+
+    /**
+     * Fails a transmission that was not answered in time, unless its answer just came, and ends what its
+     * transport still does. Runs on the thread of {@link #timeouts}, which only hands the failure over.
+     *
+     * @param chunk   The chunk being transmitted
+     * @param outcome The outcome of the attempt
+     * @param call    The call to the transport
+     */
+    private void timeOut(Chunk<T> chunk, CompletableFuture<TransmissionResult<T>> outcome, TransportCall<T> call) {
+        TimeoutException timeout = new TimeoutException("No answer to the transmission of " + chunk.size() + " "
+                + elementNoun + "(s) within " + Duration.ofMillis(transmissionTimeoutMillis));
+        if (!outcome.completeExceptionally(timeout)) {
+            return;
+        }
+        try {
+            call.abandon();
+        } catch (Throwable e) {
+            // Throwable: cancelling runs code of the client, which must not end the thread timing the others out
+            log.warn("Unhandled exception while abandoning a transmission of {} {}(s) that timed out",
+                    chunk.size(), elementNoun, e);
+        }
+    }
+
+    /**
+     * Handles the outcome of a transmission, unless a close reported its chunk as dropped meanwhile, and
+     * releases its permit.
+     *
+     * @param chunk      The chunk that was transmitted
+     * @param result     The result the attempt completed with, or {@code null} if it completed exceptionally or
+     *                   with {@code null} itself
+     * @param throwable  The exception the attempt completed with, or {@code null} if it completed normally
+     * @param startNanos The {@link System#nanoTime()} reading the transmission started at
+     */
+    private void handleOutcome(Chunk<T> chunk, @Nullable TransmissionResult<T> result, @Nullable Throwable throwable,
+                               long startNanos) {
+        try {
+            if (!inFlight.remove(chunk)) {
+                log.debug("Ignoring the result of a transmission of {} {}(s) that closing reported as dropped already",
+                        chunk.size(), elementNoun);
+                return;
+            }
+            long durationMillis = (System.nanoTime() - startNanos) / 1_000_000;
+            handleResult(chunk, normalizeResult(chunk, result, throwable), durationMillis);
+        } catch (Throwable e) {
+            // Defensive: a bug in handleResult(), or a result inconsistent with the chunk, degrades it to
+            // a failure rather than losing it without a trace
+            log.warn("Unhandled exception while processing the result of a transmitted batch of {} {}(s), treating it as a failure",
+                    chunk.size(), elementNoun, e);
+            notifier.failed(chunk.size(), e);
+            onTransmissionFailure(chunk, e);
+        } finally {
+            transmissionPermits.release();
+        }
+    }
+
+    /**
+     * Runs the handling of the outcome of a transmission on a virtual thread of its own, or on the calling
+     * thread once that fails, the executor being shut down by a close whose wait is over: an outcome never
+     * handled would lose its elements, and the permit it holds.
      *
      * @param task The handling of the result
      */
@@ -1135,6 +1324,11 @@ public class Batcher<T> {
             notifier.awaitDropNotifications(nanosUntilCloseDeadline());
             reportRemainingAsDropped();
             reportInFlightAsDropped();
+            if (timeouts != null) {
+                // No more transmission to time out, while those still in flight keep their timeout, which ends
+                // what their transport still does, and the thread of the scheduler with the last of them
+                timeouts.shutdown();
+            }
         }
     }
 

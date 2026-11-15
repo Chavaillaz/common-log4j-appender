@@ -19,8 +19,8 @@ import org.jspecify.annotations.Nullable;
  * {@link LogConfiguration#getDeliveryOptions()} is read again each time a setting is used, so that a
  * configuration can vary a setting at runtime by returning another instance, held in a field rather than built
  * on every call. A few settings are read only once, when the appender or its delivery is created:
- * {@code flushInterval}, {@code maxConcurrentTransmissions}, {@code maxQueuedEvents}, {@code retryBackoff} and
- * {@code maxRetryBackoff}.
+ * {@code flushInterval}, {@code maxConcurrentTransmissions}, {@code maxQueuedEvents}, {@code retryBackoff},
+ * {@code maxRetryBackoff} and {@code transmissionTimeout}.
  * <p>
  * Every setting is validated when built, a value out of its range throwing an {@link IllegalArgumentException}
  * and a missing one a {@link NullPointerException}, so that a misconfiguration fails the configuration rather
@@ -47,6 +47,7 @@ public final class DeliveryOptions {
     private final int maxQueuedEvents;
     private final Duration retryBackoff;
     private final Duration maxRetryBackoff;
+    private final @Nullable Duration transmissionTimeout;
     private final @Nullable Duration closeTimeout;
 
     /**
@@ -54,8 +55,8 @@ public final class DeliveryOptions {
      *
      * @param builder The builder holding the settings
      * @throws IllegalArgumentException If a setting is out of its range
-     * @throws NullPointerException     If a setting other than the flush level and the close timeout is
-     *                                  {@code null}
+     * @throws NullPointerException     If a setting other than the flush level, the transmission timeout and the
+     *                                  close timeout is {@code null}
      */
     private DeliveryOptions(Builder builder) {
         this.flushThreshold = requirePositive(builder.flushThreshold, "flushThreshold");
@@ -72,6 +73,9 @@ public final class DeliveryOptions {
                 Objects.requireNonNull(builder.retryBackoff, "retryBackoff must not be null"), "retryBackoff");
         this.maxRetryBackoff = requireNotNegative(
                 Objects.requireNonNull(builder.maxRetryBackoff, "maxRetryBackoff must not be null"), "maxRetryBackoff");
+        this.transmissionTimeout = builder.transmissionTimeout != null
+                ? requireAtLeastAMillisecond(builder.transmissionTimeout, "transmissionTimeout")
+                : null;
         this.closeTimeout = builder.closeTimeout != null ? requireNotNegative(builder.closeTimeout, "closeTimeout") : null;
     }
 
@@ -89,6 +93,13 @@ public final class DeliveryOptions {
     private static Duration requireNotNegative(Duration value, String name) {
         if (value.isNegative()) {
             throw new IllegalArgumentException(name + " cannot be negative, but was " + value);
+        }
+        return value;
+    }
+
+    private static Duration requireAtLeastAMillisecond(Duration value, String name) {
+        if (value.compareTo(Duration.ofMillis(1)) < 0) {
+            throw new IllegalArgumentException(name + " must be at least a millisecond, but was " + value);
         }
         return value;
     }
@@ -274,6 +285,21 @@ public final class DeliveryOptions {
     }
 
     /**
+     * Maximum time a transmission waits for its answer before it counts as failed: its slot is freed and its
+     * documents are retried as those of any failed transmission, the thread still calling the client is
+     * interrupted, and the future the transmission returned is cancelled. It keeps a downstream system that
+     * stops answering, behind a client without a timeout of its own, from holding every slot until the delivery
+     * closes. An answer coming later is ignored, its documents being delivered twice if the downstream system
+     * accepted them. Set it above the timeout of the client, whose own failure says more. Defaults to one
+     * minute; {@code null} waits indefinitely, and it is at least a millisecond otherwise.
+     *
+     * @return The transmission timeout, or {@code null} to wait indefinitely
+     */
+    public @Nullable Duration transmissionTimeout() {
+        return transmissionTimeout;
+    }
+
+    /**
      * Maximum time closing a delivery waits for the transmissions in flight, its final flush included, before
      * reporting what is still pending through {@link LogDeliveryListener#onDocumentsDropped(List, String)}.
      * While the {@code shutdownTimeout} of the Log4j2 configuration is left at {@code 0}, also the budget of a
@@ -310,6 +336,7 @@ public final class DeliveryOptions {
                 && maxQueuedEvents == options.maxQueuedEvents
                 && retryBackoff.equals(options.retryBackoff)
                 && maxRetryBackoff.equals(options.maxRetryBackoff)
+                && Objects.equals(transmissionTimeout, options.transmissionTimeout)
                 && Objects.equals(closeTimeout, options.closeTimeout);
     }
 
@@ -317,7 +344,8 @@ public final class DeliveryOptions {
     public int hashCode() {
         return Objects.hash(flushThreshold, flushInterval, flushLevel, maxConcurrentTransmissions,
                 maxPendingDocuments, maxRequestDocuments, maxPendingBytes, maxRequestBytes,
-                maxConsecutiveFailures, maxQueuedEvents, retryBackoff, maxRetryBackoff, closeTimeout);
+                maxConsecutiveFailures, maxQueuedEvents, retryBackoff, maxRetryBackoff, transmissionTimeout,
+                closeTimeout);
     }
 
     /**
@@ -339,6 +367,7 @@ public final class DeliveryOptions {
                 + ", maxQueuedEvents=" + maxQueuedEvents
                 + ", retryBackoff=" + retryBackoff
                 + ", maxRetryBackoff=" + maxRetryBackoff
+                + ", transmissionTimeout=" + transmissionTimeout
                 + ", closeTimeout=" + closeTimeout + "]";
     }
 
@@ -360,6 +389,7 @@ public final class DeliveryOptions {
         private int maxQueuedEvents = 10_000;
         private Duration retryBackoff = Duration.ofSeconds(1);
         private Duration maxRetryBackoff = Duration.ofSeconds(30);
+        private @Nullable Duration transmissionTimeout = Duration.ofMinutes(1);
         private @Nullable Duration closeTimeout = Duration.ofSeconds(5);
 
         private Builder() {
@@ -384,6 +414,7 @@ public final class DeliveryOptions {
             this.maxQueuedEvents = options.maxQueuedEvents;
             this.retryBackoff = options.retryBackoff;
             this.maxRetryBackoff = options.maxRetryBackoff;
+            this.transmissionTimeout = options.transmissionTimeout;
             this.closeTimeout = options.closeTimeout;
         }
 
@@ -520,6 +551,18 @@ public final class DeliveryOptions {
         }
 
         /**
+         * Sets the maximum time a transmission waits for its answer before it counts as failed, or {@code null}
+         * to wait indefinitely.
+         *
+         * @param transmissionTimeout The transmission timeout
+         * @return This builder
+         */
+        public Builder transmissionTimeout(@Nullable Duration transmissionTimeout) {
+            this.transmissionTimeout = transmissionTimeout;
+            return this;
+        }
+
+        /**
          * Sets the maximum time to wait for in-flight transmissions while closing, or {@code null} to wait
          * indefinitely.
          *
@@ -536,8 +579,8 @@ public final class DeliveryOptions {
          *
          * @return The new options
          * @throws IllegalArgumentException If a setting is out of its range (see {@link DeliveryOptions})
-         * @throws NullPointerException     If a setting other than the flush level and the close timeout is
-         *                                  {@code null}
+         * @throws NullPointerException     If a setting other than the flush level, the transmission timeout and
+         *                                  the close timeout is {@code null}
          */
         public DeliveryOptions build() {
             return new DeliveryOptions(this);

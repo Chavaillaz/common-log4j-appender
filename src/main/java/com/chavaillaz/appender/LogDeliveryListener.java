@@ -69,7 +69,9 @@ public interface LogDeliveryListener {
      * later retry.
      *
      * @param documentCount The number of documents that failed
-     * @param cause         The exception responsible for the failure, or {@code null} if the transmission
+     * @param cause         The exception responsible for the failure, a
+     *                      {@link java.util.concurrent.TimeoutException} for a request not answered within
+     *                      {@link DeliveryOptions#transmissionTimeout()}, or {@code null} if the transmission
      *                      reported a failure without one
      */
     default void onTransmissionFailed(int documentCount, @Nullable Throwable cause) {
