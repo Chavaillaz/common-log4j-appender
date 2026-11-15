@@ -621,10 +621,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     public DeliveryHealth getHealth() {
         LogDelivery handler = logDeliveryHandler;
         if (handler == null) {
-            return new DeliveryHealth(DeliveryHealth.Status.DOWN, Duration.ofNanos(System.nanoTime() - createdNanos));
+            return DeliveryHealth.of(DeliveryHealth.Status.DOWN, Duration.ofNanos(System.nanoTime() - createdNanos));
         }
         DeliveryHealth health = handler.getHealth();
-        return isStarted() ? health : new DeliveryHealth(DeliveryHealth.Status.DOWN, health.sinceLastSuccess());
+        return isStarted() ? health : DeliveryHealth.of(DeliveryHealth.Status.DOWN, health.sinceLastSuccess());
     }
 
     /**
@@ -661,9 +661,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     public DeliveryMetrics getMetrics() {
         LogDelivery handler = logDeliveryHandler;
         DeliveryMetrics delivery = handler != null ? handler.getMetrics() : DeliveryMetrics.NONE;
-        return new DeliveryMetrics(getQueuedEventCount(), delivery.pendingDocuments(), delivery.pendingBytes(),
-                delivery.transmissionsInFlight(), delivery.transmittedDocuments(), delivery.failedTransmissions(),
-                delivery.droppedDocuments() + discardedEvents.sum());
+        // Whatever else the delivery measures is carried over as it is
+        return delivery.with()
+                .queuedEvents(getQueuedEventCount())
+                .droppedDocuments(delivery.droppedDocuments() + discardedEvents.sum())
+                .build();
     }
 
     /**

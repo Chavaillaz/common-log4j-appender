@@ -47,17 +47,19 @@ public interface LogDelivery extends AutoCloseable {
     /**
      * Takes the health of this delivery, for a health indicator or an alert to poll (see
      * {@link DeliveryHealth}). Defaults to {@link DeliveryHealth.Status#UP} for an implementation that does not
-     * track its transmissions, as if its last one had just succeeded.
+     * track its transmissions, as if its last one had just succeeded, one that does creating its own through
+     * {@link DeliveryHealth#of(DeliveryHealth.Status, Duration)}.
      *
      * @return The current health
      */
     default DeliveryHealth getHealth() {
-        return new DeliveryHealth(DeliveryHealth.Status.UP, Duration.ZERO);
+        return DeliveryHealth.of(DeliveryHealth.Status.UP, Duration.ZERO);
     }
 
     /**
      * Takes a snapshot of this delivery, for a metrics library to poll (see {@link DeliveryMetrics}). Defaults to
-     * {@link DeliveryMetrics#NONE} for an implementation that does not track them.
+     * {@link DeliveryMetrics#NONE} for an implementation that does not track them, one that does creating its
+     * own through {@link DeliveryMetrics#builder()}.
      *
      * @return The current metrics, {@link DeliveryMetrics#queuedEvents()} being left to the appender
      */

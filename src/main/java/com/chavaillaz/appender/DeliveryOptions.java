@@ -12,8 +12,9 @@ import org.jspecify.annotations.Nullable;
  * How the delivery pipeline behaves: batching, backpressure, retries and shutdown. The generic half of
  * {@link LogConfiguration}, which keeps what identifies the application producing the logs.
  * <p>
- * Instances are created through {@link #builder()}, or derived from another one through {@link #with()}, every
- * setting having a usable default (see {@link #defaults()}).
+ * Instances are immutable. They are created through {@link #builder()}, or derived from another one through
+ * {@link #with()}, every setting having a usable default (see {@link #defaults()}): a setting a later version
+ * adds comes with a default of its own, so that code building options keeps compiling, and behaving as it did.
  * <p>
  * {@link LogConfiguration#getDeliveryOptions()} is read again each time a setting is used, so that a
  * configuration can vary a setting at runtime by returning another instance, held in a field rather than built
@@ -25,80 +26,8 @@ import org.jspecify.annotations.Nullable;
  * and a missing one a {@link NullPointerException}, so that a misconfiguration fails the configuration rather
  * than the delivery once running. A limit meant to be unbounded takes the largest value of its type, as its
  * default does.
- *
- * @param flushThreshold             Number of accumulated documents that triggers a transmission, {@code 1}
- *                                   sending every document on its own as it arrives. Defaults to {@code 1}; an
- *                                   appender shipping logs over the network normally raises it. At least
- *                                   {@code 1}.
- * @param flushInterval              Time between two periodic flushes, which send the documents nothing else
- *                                   would send: under {@code flushThreshold}, held back by {@code retryBackoff},
- *                                   or put back by a failed transmission. Defaults to five seconds; at least a
- *                                   millisecond.
- * @param flushLevel                 Minimum severity, compared with {@link Level#isMoreSpecificThan(Level)}, of
- *                                   an event flushing the batch right after it, so that an occasional severe
- *                                   event is not held back by settings favoring throughput. Defaults to
- *                                   {@code null}, disabling it.
- * @param maxConcurrentTransmissions Maximum number of requests in flight at once, the next batch waiting for a
- *                                   slot past it. Defaults to {@code 4}; at least {@code 1}.
- * @param maxPendingDocuments        Maximum number of documents the pending batch holds while waiting to be
- *                                   (re)transmitted, the oldest ones being discarded past it while transmissions
- *                                   are held off after a failure. A batch reaching it otherwise is transmitted,
- *                                   as if it reached {@code flushThreshold}. Defaults to {@code 10'000}; at
- *                                   least {@code 1}.
- * @param maxRequestDocuments        Maximum number of documents per request, a bigger batch being split into
- *                                   chunks transmitted and retried independently. Defaults to
- *                                   {@link Integer#MAX_VALUE}, not splitting by count; at least {@code 1}.
- * @param maxPendingBytes            Maximum estimated size of the pending batch, which it bounds as
- *                                   {@code maxPendingDocuments} does by count. Sizes are estimated by
- *                                   {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)}.
- *                                   Defaults to {@link Long#MAX_VALUE}, unbounded; at least {@code 1}.
- * @param maxRequestBytes            Maximum estimated size of a request, a heavier batch being split into
- *                                   chunks that each stay under it, and a heavier document still being sent
- *                                   alone. Usually the limit that matters: Elasticsearch and OpenSearch reject a
- *                                   request over {@code http.max_content_length} by its size, not by its
- *                                   document count. Defaults to {@link Long#MAX_VALUE}, unbounded; at least
- *                                   {@code 1}.
- * @param maxConsecutiveFailures     Maximum number of consecutive failed attempts for the same documents before
- *                                   they are discarded, so that a document the downstream system never accepts
- *                                   does not block everything behind it. Defaults to {@code 5}; at least
- *                                   {@code 1}, {@link Integer#MAX_VALUE} retrying for good in practice.
- * @param maxQueuedEvents            Maximum number of logging events queued for the background thread of an
- *                                   appender, the oldest one being discarded past it. Defaults to
- *                                   {@code 10'000}; at least {@code 1}.
- * @param retryBackoff               Base delay before retrying after a failed transmission, doubling with each
- *                                   consecutive failure up to {@code maxRetryBackoff}, each delay being drawn at
- *                                   random up to that value, so that instances losing the same system do not
- *                                   retry in lockstep. Newly accumulated documents are held back too while it
- *                                   is in effect. Defaults to one second; {@link Duration#ZERO} disables it, and
- *                                   it cannot be negative.
- * @param maxRetryBackoff            Cap of the delay described by {@code retryBackoff}, ignored if smaller than
- *                                   it. Defaults to thirty seconds; it cannot be negative.
- * @param closeTimeout               Maximum time closing a delivery waits for the transmissions in flight, its
- *                                   final flush included, before reporting what is still pending through
- *                                   {@link LogDeliveryListener#onDocumentsDropped(List, String)}. While the
- *                                   {@code shutdownTimeout} of the Log4j2 configuration is left at {@code 0},
- *                                   also the budget of a whole appender stop: the events it accepted are
- *                                   processed first, and its delivery closed within what they left. Defaults
- *                                   to five seconds, so that the platform running the application, which
- *                                   kills a process taking longer to stop (after 10 seconds for Docker, 30 for
- *                                   Kubernetes), lets it report what is still pending, the budgets of several
- *                                   appenders adding up as Log4j2 stops them one after the other; {@code null}
- *                                   waits indefinitely, and it cannot be negative.
  */
-public record DeliveryOptions(
-        int flushThreshold,
-        Duration flushInterval,
-        @Nullable Level flushLevel,
-        int maxConcurrentTransmissions,
-        int maxPendingDocuments,
-        int maxRequestDocuments,
-        long maxPendingBytes,
-        long maxRequestBytes,
-        int maxConsecutiveFailures,
-        int maxQueuedEvents,
-        Duration retryBackoff,
-        Duration maxRetryBackoff,
-        @Nullable Duration closeTimeout) {
+public final class DeliveryOptions {
 
     /**
      * The instance {@link #defaults()} returns, shared rather than built per call, since
@@ -106,48 +35,71 @@ public record DeliveryOptions(
      */
     private static final DeliveryOptions DEFAULTS = builder().build();
 
+    private final int flushThreshold;
+    private final Duration flushInterval;
+    private final @Nullable Level flushLevel;
+    private final int maxConcurrentTransmissions;
+    private final int maxPendingDocuments;
+    private final int maxRequestDocuments;
+    private final long maxPendingBytes;
+    private final long maxRequestBytes;
+    private final int maxConsecutiveFailures;
+    private final int maxQueuedEvents;
+    private final Duration retryBackoff;
+    private final Duration maxRetryBackoff;
+    private final @Nullable Duration closeTimeout;
+
     /**
-     * Validates every setting (see the documentation of the record).
+     * Creates the options a builder describes, validating every setting.
      *
+     * @param builder The builder holding the settings
      * @throws IllegalArgumentException If a setting is out of its range
-     * @throws NullPointerException     If a setting other than {@code flushLevel} and {@code closeTimeout} is
+     * @throws NullPointerException     If a setting other than the flush level and the close timeout is
      *                                  {@code null}
      */
-    public DeliveryOptions {
-        requirePositive(flushThreshold, "flushThreshold");
-        requireSchedulable(flushInterval);
-        requirePositive(maxConcurrentTransmissions, "maxConcurrentTransmissions");
-        requirePositive(maxPendingDocuments, "maxPendingDocuments");
-        requirePositive(maxRequestDocuments, "maxRequestDocuments");
-        requirePositive(maxPendingBytes, "maxPendingBytes");
-        requirePositive(maxRequestBytes, "maxRequestBytes");
-        requirePositive(maxConsecutiveFailures, "maxConsecutiveFailures");
-        requirePositive(maxQueuedEvents, "maxQueuedEvents");
-        requireNotNegative(Objects.requireNonNull(retryBackoff, "retryBackoff must not be null"), "retryBackoff");
-        requireNotNegative(Objects.requireNonNull(maxRetryBackoff, "maxRetryBackoff must not be null"), "maxRetryBackoff");
-        if (closeTimeout != null) {
-            requireNotNegative(closeTimeout, "closeTimeout");
-        }
+    private DeliveryOptions(Builder builder) {
+        this.flushThreshold = requirePositive(builder.flushThreshold, "flushThreshold");
+        this.flushInterval = requireSchedulable(builder.flushInterval);
+        this.flushLevel = builder.flushLevel;
+        this.maxConcurrentTransmissions = requirePositive(builder.maxConcurrentTransmissions, "maxConcurrentTransmissions");
+        this.maxPendingDocuments = requirePositive(builder.maxPendingDocuments, "maxPendingDocuments");
+        this.maxRequestDocuments = requirePositive(builder.maxRequestDocuments, "maxRequestDocuments");
+        this.maxPendingBytes = requirePositive(builder.maxPendingBytes, "maxPendingBytes");
+        this.maxRequestBytes = requirePositive(builder.maxRequestBytes, "maxRequestBytes");
+        this.maxConsecutiveFailures = requirePositive(builder.maxConsecutiveFailures, "maxConsecutiveFailures");
+        this.maxQueuedEvents = requirePositive(builder.maxQueuedEvents, "maxQueuedEvents");
+        this.retryBackoff = requireNotNegative(
+                Objects.requireNonNull(builder.retryBackoff, "retryBackoff must not be null"), "retryBackoff");
+        this.maxRetryBackoff = requireNotNegative(
+                Objects.requireNonNull(builder.maxRetryBackoff, "maxRetryBackoff must not be null"), "maxRetryBackoff");
+        this.closeTimeout = builder.closeTimeout != null ? requireNotNegative(builder.closeTimeout, "closeTimeout") : null;
     }
 
-    private static void requirePositive(long value, String name) {
+    private static int requirePositive(int value, String name) {
+        return (int) requirePositive((long) value, name);
+    }
+
+    private static long requirePositive(long value, String name) {
         if (value < 1) {
             throw new IllegalArgumentException(name + " must be at least 1, but was " + value);
         }
+        return value;
     }
 
-    private static void requireNotNegative(Duration value, String name) {
+    private static Duration requireNotNegative(Duration value, String name) {
         if (value.isNegative()) {
             throw new IllegalArgumentException(name + " cannot be negative, but was " + value);
         }
+        return value;
     }
 
     /**
      * Requires a flush interval the scheduler of an appender takes, which counts in whole milliseconds.
      *
      * @param flushInterval The flush interval to check
+     * @return The flush interval
      */
-    private static void requireSchedulable(Duration flushInterval) {
+    private static Duration requireSchedulable(Duration flushInterval) {
         Objects.requireNonNull(flushInterval, "flushInterval must not be null");
         long millis;
         try {
@@ -158,6 +110,7 @@ public record DeliveryOptions(
         if (millis < 1) {
             throw new IllegalArgumentException("flushInterval must be at least a millisecond, but was " + flushInterval);
         }
+        return flushInterval;
     }
 
     /**
@@ -186,25 +139,212 @@ public record DeliveryOptions(
      * @return A builder starting from these options
      */
     public Builder with() {
-        return new Builder()
-                .flushThreshold(flushThreshold)
-                .flushInterval(flushInterval)
-                .flushLevel(flushLevel)
-                .maxConcurrentTransmissions(maxConcurrentTransmissions)
-                .maxPendingDocuments(maxPendingDocuments)
-                .maxRequestDocuments(maxRequestDocuments)
-                .maxPendingBytes(maxPendingBytes)
-                .maxRequestBytes(maxRequestBytes)
-                .maxConsecutiveFailures(maxConsecutiveFailures)
-                .maxQueuedEvents(maxQueuedEvents)
-                .retryBackoff(retryBackoff)
-                .maxRetryBackoff(maxRetryBackoff)
-                .closeTimeout(closeTimeout);
+        return new Builder(this);
     }
 
     /**
-     * Builder for {@link DeliveryOptions}, preferred over the canonical constructor, whose thirteen mostly
-     * same-typed components are easy to swap by mistake.
+     * Number of accumulated documents that triggers a transmission, {@code 1} sending every document on its own
+     * as it arrives. Defaults to {@code 1}; an appender shipping logs over the network normally raises it. At
+     * least {@code 1}.
+     *
+     * @return The flush threshold
+     */
+    public int flushThreshold() {
+        return flushThreshold;
+    }
+
+    /**
+     * Time between two periodic flushes, which send the documents nothing else would send: under
+     * {@link #flushThreshold()}, held back by {@link #retryBackoff()}, or put back by a failed transmission.
+     * Defaults to five seconds; at least a millisecond.
+     *
+     * @return The flush interval
+     */
+    public Duration flushInterval() {
+        return flushInterval;
+    }
+
+    /**
+     * Minimum severity, compared with {@link Level#isMoreSpecificThan(Level)}, of an event flushing the batch
+     * right after it, so that an occasional severe event is not held back by settings favoring throughput.
+     * Defaults to {@code null}, disabling it.
+     *
+     * @return The flush level, or {@code null} if no severity flushes on its own
+     */
+    public @Nullable Level flushLevel() {
+        return flushLevel;
+    }
+
+    /**
+     * Maximum number of requests in flight at once, the next batch waiting for a slot past it. Defaults to
+     * {@code 4}; at least {@code 1}.
+     *
+     * @return The maximum number of concurrent transmissions
+     */
+    public int maxConcurrentTransmissions() {
+        return maxConcurrentTransmissions;
+    }
+
+    /**
+     * Maximum number of documents the pending batch holds while waiting to be (re)transmitted, the oldest ones
+     * being discarded past it while transmissions are held off after a failure. A batch reaching it otherwise is
+     * transmitted, as if it reached {@link #flushThreshold()}. Defaults to {@code 10'000}; at least {@code 1}.
+     *
+     * @return The maximum number of pending documents
+     */
+    public int maxPendingDocuments() {
+        return maxPendingDocuments;
+    }
+
+    /**
+     * Maximum number of documents per request, a bigger batch being split into chunks transmitted and retried
+     * independently. Defaults to {@link Integer#MAX_VALUE}, not splitting by count; at least {@code 1}.
+     *
+     * @return The maximum number of documents per request
+     */
+    public int maxRequestDocuments() {
+        return maxRequestDocuments;
+    }
+
+    /**
+     * Maximum estimated size of the pending batch, which it bounds as {@link #maxPendingDocuments()} does by
+     * count. Sizes are estimated by
+     * {@link com.chavaillaz.appender.log4j.AbstractBatchLogDelivery#estimateDocumentSize(Map)}. Defaults to
+     * {@link Long#MAX_VALUE}, unbounded; at least {@code 1}.
+     *
+     * @return The maximum pending size, in bytes
+     */
+    public long maxPendingBytes() {
+        return maxPendingBytes;
+    }
+
+    /**
+     * Maximum estimated size of a request, a heavier batch being split into chunks that each stay under it, and
+     * a heavier document still being sent alone. Usually the limit that matters: Elasticsearch and OpenSearch
+     * reject a request over {@code http.max_content_length} by its size, not by its document count. Defaults to
+     * {@link Long#MAX_VALUE}, unbounded; at least {@code 1}.
+     *
+     * @return The maximum request size, in bytes
+     */
+    public long maxRequestBytes() {
+        return maxRequestBytes;
+    }
+
+    /**
+     * Maximum number of consecutive failed attempts for the same documents before they are discarded, so that a
+     * document the downstream system never accepts does not block everything behind it. Defaults to {@code 5};
+     * at least {@code 1}, {@link Integer#MAX_VALUE} retrying for good in practice.
+     *
+     * @return The maximum number of consecutive failures
+     */
+    public int maxConsecutiveFailures() {
+        return maxConsecutiveFailures;
+    }
+
+    /**
+     * Maximum number of logging events queued for the background thread of an appender, the oldest one being
+     * discarded past it. Defaults to {@code 10'000}; at least {@code 1}.
+     *
+     * @return The maximum number of queued events
+     */
+    public int maxQueuedEvents() {
+        return maxQueuedEvents;
+    }
+
+    /**
+     * Base delay before retrying after a failed transmission, doubling with each consecutive failure up to
+     * {@link #maxRetryBackoff()}, each delay being drawn at random up to that value, so that instances losing
+     * the same system do not retry in lockstep. Newly accumulated documents are held back too while it is in
+     * effect. Defaults to one second; {@link Duration#ZERO} disables it, and it cannot be negative.
+     *
+     * @return The base retry delay
+     */
+    public Duration retryBackoff() {
+        return retryBackoff;
+    }
+
+    /**
+     * Cap of the delay described by {@link #retryBackoff()}, ignored if smaller than it. Defaults to thirty
+     * seconds; it cannot be negative.
+     *
+     * @return The maximum retry delay
+     */
+    public Duration maxRetryBackoff() {
+        return maxRetryBackoff;
+    }
+
+    /**
+     * Maximum time closing a delivery waits for the transmissions in flight, its final flush included, before
+     * reporting what is still pending through {@link LogDeliveryListener#onDocumentsDropped(List, String)}.
+     * While the {@code shutdownTimeout} of the Log4j2 configuration is left at {@code 0}, also the budget of a
+     * whole appender stop: the events it accepted are processed first, and its delivery closed within what they
+     * left. Defaults to five seconds, so that the platform running the application, which kills a process
+     * taking longer to stop (after 10 seconds for Docker, 30 for Kubernetes), lets it report what is still
+     * pending, the budgets of several appenders adding up as Log4j2 stops them one after the other;
+     * {@code null} waits indefinitely, and it cannot be negative.
+     *
+     * @return The close timeout, or {@code null} to wait indefinitely
+     */
+    public @Nullable Duration closeTimeout() {
+        return closeTimeout;
+    }
+
+    /**
+     * Compares the settings: two instances are equal when every setting is.
+     *
+     * @param other The object to compare with
+     * @return {@code true} for options with the same settings
+     */
+    @Override
+    public boolean equals(@Nullable Object other) {
+        return other instanceof DeliveryOptions options
+                && flushThreshold == options.flushThreshold
+                && flushInterval.equals(options.flushInterval)
+                && Objects.equals(flushLevel, options.flushLevel)
+                && maxConcurrentTransmissions == options.maxConcurrentTransmissions
+                && maxPendingDocuments == options.maxPendingDocuments
+                && maxRequestDocuments == options.maxRequestDocuments
+                && maxPendingBytes == options.maxPendingBytes
+                && maxRequestBytes == options.maxRequestBytes
+                && maxConsecutiveFailures == options.maxConsecutiveFailures
+                && maxQueuedEvents == options.maxQueuedEvents
+                && retryBackoff.equals(options.retryBackoff)
+                && maxRetryBackoff.equals(options.maxRetryBackoff)
+                && Objects.equals(closeTimeout, options.closeTimeout);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(flushThreshold, flushInterval, flushLevel, maxConcurrentTransmissions,
+                maxPendingDocuments, maxRequestDocuments, maxPendingBytes, maxRequestBytes,
+                maxConsecutiveFailures, maxQueuedEvents, retryBackoff, maxRetryBackoff, closeTimeout);
+    }
+
+    /**
+     * Lists every setting with its value.
+     *
+     * @return The settings, as {@code DeliveryOptions[flushThreshold=1, ...]}
+     */
+    @Override
+    public String toString() {
+        return "DeliveryOptions[flushThreshold=" + flushThreshold
+                + ", flushInterval=" + flushInterval
+                + ", flushLevel=" + flushLevel
+                + ", maxConcurrentTransmissions=" + maxConcurrentTransmissions
+                + ", maxPendingDocuments=" + maxPendingDocuments
+                + ", maxRequestDocuments=" + maxRequestDocuments
+                + ", maxPendingBytes=" + maxPendingBytes
+                + ", maxRequestBytes=" + maxRequestBytes
+                + ", maxConsecutiveFailures=" + maxConsecutiveFailures
+                + ", maxQueuedEvents=" + maxQueuedEvents
+                + ", retryBackoff=" + retryBackoff
+                + ", maxRetryBackoff=" + maxRetryBackoff
+                + ", closeTimeout=" + closeTimeout + "]";
+    }
+
+    /**
+     * Builder for {@link DeliveryOptions}, the only way to create them: a setting is named when it is set, and
+     * one added by a later version takes its default where it is not.
      */
     public static final class Builder {
 
@@ -223,7 +363,28 @@ public record DeliveryOptions(
         private @Nullable Duration closeTimeout = Duration.ofSeconds(5);
 
         private Builder() {
-            // Instantiated only through DeliveryOptions.builder() or DeliveryOptions.with()
+            // Instantiated only through DeliveryOptions.builder()
+        }
+
+        /**
+         * Creates a builder starting from the settings of existing options, for {@link DeliveryOptions#with()}.
+         *
+         * @param options The options to start from
+         */
+        private Builder(DeliveryOptions options) {
+            this.flushThreshold = options.flushThreshold;
+            this.flushInterval = options.flushInterval;
+            this.flushLevel = options.flushLevel;
+            this.maxConcurrentTransmissions = options.maxConcurrentTransmissions;
+            this.maxPendingDocuments = options.maxPendingDocuments;
+            this.maxRequestDocuments = options.maxRequestDocuments;
+            this.maxPendingBytes = options.maxPendingBytes;
+            this.maxRequestBytes = options.maxRequestBytes;
+            this.maxConsecutiveFailures = options.maxConsecutiveFailures;
+            this.maxQueuedEvents = options.maxQueuedEvents;
+            this.retryBackoff = options.retryBackoff;
+            this.maxRetryBackoff = options.maxRetryBackoff;
+            this.closeTimeout = options.closeTimeout;
         }
 
         /**
@@ -379,10 +540,7 @@ public record DeliveryOptions(
          *                                  {@code null}
          */
         public DeliveryOptions build() {
-            return new DeliveryOptions(flushThreshold, flushInterval, flushLevel, maxConcurrentTransmissions,
-                    maxPendingDocuments, maxRequestDocuments, maxPendingBytes, maxRequestBytes,
-                    maxConsecutiveFailures, maxQueuedEvents,
-                    retryBackoff, maxRetryBackoff, closeTimeout);
+            return new DeliveryOptions(this);
         }
 
     }

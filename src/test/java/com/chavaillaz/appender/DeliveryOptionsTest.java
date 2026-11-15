@@ -4,8 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
-import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
 import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 
@@ -78,25 +82,12 @@ class DeliveryOptionsTest {
     @DisplayName("Derives a new instance overriding one setting and carrying the rest over")
     void testWithCarriesEveryOtherSettingOver() throws Exception {
         // given: every setting away from its default, so that one left behind comes back as another value
-        DeliveryOptions original = DeliveryOptions.builder()
-                .flushThreshold(500)
-                .flushInterval(Duration.ofSeconds(7))
-                .flushLevel(Level.WARN)
-                .maxConcurrentTransmissions(2)
-                .maxPendingDocuments(1_000)
-                .maxRequestDocuments(250)
-                .maxPendingBytes(4_000_000)
-                .maxRequestBytes(1_000_000)
-                .maxConsecutiveFailures(9)
-                .maxQueuedEvents(3_000)
-                .retryBackoff(Duration.ofMillis(300))
-                .maxRetryBackoff(Duration.ofMinutes(2))
-                .closeTimeout(null)
-                .build();
-        for (RecordComponent setting : DeliveryOptions.class.getRecordComponents()) {
-            assertThat(setting.getAccessor().invoke(original))
+        DeliveryOptions original = everySettingAwayFromItsDefault();
+        assertThat(settings()).extracting(Method::getName).contains("flushThreshold", "closeTimeout");
+        for (Method setting : settings()) {
+            assertThat(setting.invoke(original))
                     .as("The " + setting.getName() + " this test derives from should not be the default one")
-                    .isNotEqualTo(setting.getAccessor().invoke(DeliveryOptions.defaults()));
+                    .isNotEqualTo(setting.invoke(DeliveryOptions.defaults()));
         }
 
         // when
@@ -107,6 +98,75 @@ class DeliveryOptionsTest {
         assertThat(derived.closeTimeout()).isNull();
         assertThat(derived.with().maxPendingDocuments(1_000).build()).isEqualTo(original);
         assertThat(derived).isNotSameAs(original);
+    }
+
+    @Test
+    @DisplayName("Equals options built with the same settings, with the same hash code")
+    void testEqualsOptionsWithTheSameSettings() {
+        // given
+        DeliveryOptions original = everySettingAwayFromItsDefault();
+
+        // when
+        DeliveryOptions same = everySettingAwayFromItsDefault();
+
+        // then
+        assertThat(same).isNotSameAs(original).isEqualTo(original).hasSameHashCodeAs(original);
+        assertThat(original).isNotEqualTo(null).isNotEqualTo("options");
+        assertThat(original.hashCode()).isNotEqualTo(DeliveryOptions.defaults().hashCode());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("singleSettings")
+    @DisplayName("Differs from options a single setting tells apart")
+    void testDiffersByASingleSetting(String setting, UnaryOperator<DeliveryOptions.Builder> change) {
+        // given
+        DeliveryOptions original = everySettingAwayFromItsDefault();
+
+        // when: that setting alone takes another value
+        DeliveryOptions other = change.apply(original.with()).build();
+
+        // then
+        assertThat(other).as("Options differing by their " + setting).isNotEqualTo(original);
+    }
+
+    static Stream<Arguments> singleSettings() {
+        return Stream.of(
+                arguments("flushThreshold", setting(builder -> builder.flushThreshold(501))),
+                arguments("flushInterval", setting(builder -> builder.flushInterval(Duration.ofSeconds(8)))),
+                arguments("flushLevel", setting(builder -> builder.flushLevel(null))),
+                arguments("maxConcurrentTransmissions", setting(builder -> builder.maxConcurrentTransmissions(3))),
+                arguments("maxPendingDocuments", setting(builder -> builder.maxPendingDocuments(1_001))),
+                arguments("maxRequestDocuments", setting(builder -> builder.maxRequestDocuments(251))),
+                arguments("maxPendingBytes", setting(builder -> builder.maxPendingBytes(4_000_001))),
+                arguments("maxRequestBytes", setting(builder -> builder.maxRequestBytes(1_000_001))),
+                arguments("maxConsecutiveFailures", setting(builder -> builder.maxConsecutiveFailures(10))),
+                arguments("maxQueuedEvents", setting(builder -> builder.maxQueuedEvents(3_001))),
+                arguments("retryBackoff", setting(builder -> builder.retryBackoff(Duration.ofMillis(301)))),
+                arguments("maxRetryBackoff", setting(builder -> builder.maxRetryBackoff(Duration.ofMinutes(3)))),
+                arguments("closeTimeout", setting(builder -> builder.closeTimeout(Duration.ofSeconds(1)))));
+    }
+
+    @Test
+    @DisplayName("Compares every setting it has, none being left out of the comparison")
+    void testEverySettingIsCompared() {
+        // then: a setting added later joins the cases above, or this fails
+        assertThat(singleSettings().map(arguments -> (String) arguments.get()[0]))
+                .containsExactlyInAnyOrderElementsOf(settings().stream().map(Method::getName).toList());
+    }
+
+    @Test
+    @DisplayName("Lists every setting with its value when printed")
+    void testToStringListsEverySetting() {
+        // when
+        String printed = everySettingAwayFromItsDefault().toString();
+
+        // then
+        assertThat(printed).startsWith("DeliveryOptions[").endsWith("]")
+                .contains("flushThreshold=500", "flushInterval=PT7S", "flushLevel=WARN", "maxPendingBytes=4000000",
+                        "retryBackoff=PT0.3S", "closeTimeout=null");
+        for (Method setting : settings()) {
+            assertThat(printed).contains(setting.getName() + "=");
+        }
     }
 
     @ParameterizedTest(name = "{0}")
@@ -191,6 +251,39 @@ class DeliveryOptionsTest {
         // then
         assertThat(smallest.closeTimeout()).isEqualTo(Duration.ZERO);
         assertThat(largest.closeTimeout()).isNull();
+    }
+
+    /**
+     * Options whose every setting differs from its default.
+     */
+    private static DeliveryOptions everySettingAwayFromItsDefault() {
+        return DeliveryOptions.builder()
+                .flushThreshold(500)
+                .flushInterval(Duration.ofSeconds(7))
+                .flushLevel(Level.WARN)
+                .maxConcurrentTransmissions(2)
+                .maxPendingDocuments(1_000)
+                .maxRequestDocuments(250)
+                .maxPendingBytes(4_000_000)
+                .maxRequestBytes(1_000_000)
+                .maxConsecutiveFailures(9)
+                .maxQueuedEvents(3_000)
+                .retryBackoff(Duration.ofMillis(300))
+                .maxRetryBackoff(Duration.ofMinutes(2))
+                .closeTimeout(null)
+                .build();
+    }
+
+    /**
+     * The accessors of the settings: the public methods without argument the class declares, but for the one
+     * deriving a builder and those every object has.
+     */
+    private static List<Method> settings() {
+        return Arrays.stream(DeliveryOptions.class.getDeclaredMethods())
+                .filter(method -> Modifier.isPublic(method.getModifiers()) && !Modifier.isStatic(method.getModifiers()))
+                .filter(method -> method.getParameterCount() == 0)
+                .filter(method -> !Set.of("with", "hashCode", "toString").contains(method.getName()))
+                .toList();
     }
 
     /**

@@ -785,14 +785,14 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(Map.of("id", 2));
 
             // then
-            assertThat(logDelivery.getMetrics()).isEqualTo(new DeliveryMetrics(0, 2, 200, 0, 0, 0, 0));
+            assertThat(logDelivery.getMetrics()).isEqualTo(DeliveryMetrics.builder().pendingDocuments(2).pendingBytes(200).build());
 
             // when
             logDelivery.flush();
             logDelivery.awaitPendingTransmissions();
 
             // then
-            assertThat(logDelivery.getMetrics()).isEqualTo(new DeliveryMetrics(0, 0, 0, 0, 2, 0, 0));
+            assertThat(logDelivery.getMetrics()).isEqualTo(DeliveryMetrics.builder().transmittedDocuments(2).build());
         }
 
     }

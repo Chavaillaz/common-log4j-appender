@@ -348,8 +348,14 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     @Override
     public DeliveryMetrics getMetrics() {
         Batcher.Metrics metrics = batcher.metrics();
-        return new DeliveryMetrics(0, metrics.pendingElements(), metrics.pendingBytes(), metrics.transmissionsInFlight(),
-                metrics.transmittedElements(), metrics.failedTransmissions(), metrics.droppedElements());
+        return DeliveryMetrics.builder()
+                .pendingDocuments(metrics.pendingElements())
+                .pendingBytes(metrics.pendingBytes())
+                .transmissionsInFlight(metrics.transmissionsInFlight())
+                .transmittedDocuments(metrics.transmittedElements())
+                .failedTransmissions(metrics.failedTransmissions())
+                .droppedDocuments(metrics.droppedElements())
+                .build();
     }
 
     /**

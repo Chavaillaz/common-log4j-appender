@@ -2609,7 +2609,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // when
             appender.start();
-            var backingOff = new DeliveryHealth(DeliveryHealth.Status.BACKING_OFF, Duration.ofMinutes(2));
+            var backingOff = DeliveryHealth.of(DeliveryHealth.Status.BACKING_OFF, Duration.ofMinutes(2));
             when(appender.getLogDeliveryHandler().getHealth()).thenReturn(backingOff);
 
             // then
@@ -2620,7 +2620,7 @@ class AbstractLogDeliveryAppenderTest {
 
             // then: down, since its last success still
             assertThat(appender.getHealth())
-                    .isEqualTo(new DeliveryHealth(DeliveryHealth.Status.DOWN, Duration.ofMinutes(2)));
+                    .isEqualTo(DeliveryHealth.of(DeliveryHealth.Status.DOWN, Duration.ofMinutes(2)));
         }
 
         @Test
@@ -2633,7 +2633,7 @@ class AbstractLogDeliveryAppenderTest {
             var releaseTask = new CountDownLatch(1);
             var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
             appender.start();
-            var healthy = new DeliveryHealth(DeliveryHealth.Status.UP, Duration.ZERO);
+            var healthy = DeliveryHealth.of(DeliveryHealth.Status.UP, Duration.ZERO);
             when(appender.getLogDeliveryHandler().getHealth()).thenReturn(healthy);
             appender.append(mockLogEvent());
 
@@ -2667,7 +2667,9 @@ class AbstractLogDeliveryAppenderTest {
                     .maxQueuedEvents(1).build();
             var releaseTask = new CountDownLatch(1);
             var appender = new BlockingLogDeliveryAppender("appender-name", null, configuration, releaseTask);
-            when(appender.getLogDeliveryHandler().getMetrics()).thenReturn(new DeliveryMetrics(0, 5, 500, 2, 40, 3, 7));
+            when(appender.getLogDeliveryHandler().getMetrics()).thenReturn(DeliveryMetrics.builder()
+                    .pendingDocuments(5).pendingBytes(500).transmissionsInFlight(2)
+                    .transmittedDocuments(40).failedTransmissions(3).droppedDocuments(7).build());
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(LogDeliveryListener.NOOP);
 
             // then: nothing to report before the delivery exists
@@ -2681,7 +2683,9 @@ class AbstractLogDeliveryAppenderTest {
             appender.append(mockLogEvent());
 
             // then: the queue and the event it discarded come on top of what the delivery reports
-            assertThat(appender.getMetrics()).isEqualTo(new DeliveryMetrics(1, 5, 500, 2, 40, 3, 8));
+            assertThat(appender.getMetrics()).isEqualTo(DeliveryMetrics.builder()
+                    .queuedEvents(1).pendingDocuments(5).pendingBytes(500).transmissionsInFlight(2)
+                    .transmittedDocuments(40).failedTransmissions(3).droppedDocuments(8).build());
 
             // cleanup
             releaseTask.countDown();
@@ -2762,7 +2766,7 @@ class AbstractLogDeliveryAppenderTest {
             appender.start();
 
             // then: up, as if its last transmission had just succeeded, with nothing counted
-            assertThat(appender.getHealth()).isEqualTo(new DeliveryHealth(DeliveryHealth.Status.UP, Duration.ZERO));
+            assertThat(appender.getHealth()).isEqualTo(DeliveryHealth.of(DeliveryHealth.Status.UP, Duration.ZERO));
             assertThat(appender.getMetrics()).isEqualTo(DeliveryMetrics.NONE);
 
             // cleanup

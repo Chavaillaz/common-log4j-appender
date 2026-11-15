@@ -475,9 +475,10 @@ group holding them: a test added, renamed or removed changes this list too.
 - Does not create the file at all when there is nothing to append
 - Leaves other virtual threads a carrier while writers wait for their turn at the file
 
-#### Size estimate, options and results
+#### Size estimate, options, metrics, health and results
 
-`DocumentSizeEstimatorTest`, `DeliveryOptionsTest`, `TransmissionResultTest`
+`DocumentSizeEstimatorTest`, `DeliveryOptionsTest`, `DeliveryMetricsTest`, `DeliveryHealthTest`,
+`TransmissionResultTest`
 
 **Size estimate**
 
@@ -495,9 +496,30 @@ group holding them: a test added, renamed or removed changes this list too.
 - Defaults to the values documented as the pipeline's out-of-the-box behavior
 - A configuration that overrides nothing gets exactly those defaults
 - Derives a new instance overriding one setting and carrying the rest over
+- Equals options built with the same settings, with the same hash code
+- Differs from options a single setting tells apart
+- Compares every setting it has, none being left out of the comparison
+- Lists every setting with its value when printed
 - Rejects a setting out of its range when built, naming it
 - Rejects a missing setting when built, naming it
 - Accepts every setting at the edge of its range
+
+**Delivery metrics**
+
+- Starts every value at zero, as the metrics of a pipeline tracking none
+- Keeps each value under the name it was set by
+- Derives metrics replacing some values and carrying the others over
+- Equals metrics with the same values, with the same hash code
+- Differs from metrics a single value tells apart
+- Compares every value it has, none being left out of the comparison
+- Lists every value with its name when printed
+
+**Delivery health**
+
+- Keeps the status and the time since the last success it is created with
+- Cannot be created without a status or a time since the last success, naming what is missing
+- Equals a health with the same status and time, and none differing by either
+- Gives its status and the time since the last success when printed
 
 **Transmission results**
 

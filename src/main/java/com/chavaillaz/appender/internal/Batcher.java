@@ -591,7 +591,7 @@ public class Batcher<T> {
         } else {
             status = DeliveryHealth.Status.UP;
         }
-        return new DeliveryHealth(status, Duration.ofNanos(Math.max(0, System.nanoTime() - lastSuccessNanos)));
+        return DeliveryHealth.of(status, Duration.ofNanos(Math.max(0, System.nanoTime() - lastSuccessNanos)));
     }
 
     /**
