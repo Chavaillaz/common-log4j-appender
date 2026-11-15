@@ -435,9 +435,10 @@ to split it further.
   its default of `0` (also what a reconfiguration passes), `CloseTimeout`. The delivery is closed within
   what the accepted logs left of it, so a downstream system that accepts a connection and then never
   answers can't hold up the JVM past that budget. Anything still pending once it is spent — events still
-  queued or waiting to be reported, a failing final transmission's documents, or documents a stuck
-  transmission never gave back — is reported through `onDocumentsDropped` rather than discarded along with
-  the appender, so a dead-letter sink still gets its last chance at them. A transmission answering after that
+  queued or waiting to be reported, a batch still waiting for a transmission slot, a failing final
+  transmission's documents, or documents a stuck transmission never gave back — is reported through
+  `onDocumentsDropped` before the stop returns, rather than discarded along with the appender, so a dead-letter
+  sink still gets its last chance at them. A transmission answering after that
   may still deliver its documents, which a dead-letter sink then holds as well. That report comes once the
   budget is spent, so keep the budget under the time the platform lets a stopping process run before killing
   it, less what the application does before Log4j2 stops: `docker stop` kills after 10 seconds, Kubernetes

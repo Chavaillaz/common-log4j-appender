@@ -9,7 +9,7 @@ import org.apache.logging.log4j.status.StatusLogger;
 /**
  * The limits of a {@link Batcher}, read again on every use so that they can change at runtime. A supplier that
  * throws leaves its limit unenforced for now: these suppliers are application code reading a configuration, and
- * the request limits are read once a batch was swapped out, which an exception would carry away.
+ * the request limits are read as a batch is taken out, which an exception would carry away.
  * <p>
  * The fallback is always the value meaning unbounded or disabled, never one that discards: going unenforced for
  * a while costs memory or an oversized request, where the alternative costs elements.

@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Elements taken out of the pending batch of a {@link Batcher} together, with the failure streak each of
@@ -15,8 +16,19 @@ import java.util.Set;
  */
 final class Chunk<T> {
 
+    /**
+     * Numbers the chunks as they are made, across every engine, for {@link #sequence()}.
+     */
+    private static final AtomicLong SEQUENCE = new AtomicLong();
+
     private final List<T> elements;
     private final List<FailureRun> runs;
+    private final long sequence = SEQUENCE.incrementAndGet();
+
+    /**
+     * Whether a transmission was started for this chunk, its elements being possibly delivered from then on.
+     */
+    private volatile boolean dispatched;
 
     /**
      * Creates a chunk of the given elements.
@@ -55,6 +67,34 @@ final class Chunk<T> {
      */
     int size() {
         return elements.size();
+    }
+
+    /**
+     * When this chunk was made, relative to the others: the chunks a batch is split into are numbered in their
+     * order, and after those of the batches taken out before it, so that a close reports the oldest first.
+     *
+     * @return A number growing with each chunk made
+     */
+    long sequence() {
+        return sequence;
+    }
+
+    /**
+     * Whether a transmission was started for this chunk.
+     *
+     * @return {@code true} once its elements may have reached the transport
+     */
+    boolean isDispatched() {
+        return dispatched;
+    }
+
+    /**
+     * Records whether a transmission was started for this chunk.
+     *
+     * @param dispatched {@code true} as its transmission starts, {@code false} if it failed to
+     */
+    void dispatched(boolean dispatched) {
+        this.dispatched = dispatched;
     }
 
     /**

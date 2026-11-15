@@ -2505,6 +2505,53 @@ class AbstractLogDeliveryAppenderTest {
             releaseTask.countDown();
         }
 
+        @Test
+        @DisplayName("Reports the batch its worker still waited to send before a stop whose budget is spent returns")
+        void testStopReportsTheBatchItsWorkerWaitedToSend() throws Exception {
+            // given: a downstream system that never answers, its single slot held by a first request, and the
+            // worker waiting for that slot with the next batch in hand
+            var configuration = TestLogConfiguration.builder()
+                    .flushThreshold(2)
+                    .flushInterval(Duration.ofSeconds(10))
+                    .maxConcurrentTransmissions(1)
+                    .closeTimeout(Duration.ofMillis(100)).build();
+            var reported = new CopyOnWriteArrayList<Object>();
+            var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return new AbstractBatchLogDelivery<>(configuration, new LogDeliveryListener() {
+                        @Override
+                        public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                            documents.forEach(document -> reported.add(document.get("logmessage")));
+                        }
+                    }) {
+                        @Override
+                        protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                            return new CompletableFuture<>();
+                        }
+                    };
+                }
+            };
+            appender.start();
+            for (String message : List.of("A", "B", "C", "D")) {
+                appender.append(realLogEvent(message));
+            }
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+            while (appender.getMetrics().transmissionsInFlight() != 1 || appender.getMetrics().queuedEvents() != 0
+                    || appender.getMetrics().pendingDocuments() != 0) {
+                assertThat(System.nanoTime()).as("The worker should be waiting for the slot by now").isLessThan(deadlineNanos);
+                Thread.sleep(1);
+            }
+
+            // when: stopped within a budget that the worker, waiting for a slot nothing frees, spends
+            appender.stop();
+
+            // then: every document was reported by the time it returned, those the worker held included, rather
+            // than left to that thread, which a JVM exiting on the stop does not wait for
+            assertThat(reported).containsExactlyInAnyOrder("A", "B", "C", "D");
+            assertThat(appender.getMetrics().droppedDocuments()).isEqualTo(4);
+        }
+
     }
 
     @Nested

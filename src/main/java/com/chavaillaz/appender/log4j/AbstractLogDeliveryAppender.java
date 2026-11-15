@@ -673,7 +673,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * to be reported, then flushes and closes the delivery handler, so logs accepted just before shutdown are
      * not lost. Each step shares one budget, getting what the steps before it left. Once it is spent, or a wait
      * interrupted, nothing is waited for any longer: the task running is interrupted, and the events still
-     * queued or still waiting to be reported are reported as dropped on the calling thread.
+     * queued or still waiting to be reported are reported as dropped on the calling thread, as is what the
+     * delivery still holds when it closes, the batch the background thread was waiting to send included.
      *
      * @param timeout  The maximum time the whole stop may take, or {@code 0} or less for
      *                 {@link DeliveryOptions#closeTimeout()} instead: Log4j2 passes {@code 0} when its

@@ -1550,6 +1550,107 @@ class BatcherTest {
         }
 
         @Test
+        @DisplayName("Reports the requests another thread still waits to transmit before the close returns, oldest first")
+        void testRequestsAwaitingAPermitAreReportedByTheClose() throws Exception {
+            // given: the single transmission permit held for good by a stuck transmission, and another thread
+            // waiting for it with a batch split into three requests of two elements
+            var reports = new CopyOnWriteArrayList<String>();
+            var transmitted = new CopyOnWriteArrayList<List<String>>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 6)
+                    .maxRequestElements(() -> 2)
+                    .maxConcurrentTransmissions(1)
+                    .transport(elements -> {
+                        transmitted.add(elements);
+                        return new CompletableFuture<>();
+                    })
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onDropped(List<String> elements, String reason) {
+                            reports.add(Thread.currentThread().getName() + ": " + reason + ": " + elements);
+                        }
+                    })
+                    .build();
+            batcher.add(List.of("stuck"));
+            batcher.flush();
+            var adder = new Thread(() -> batcher.add(List.of("a", "b", "c", "d", "e", "f")), "adder");
+            adder.setDaemon(true);
+            adder.start();
+            awaitWaiting(List.of(adder));
+
+            // when: closed by this thread, while the other one still waits for the permit
+            batcher.close(Duration.ofMillis(100));
+            List<String> reportedOnceClosed = List.copyOf(reports);
+            adder.join(SECONDS.toMillis(10));
+
+            // then: the close reported them itself rather than leaving them to the thread holding them, which may
+            // only stop waiting once the close returned, and an application exiting on it then loses them
+            String closing = Thread.currentThread().getName();
+            assertThat(reportedOnceClosed).containsExactly(
+                    closing + ": still pending when closed: [a, b, c, d, e, f]",
+                    closing + ": still in flight when closed: [stuck]");
+
+            // and: once it stops waiting, the other thread neither reports nor transmits what the close reported
+            assertThat(adder.isAlive()).as("The thread waiting for the permit should have returned").isFalse();
+            assertThat(reports).containsExactlyElementsOf(reportedOnceClosed);
+            assertThat(transmitted).containsExactly(List.of("stuck"));
+        }
+
+        @Test
+        @DisplayName("Leaves to the close the requests an interrupted thread could not transmit once it drained the batch")
+        void testRequestsOfAnInterruptedThreadAreLeftToTheClose() throws Exception {
+            // given: the single transmission permit held for good, another thread waiting for it with a batch,
+            // and one more element pending, which the close reports first, held up by the listener meanwhile
+            var reports = new CopyOnWriteArrayList<String>();
+            var batchDrained = new CountDownLatch(1);
+            var adderReturned = new CountDownLatch(1);
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .flushThreshold(() -> 2)
+                    .maxConcurrentTransmissions(1)
+                    .transport(elements -> new CompletableFuture<>())
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onDropped(List<String> elements, String reason) {
+                            reports.add(Thread.currentThread().getName() + ": " + reason + ": " + elements);
+                            if (elements.contains("x")) {
+                                batchDrained.countDown();
+                                try {
+                                    adderReturned.await(5, SECONDS);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                        }
+                    })
+                    .build();
+            batcher.add(List.of("stuck"));
+            batcher.flush();
+            var adder = new Thread(() -> {
+                batcher.add(List.of("a", "b"));
+                adderReturned.countDown();
+            }, "adder");
+            adder.setDaemon(true);
+            adder.start();
+            awaitWaiting(List.of(adder));
+            batcher.add(List.of("x"));
+
+            // when: the close drained the batch and is yet to take what other threads hold, and the thread
+            // holding a batch is interrupted right then, as the worker of an appender is when its stop gives up
+            var closer = new Thread(() -> batcher.close(Duration.ofMillis(50)), "closer");
+            closer.start();
+            assertThat(batchDrained.await(5, SECONDS)).as("The close should be reporting the pending batch").isTrue();
+            adder.interrupt();
+            adder.join(SECONDS.toMillis(10));
+            closer.join(SECONDS.toMillis(10));
+
+            // then: its batch is reported once, by the close and before it returns, not by the thread giving it up
+            assertThat(reports).containsExactly(
+                    "closer: still pending when closed: [x]",
+                    "closer: still pending when closed: [a, b]",
+                    "closer: still in flight when closed: [stuck]");
+        }
+
+        @Test
         @DisplayName("Reports the requests a close found no permit for in their order, oldest first")
         void testRequestsWithoutPermitAtCloseAreReportedInOrder() {
             // given: the single transmission permit held for good by a stuck transmission, and a batch split into

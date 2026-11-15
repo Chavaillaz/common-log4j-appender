@@ -6,6 +6,7 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -196,11 +197,13 @@ public class Batcher<T> {
     private final LongAdder failedTransmissions = new LongAdder();
 
     /**
-     * The transmissions dispatched and not handled yet, so that closing can report those still in flight once
-     * its wait is over. Whoever removes one first handles its elements: its result, a dispatch failing to
-     * start it, or the close, after which its result is ignored.
+     * The chunks taken out of the pending batch and not handled yet: waiting for a transmission permit, or in
+     * flight. Whoever removes one first handles its elements: the result of its transmission, the dispatch that
+     * could not start it, which puts it back, or the close, which reports it, the result of its transmission
+     * being ignored after that. A chunk is registered under {@link #lock}, as its batch is taken out, so that a
+     * close never finds elements in neither the pending batch nor here, held by a thread yet to hand them over.
      */
-    private final Set<Chunk<T>> inFlight = ConcurrentHashMap.newKeySet();
+    private final Set<Chunk<T>> outstanding = ConcurrentHashMap.newKeySet();
 
     /**
      * Whether the last completed transmission attempt failed, so that a failing transport is not retried on
@@ -235,7 +238,7 @@ public class Batcher<T> {
 
     /**
      * Whether {@link #reportRemainingAsDropped()} emptied {@link #pending} for good, past which
-     * {@link #requeue(Chunk)} reports its elements rather than merging them into a batch nobody looks at.
+     * {@link #requeue(Chunk, boolean)} no longer merges elements into a batch nobody looks at.
      * Guarded by {@link #lock}.
      */
     private boolean drained;
@@ -569,7 +572,7 @@ public class Batcher<T> {
             // Checked before anything changes, the batch refusing a null halfway through the others
             Objects.requireNonNull(element, "elements must not contain null");
         }
-        PendingBatch<T> due = null;
+        List<Chunk<T>> due = null;
         List<T> discarded = null;
         List<T> oversized = null;
         boolean rejected;
@@ -594,7 +597,7 @@ public class Batcher<T> {
                 // After a failure while batching, the next flush retries rather than every new element
                 boolean heldOff = (threshold > 1 && transmissionFailed) || isBackingOff();
                 if (batchDue && !heldOff) {
-                    due = swapBatch();
+                    due = takeDue();
                 } else {
                     discarded = pending.trimToCount(maxPending);
                     oversized = pending.trimToBytes(maxBytes);
@@ -712,7 +715,7 @@ public class Batcher<T> {
      *              {@link #close(Duration)} since it is the last chance for those elements to be sent at all
      */
     private void flush(boolean force) {
-        PendingBatch<T> due;
+        List<Chunk<T>> due;
         lock.lock();
         try {
             if (pending.isEmpty()) {
@@ -724,7 +727,7 @@ public class Batcher<T> {
                 return;
             }
             log.debug("Sending partial batch of {}/{}", pending.size(), limits.flushThreshold());
-            due = swapBatch();
+            due = takeDue();
         } finally {
             lock.unlock();
         }
@@ -732,17 +735,22 @@ public class Batcher<T> {
     }
 
     /**
-     * Replaces the pending batch with an empty one and returns it, so that accumulating the next batch
-     * resumes while this one is transmitted.
+     * Takes the pending batch out to be transmitted, leaving an empty one for the next to accumulate into, and
+     * splits it into the requests it makes, within the request limits (see {@link PendingBatch#split(int, long)}).
+     * Each is registered in {@link #outstanding} before the lock is released: a close then reports those the
+     * thread dispatching them still waits to transmit, on its own thread and before it returns, where that thread
+     * would report them once it stops waiting, possibly after the close returned.
      * <p>
      * Must be called while holding {@link #lock}.
      *
-     * @return The batch swapped out, no one else's from then on
+     * @return The chunks to dispatch, in order
      */
-    private PendingBatch<T> swapBatch() {
+    private List<Chunk<T>> takeDue() {
         PendingBatch<T> due = pending;
         pending = newPendingBatch();
-        return due;
+        List<Chunk<T>> chunks = due.split(limits.maxRequestElements(), limits.maxRequestBytes());
+        outstanding.addAll(chunks);
+        return chunks;
     }
 
     /**
@@ -783,12 +791,14 @@ public class Batcher<T> {
      * Puts back the elements of a failed (or not attempted) transmission at the front of the current batch,
      * so they are retried before any newer element, discarding the oldest elements in excess if this would
      * grow the batch past {@code maxPendingElements} or {@code maxPendingBytes}. Once {@link #close(Duration)}
-     * drained the batch, reports them as dropped instead.
+     * drained the batch, the elements of a failed transmission are reported as dropped instead, and a chunk
+     * never attempted is left to that close.
      *
-     * @param chunk The elements to put back, with their failure streaks: unchanged if they were never
-     *              actually attempted, because acquiring a transmission permit was interrupted for instance
+     * @param chunk        The elements to put back, with their failure streaks: unchanged if they were never
+     *                     actually attempted, because acquiring a transmission permit was interrupted for instance
+     * @param undispatched Whether the chunk was never attempted, and so still registered in {@link #outstanding}
      */
-    private void requeue(Chunk<T> chunk) {
+    private void requeue(Chunk<T> chunk, boolean undispatched) {
         List<T> discarded = null;
         List<T> oversized = null;
         List<T> abandoned = null;
@@ -796,9 +806,14 @@ public class Batcher<T> {
         long maxBytes = 0;
         lock.lock();
         try {
+            if (undispatched && (drained || !outstanding.remove(chunk))) {
+                // Left to the close that drained the batch, which reports the chunks still registered on its own
+                // thread, before it returns: reported here, they could be once it returned
+                return;
+            }
             if (drained) {
-                // Nothing would ever transmit or report them: a transmission, or a dispatch that got no permit
-                // within the close budget, handing its elements back once close() drained the batch
+                // Nothing would ever transmit or report them: a transmission handing its elements back once
+                // close() drained the batch
                 abandoned = chunk.elements();
             } else {
                 pending.prepend(chunk);
@@ -830,25 +845,22 @@ public class Batcher<T> {
     }
 
     /**
-     * Dispatches the elements of a swapped batch for transmission, split first into chunks within the request
-     * limits if needed (see {@link PendingBatch#split(int, long)}), each chunk being handed to
+     * Dispatches the chunks of a batch taken out for transmission (see {@link #takeDue()}), each being handed to
      * {@link #dispatchChunk(Chunk)} independently. Those it could not hand over are put back once all were
      * tried, last first, so that they keep their order in front of the batch rather than being retried,
      * reported or trimmed newest first.
      *
-     * @param due The batch swapped out, no one else's by then
+     * @param due The chunks of the batch taken out, in order
      */
-    private void dispatch(PendingBatch<T> due) {
-        int maxCount = limits.maxRequestElements();
-        long maxBytes = limits.maxRequestBytes();
+    private void dispatch(List<Chunk<T>> due) {
         List<Chunk<T>> undispatched = new ArrayList<>();
-        for (Chunk<T> chunk : due.split(maxCount, maxBytes)) {
+        for (Chunk<T> chunk : due) {
             if (!dispatchChunk(chunk)) {
                 undispatched.add(chunk);
             }
         }
         for (Chunk<T> chunk : undispatched.reversed()) {
-            requeue(chunk);
+            requeue(chunk, true);
         }
     }
 
@@ -857,8 +869,8 @@ public class Batcher<T> {
      * is acquired, which may block the caller where the transmission itself never does.
      *
      * @param chunk The chunk to dispatch
-     * @return {@code true} if the chunk is no longer the caller's, handed to its transmission or reported by a
-     *         close, {@code false} if it must be put back, never attempted
+     * @return {@code true} if the chunk was handed to its transmission, or reported by a close meanwhile,
+     *         {@code false} if it is still to be put back, never attempted
      */
     private boolean dispatchChunk(Chunk<T> chunk) {
         try {
@@ -872,8 +884,9 @@ public class Batcher<T> {
             return false;
         }
 
-        // Before it starts, so that a close looking for what is in flight cannot miss it
-        inFlight.add(chunk);
+        // Before its transmission starts, so that a close reports its elements as possibly delivered. One that
+        // reported the chunk already shut the executor down first, and nothing is transmitted on top of its report
+        chunk.dispatched(true);
         try {
             transmissionExecutor.execute(() -> transmit(chunk));
             return true;
@@ -881,11 +894,11 @@ public class Batcher<T> {
             // Throwable: an Error starting the thread, the memory running out say, would keep the permit for
             // good, a few of them wedging every later dispatch, and lose the chunks still to dispatch
             transmissionPermits.release();
+            chunk.dispatched(false);
             if (!(e instanceof RejectedExecutionException)) {
                 log.warn("Unable to start the transmission of {} {}(s), putting them back", chunk.size(), elementNoun, e);
             }
-            // Unless the close shutting the executor down reported them already
-            return !inFlight.remove(chunk);
+            return false;
         }
     }
 
@@ -1072,7 +1085,7 @@ public class Batcher<T> {
     private void handleOutcome(Chunk<T> chunk, @Nullable TransmissionResult<T> result, @Nullable Throwable throwable,
                                long startNanos) {
         try {
-            if (!inFlight.remove(chunk)) {
+            if (!outstanding.remove(chunk)) {
                 log.debug("Ignoring the result of a transmission of {} {}(s) that closing reported as dropped already",
                         chunk.size(), elementNoun);
                 return;
@@ -1220,7 +1233,7 @@ public class Batcher<T> {
             log.warn("Failed to transmit {} {}(s), {} consecutive failure(s) so far, retrying later",
                     retried.size(), elementNoun, outcome.highestStreak(), cause);
             applyBackoff(outcome.highestStreak());
-            requeue(retried);
+            requeue(retried, false);
         }
     }
 
@@ -1274,9 +1287,10 @@ public class Batcher<T> {
      * the listener to return from the notifications of elements dropped before, which run on threads of their
      * own that the JVM exiting once closed would cut short.
      * <p>
-     * What is still pending once that wait is over, put back by a failing final transmission or held by one
-     * not completed in time, is reported through {@link BatcherListener#onDropped(List, String)}, giving a
-     * dead-letter sink a last chance to save it. A transmission completing later has its result ignored, its
+     * What is still pending once that wait is over, put back by a failing final transmission, held by one not
+     * completed in time, or by a thread still waiting to transmit it, is reported through
+     * {@link BatcherListener#onDropped(List, String)} before this returns, giving a dead-letter sink a last chance
+     * to save it. A transmission completing later has its result ignored, its
      * elements being possibly delivered as well as reported.
      * <p>
      * Only the first call closes: a later one waits for it to be over, within its own timeout, rather than
@@ -1323,7 +1337,7 @@ public class Batcher<T> {
             transmissionExecutor.shutdown();
             notifier.awaitDropNotifications(nanosUntilCloseDeadline());
             reportRemainingAsDropped();
-            reportInFlightAsDropped();
+            reportOutstandingAsDropped();
             if (timeouts != null) {
                 // No more transmission to time out, while those still in flight keep their timeout, which ends
                 // what their transport still does, and the thread of the scheduler with the last of them
@@ -1352,23 +1366,35 @@ public class Batcher<T> {
     }
 
     /**
-     * Reports the elements of the transmissions still in flight once closed as dropped, on the calling thread,
-     * rather than losing them along with a transport that never answers.
+     * Reports the elements of the chunks still registered once closed as dropped, on the calling thread: those a
+     * thread still waits to transmit, never attempted, rather than leaving them to that thread, and those of the
+     * transmissions still in flight, rather than losing them along with a transport that never answers.
      */
-    private void reportInFlightAsDropped() {
-        List<T> abandoned = new ArrayList<>();
-        for (Chunk<T> chunk : inFlight) {
-            // Unless its result, arriving meanwhile, removed it first to handle them itself
-            if (inFlight.remove(chunk)) {
-                abandoned.addAll(chunk.elements());
+    private void reportOutstandingAsDropped() {
+        List<Chunk<T>> taken = new ArrayList<>();
+        for (Chunk<T> chunk : outstanding) {
+            // Unless the result of its transmission, arriving meanwhile, removed it first to handle its elements
+            if (outstanding.remove(chunk)) {
+                taken.add(chunk);
             }
         }
-        if (abandoned.isEmpty()) {
-            return;
+        // Oldest first, the registry keeping no order
+        taken.sort(Comparator.comparingLong(Chunk::sequence));
+        List<T> unsent = new ArrayList<>();
+        List<T> inFlight = new ArrayList<>();
+        for (Chunk<T> chunk : taken) {
+            (chunk.isDispatched() ? inFlight : unsent).addAll(chunk.elements());
         }
-        log.error("Discarding {} {}(s) whose transmission was still in flight once closed, they may still be delivered",
-                abandoned.size(), elementNoun);
-        notifier.dropped(Collections.unmodifiableList(abandoned), "still in flight when closed");
+        if (!unsent.isEmpty()) {
+            log.error("Discarding {} {}(s) still waiting for a transmission slot once closed, they were never successfully transmitted",
+                    unsent.size(), elementNoun);
+            notifier.dropped(Collections.unmodifiableList(unsent), "still pending when closed");
+        }
+        if (!inFlight.isEmpty()) {
+            log.error("Discarding {} {}(s) whose transmission was still in flight once closed, they may still be delivered",
+                    inFlight.size(), elementNoun);
+            notifier.dropped(Collections.unmodifiableList(inFlight), "still in flight when closed");
+        }
     }
 
     /**

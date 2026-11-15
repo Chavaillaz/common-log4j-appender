@@ -122,6 +122,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Interrupts a still-running task and reports the queued events when the stop is interrupted
 - Reports the discards still waiting for a slow listener before it returns, once its budget is spent
 - Never reports the listener as still notified once its budget is spent, when it returned already
+- Reports the batch its worker still waited to send before a stop whose budget is spent returns
 
 #### Conversion
 
@@ -330,6 +331,8 @@ group holding them: a test added, renamed or removed changes this list too.
 - Gives up closing once the timeout elapses instead of waiting forever on a stuck transport
 - Still transmits the final flush when closed with no time to wait, and reports it, nothing waiting for it
 - Releases a caller blocked waiting for a permit once a bounded close begins
+- Reports the requests another thread still waits to transmit before the close returns, oldest first
+- Leaves to the close the requests an interrupted thread could not transmit once it drained the batch
 - Reports the requests a close found no permit for in their order, oldest first
 - Reports the elements of a transmission still in flight once closing gives up on it, and only once
 - Returns at once when closed again, rather than waiting again for a transmission it gave up on
