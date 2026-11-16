@@ -112,6 +112,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Ends its worker and its flush scheduler once stopped, leaving no thread behind
 - Never keeps the context of the first thread to log for as long as it runs
 - Never keeps the context of the thread starting it, which creates its worker and its scheduler
+- Runs the converter, the transport and the listener with the class loader of the appender, whatever thread starts it
 - Finishes stopping even when closing the delivery fails with an Error
 - Rejects further appends without throwing back to the calling thread
 - Reports an event appended once stopped as rejected, without formatting its message
@@ -263,7 +264,7 @@ group holding them: a test added, renamed or removed changes this list too.
 #### Batching engine
 
 `BatcherTest`, `BatcherFuzzTest`, `PendingBatchTest`, `ChunkTest`, `BoundedTrimTest`, `DynamicLimitsTest`,
-`BackoffPolicyTest`, `DurationsTest`
+`BackoffPolicyTest`, `DurationsTest`, `ThreadFactoriesTest`
 
 **Construction**
 
@@ -361,6 +362,8 @@ group holding them: a test added, renamed or removed changes this list too.
 **Threads**
 
 - Transmits without the context of the thread handing the batch over
+- Calls the transport and the listener with the context class loader it was built with
+- Cancels the future of a transmission that timed out with that context class loader too
 - Does not block the calling thread on a transport that completes its future asynchronously
 - Never holds up the client thread completing a transmission with the handling of its result
 - Retries the requests an interrupted dispatch put back in their order, oldest first
@@ -441,6 +444,12 @@ group holding them: a test added, renamed or removed changes this list too.
 - Converts a duration within a year to as many milliseconds
 - Clamps a duration past a year, or below zero, to the nearest of both
 - Clamps a duration too long to count in milliseconds rather than throwing
+
+**Thread factories**
+
+- Gives the threads of a factory the context class loader asked for
+- Leaves the threads of a factory as they are without a context class loader
+- Hands over a thread its factory failed to create as it is
 
 #### Listeners and dead letters
 

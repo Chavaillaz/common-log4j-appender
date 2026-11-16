@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -2167,6 +2168,44 @@ class AbstractLogDeliveryAppenderTest {
 
             // cleanup
             appender.stop(1, SECONDS);
+        }
+
+        @Test
+        @DisplayName("Runs the converter, the transport and the listener with the class loader of the appender, whatever thread starts it")
+        void testExtensionPointsRunWithTheClassLoaderOfTheAppender() throws Exception {
+            // given: an appender loaded by a class loader of its own, as the one of a web application or of an
+            // executable JAR nesting its libraries is, whose classes the system class loader knows nothing of
+            var applicationClassLoader = new IsolatingClassLoader(ContextReportingAppender.class.getName());
+            var observed = new ConcurrentHashMap<String, ClassLoader>();
+            LogConfiguration configuration = TestLogConfiguration.builder().flushThreshold(1).build();
+            var appender = (AbstractLogDeliveryAppender<?>) applicationClassLoader
+                    .loadClass(ContextReportingAppender.class.getName())
+                    .getConstructor(String.class, LogConfiguration.class, Map.class)
+                    .newInstance("isolated", configuration, observed);
+            assertThat(appender.getClass().getClassLoader()).isSameAs(applicationClassLoader);
+
+            // when: started and logged to by a thread running with yet another context class loader, one event
+            // being delivered and another one failing to convert, which the listener is told of
+            Thread.ofPlatform().start(() -> {
+                Thread.currentThread().setContextClassLoader(new ClassLoader() {
+                });
+                appender.start();
+                appender.append(realLogEvent("delivered"));
+                appender.append(realLogEvent(ContextReportingAppender.UNCONVERTIBLE));
+            }).join();
+            long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
+            while (observed.size() < 4) {
+                assertThat(System.nanoTime()).as("Every extension point should have run, got " + observed.keySet())
+                        .isLessThan(deadlineNanos);
+                sleep(1);
+            }
+            appender.stop(1, SECONDS);
+
+            // then: a library looking its providers up through the context class loader finds on these threads
+            // what it finds on those of the application, where the system class loader would show it nothing
+            assertThat(observed).containsOnlyKeys(
+                    "converter", "transport", "listener of a transmission", "listener of a discarded event");
+            assertThat(observed.values()).containsOnly(applicationClassLoader);
         }
 
         @Test

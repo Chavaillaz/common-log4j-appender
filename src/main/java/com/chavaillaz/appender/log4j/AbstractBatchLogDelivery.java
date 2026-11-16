@@ -105,6 +105,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
                 .transmissionTimeout(options.transmissionTimeout())
                 .backoff(backoffOf(options))
                 .transmissionThreadPrefix("log-delivery-transmission-")
+                // The class loader of the concrete delivery, which loaded its client too
+                .contextClassLoader(getClass().getClassLoader())
                 .elementNoun("document")
                 .transport(this::sendBulk)
                 .listener(new BatcherListener<>() {
@@ -361,7 +363,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
 
     /**
      * Sends the given documents, called on a virtual thread of its own, concurrently with the other
-     * transmissions.
+     * transmissions. That thread, like those the listener is notified on, has the class loader of this delivery
+     * as its context class loader, the one that loaded the client along with it, whatever thread created the
+     * delivery: a client finds through it the providers it looks up that way.
      * <p>
      * The returned future may be completed before this method returns, by a blocking client holding only that
      * thread, or later by an asynchronous one, the result then being handled on a thread of this delivery rather

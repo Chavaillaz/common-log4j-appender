@@ -36,6 +36,7 @@ import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
+import com.chavaillaz.appender.internal.ThreadFactories;
 
 /**
  * Base of an appender transmitting logs from Log4j2.
@@ -57,6 +58,10 @@ import com.chavaillaz.appender.LogDeliveryListener;
  * <p>
  * An event at least as severe as {@link DeliveryOptions#flushLevel()} flushes the batch right after it, so
  * that it is not held back by settings favoring throughput.
+ * <p>
+ * The threads of an appender run with its class loader, the one of the concrete plugin, as their context class
+ * loader, whatever thread starts it: a converter, or a library it calls, finds through it what it looks up
+ * that way, in an application loaded by class loaders of its own as on a plain class path.
  *
  * @param <C> The configuration type
  */
@@ -69,15 +74,28 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * Daemon threads, like those of Log4j2: they only end with {@link #stop(long, TimeUnit)}, which the shutdown
      * hook of Log4j2 calls once the JVM starts shutting down, and a live non-daemon thread keeps it from doing so.
      * They take neither the inheritable thread-locals nor the context class loader of the thread creating them,
-     * which they would otherwise keep reachable until the appender stops.
+     * which they would otherwise keep reachable until the appender stops: their context class loader is the one
+     * of this appender (see {@link #withContextClassLoader(ThreadFactory)}).
      *
      * @param role         The role of the threads
      * @param appenderName The name of the appender they belong to
      * @return The thread factory to use
      */
-    private static ThreadFactory namedThreadFactory(String role, String appenderName) {
-        return Thread.ofPlatform().name(threadName(role, appenderName)).daemon(true)
-                .inheritInheritableThreadLocals(false).factory();
+    private ThreadFactory namedThreadFactory(String role, String appenderName) {
+        return withContextClassLoader(Thread.ofPlatform().name(threadName(role, appenderName)).daemon(true)
+                .inheritInheritableThreadLocals(false).factory());
+    }
+
+    /**
+     * Gives the threads of the given factory the class loader of this appender, the concrete plugin, as their
+     * context class loader: the one that loaded its converter and its delivery, which a library they call looks
+     * its providers up through (see {@link ThreadFactories}).
+     *
+     * @param factory The factory of the threads of this appender
+     * @return A factory creating the same threads, with that context class loader
+     */
+    private ThreadFactory withContextClassLoader(ThreadFactory factory) {
+        return ThreadFactories.withContextClassLoader(factory, getClass().getClassLoader());
     }
 
     /**
@@ -188,9 +206,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Reports the events discarded on their way to the delivery, so that converting them and calling the
      * listener never holds up the thread logging, nor the worker. Bounded like the queue, a discard past it being
-     * counted and logged rather than waited for. Runs on a virtual thread, which inherits neither the
-     * inheritable thread-locals nor the context class loader of the thread discarding the first event (see
-     * {@link #namedThreadFactory(String, String)}).
+     * counted and logged rather than waited for. Runs on a virtual thread, which takes neither the inheritable
+     * thread-locals nor the context class loader of the thread discarding the first event, but the class loader
+     * of this appender (see {@link #namedThreadFactory(String, String)}).
      */
     private final DiscardReporter discardReporter;
 
@@ -247,8 +265,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
         this.defaultConverter = new DefaultLogConverter(configuration);
         this.discardReporter = new DiscardReporter(this, () -> logDeliveryHandler, defaultConverter,
-                options.maxQueuedEvents(), Thread.ofVirtual().name(threadName("discard-reporter", name))
-                        .inheritInheritableThreadLocals(false).factory());
+                options.maxQueuedEvents(), withContextClassLoader(Thread.ofVirtual()
+                        .name(threadName("discard-reporter", name)).inheritInheritableThreadLocals(false).factory()));
     }
 
     /**

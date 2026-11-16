@@ -151,7 +151,8 @@ public class Batcher<T> {
      * Executor transmitting batches on virtual threads, so that transmission never blocks the thread
      * accumulating the next batch. They take neither the inheritable thread-locals nor the context class loader
      * of the thread starting them, the one closing a web application for instance, which one stuck on an
-     * unresponsive transport would keep reachable for good.
+     * unresponsive transport would keep reachable for good: they run with the context class loader the engine
+     * was built with (see {@link ThreadFactories}).
      */
     private final ExecutorService transmissionExecutor;
 
@@ -270,15 +271,19 @@ public class Batcher<T> {
         this.transmissionTimeoutMillis = timeout != null && timeout.isPositive()
                 ? Math.max(1, Durations.toMillisWithinYear(timeout))
                 : 0;
-        this.timeouts = transmissionTimeoutMillis > 0 ? newTimeoutScheduler(builder.transmissionThreadPrefix) : null;
+        this.timeouts = transmissionTimeoutMillis > 0
+                ? newTimeoutScheduler(builder.transmissionThreadPrefix, builder.contextClassLoader)
+                : null;
         this.backoff = builder.backoff;
         this.elementNoun = builder.elementNoun;
         this.transport = Objects.requireNonNull(builder.transport, "transport must not be null");
         this.pending = newPendingBatch();
         this.transmissionPermits = new Semaphore(builder.maxConcurrentTransmissions);
-        this.transmissionExecutor = Executors.newThreadPerTaskExecutor(builder.transmissionThreadFactory != null
+        ThreadFactory transmissionThreads = builder.transmissionThreadFactory != null
                 ? builder.transmissionThreadFactory
-                : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).inheritInheritableThreadLocals(false).factory());
+                : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).inheritInheritableThreadLocals(false).factory();
+        this.transmissionExecutor = Executors.newThreadPerTaskExecutor(
+                ThreadFactories.withContextClassLoader(transmissionThreads, builder.contextClassLoader));
         this.notifier = new ListenerNotifier<>(builder.listener, transmissionExecutor, elementNoun);
     }
 
@@ -286,12 +291,16 @@ public class Batcher<T> {
      * Creates the scheduler timing the transmissions out, whose single thread is a virtual one, started with
      * the first transmission and taking nothing of the thread starting it.
      *
-     * @param threadPrefix The name prefix of the threads running transmissions, which its thread is named after
+     * @param threadPrefix       The name prefix of the threads running transmissions, which its thread is named
+     *                           after
+     * @param contextClassLoader The context class loader of its thread, which cancels the futures of the
+     *                           transport, or {@code null} for the system class loader
      * @return The scheduler
      */
-    private static ScheduledThreadPoolExecutor newTimeoutScheduler(String threadPrefix) {
-        ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1,
-                Thread.ofVirtual().name(threadPrefix + "timeout").inheritInheritableThreadLocals(false).factory());
+    private static ScheduledThreadPoolExecutor newTimeoutScheduler(String threadPrefix, @Nullable ClassLoader contextClassLoader) {
+        ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1, ThreadFactories.withContextClassLoader(
+                Thread.ofVirtual().name(threadPrefix + "timeout").inheritInheritableThreadLocals(false).factory(),
+                contextClassLoader));
         // A transmission answered in time leaves nothing behind, where its timeout would otherwise keep its
         // elements reachable until it elapses
         scheduler.setRemoveOnCancelPolicy(true);
@@ -329,6 +338,7 @@ public class Batcher<T> {
         private BackoffPolicy backoff = BackoffPolicy.none();
         private String transmissionThreadPrefix = "batcher-transmission-";
         private @Nullable ThreadFactory transmissionThreadFactory;
+        private @Nullable ClassLoader contextClassLoader;
         private String elementNoun = "element";
         private @Nullable Function<List<T>, CompletableFuture<TransmissionResult<T>>> transport;
         private BatcherListener<T> listener = BatcherListener.noop();
@@ -489,6 +499,19 @@ public class Batcher<T> {
          */
         Builder<T> transmissionThreadFactory(ThreadFactory transmissionThreadFactory) {
             this.transmissionThreadFactory = transmissionThreadFactory;
+            return this;
+        }
+
+        /**
+         * Sets the context class loader of the threads calling the transport and the listener: the one that
+         * loaded them, which a client looks its providers up through (see {@link ThreadFactories}). Defaults to
+         * {@code null}, leaving these threads with the system class loader.
+         *
+         * @param contextClassLoader The context class loader, or {@code null} for the system class loader
+         * @return This builder
+         */
+        public Builder<T> contextClassLoader(@Nullable ClassLoader contextClassLoader) {
+            this.contextClassLoader = contextClassLoader;
             return this;
         }
 

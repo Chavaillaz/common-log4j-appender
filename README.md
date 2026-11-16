@@ -92,6 +92,12 @@ run concurrently on virtual threads, so `sendBulk()` (see below) must be safe to
 itself if you keep mutable state; retried documents may also be delivered out of order, each carrying its
 own timestamp.
 
+These threads run with the class loader of your appender, or of your delivery, as their context class loader,
+whatever thread starts the appender: a client finding its providers through it, as `ServiceLoader.load(Class)`
+does, finds them in a web application or an executable JAR nesting its libraries as it does on a plain class
+path. They take nothing else of the thread starting them, neither its inheritable thread-locals nor its own
+context class loader, which they would keep reachable until the appender stops.
+
 ## Creating your own appender
 
 ### 1. Configuration

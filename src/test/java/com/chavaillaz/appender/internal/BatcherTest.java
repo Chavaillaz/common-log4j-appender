@@ -2406,6 +2406,67 @@ class BatcherTest {
         }
 
         @Test
+        @DisplayName("Calls the transport and the listener with the context class loader it was built with")
+        void testTransportAndListenerRunWithTheContextClassLoaderGiven() throws Exception {
+            // given: a transport and a listener reporting the context class loader they run with
+            var applicationClassLoader = new ClassLoader() {
+            };
+            var transportContext = new CompletableFuture<ClassLoader>();
+            var listenerContext = new CompletableFuture<ClassLoader>();
+            var answer = new CompletableFuture<TransmissionResult<String>>();
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .contextClassLoader(applicationClassLoader)
+                    .transport(elements -> {
+                        transportContext.complete(Thread.currentThread().getContextClassLoader());
+                        return answer;
+                    })
+                    .listener(new BatcherListener<>() {
+                        @Override
+                        public void onSucceeded(int count, long durationMillis) {
+                            listenerContext.complete(Thread.currentThread().getContextClassLoader());
+                        }
+                    })
+                    .build();
+
+            // when: the transport answers from a thread of its own, this one
+            batcher.add(List.of("a"));
+            answer.complete(TransmissionResult.success());
+
+            // then: the class loader a client looks its providers up through, rather than the system one
+            assertThat(transportContext.get(5, SECONDS)).isSameAs(applicationClassLoader);
+            assertThat(listenerContext.get(5, SECONDS)).isSameAs(applicationClassLoader);
+            batcher.close();
+        }
+
+        @Test
+        @DisplayName("Cancels the future of a transmission that timed out with that context class loader too")
+        void testTimeoutRunsWithTheContextClassLoaderGiven() throws Exception {
+            // given: a client reporting the context class loader its future is cancelled with
+            var applicationClassLoader = new ClassLoader() {
+            };
+            var cancellationContext = new CompletableFuture<ClassLoader>();
+            var unanswered = new CompletableFuture<TransmissionResult<String>>() {
+                @Override
+                public boolean cancel(boolean mayInterruptIfRunning) {
+                    cancellationContext.complete(Thread.currentThread().getContextClassLoader());
+                    return super.cancel(mayInterruptIfRunning);
+                }
+            };
+            Batcher<String> batcher = Batcher.<String>builder()
+                    .contextClassLoader(applicationClassLoader)
+                    .transmissionTimeout(Duration.ofMillis(50))
+                    .transport(elements -> unanswered)
+                    .build();
+
+            // when
+            batcher.add(List.of("a"));
+
+            // then
+            assertThat(cancellationContext.get(5, SECONDS)).isSameAs(applicationClassLoader);
+            batcher.close(Duration.ZERO);
+        }
+
+        @Test
         @DisplayName("Does not block the calling thread on a transport that completes its future asynchronously")
         void testDoesNotBlockOnAsynchronousTransport() throws Exception {
             // given: a transport whose future is completed later, from a separate thread, rather than before
