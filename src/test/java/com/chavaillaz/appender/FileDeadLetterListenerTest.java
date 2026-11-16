@@ -206,6 +206,49 @@ class FileDeadLetterListenerTest {
     }
 
     @Test
+    @DisplayName("Ends an incomplete line before appending to it on an interrupted thread too")
+    void testEndsAnIncompleteLineOnAnInterruptedThread(@TempDir Path tempDir) throws Exception {
+        // given: the file of the day ending in the middle of a line, as a crash during a write leaves it
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        Files.writeString(file, "{\"reason\":\"cut\"");
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+
+        // when: the next drop is reported by an interrupted thread, as a stop that is interrupted reports what
+        // it abandons from the thread stopping
+        Thread.currentThread().interrupt();
+        try {
+            listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason");
+        } finally {
+            // then: still flagged, and cleared for the next tests
+            assertThat(Thread.interrupted()).isTrue();
+        }
+
+        // and: the new line stands on a line of its own, rather than on the incomplete one, where no parser
+        // would read it
+        List<String> lines = Files.readAllLines(file, UTF_8);
+        assertThat(lines).as("Unexpected lines: " + lines).hasSize(2);
+        assertThat(lines.get(0)).isEqualTo("{\"reason\":\"cut\"");
+        assertThat(lines.get(1)).as("Unexpected line: " + lines.get(1)).startsWith("{\"reason\":\"reason\"");
+    }
+
+    @Test
+    @DisplayName("Starts an existing file left empty with its first line, without ending one that is not there")
+    void testAppendsToAnEmptyFileWithoutEndingALine(@TempDir Path tempDir) throws Exception {
+        // given: the file of the day created and left empty, by a write that failed before its first byte
+        var file = tempDir.resolve("dead-letters-2026-09-28.ndjson");
+        Files.createFile(file);
+        var listener = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"), CLOCK);
+
+        // when
+        listener.onDocumentsDropped(List.of(Map.of("id", 1)), "reason");
+
+        // then: no empty line first, which a parser reading one document per line stops at
+        List<String> lines = Files.readAllLines(file, UTF_8);
+        assertThat(lines).as("Unexpected lines: " + lines).hasSize(1);
+        assertThat(lines.get(0)).startsWith("{\"reason\":\"reason\"");
+    }
+
+    @Test
     @DisplayName("Keeps each line whole while another listener appends to the same file")
     void testLinesStayWholeAlongsideAnotherWriter(@TempDir Path tempDir) throws Exception {
         // given: two listeners on the same file, as two appenders or two applications on one host configure

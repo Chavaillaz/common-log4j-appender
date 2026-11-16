@@ -473,6 +473,8 @@ group holding them: a test added, renamed or removed changes this list too.
 - Appends across multiple calls instead of overwriting
 - Ends a line a write cut short left incomplete rather than appending to it
 - Appends on an interrupted thread, as an interrupted stop reports what it abandons
+- Ends an incomplete line before appending to it on an interrupted thread too
+- Starts an existing file left empty with its first line, without ending one that is not there
 - Keeps each line whole while another listener appends to the same file
 - Writes one line per document when multiple are dropped together
 - Escapes characters JSON requires escaping in string values

@@ -3,14 +3,12 @@ package com.chavaillaz.appender;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.StandardOpenOption.APPEND;
 import static java.nio.file.StandardOpenOption.CREATE;
-import static java.nio.file.StandardOpenOption.READ;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -237,21 +235,25 @@ public class FileDeadLetterListener implements LogDeliveryListener {
     /**
      * Whether the given file ends in the middle of a line, a previous write having been cut short, so that the
      * next line appended must first end it. Reads its last byte alone, both line separators ending with a
-     * line feed. A file that cannot be read, being write-only or read on an interrupted thread, is appended to
-     * as is: the check must never cost the write.
+     * line feed, and through a stream, which an interrupted thread reads where a channel refuses to: a stop
+     * that is interrupted reports what it abandons from the very thread interrupted. A file that cannot be
+     * read, being write-only for instance, is appended to as is: the check must never cost the write.
      *
      * @param file The file about to be appended to
      * @return {@code true} if it exists, can be read, and its last byte is not a line feed
      */
     private static boolean endsWithPartialLine(Path file) {
-        try (SeekableByteChannel channel = Files.newByteChannel(file, READ)) {
-            long size = channel.size();
+        try {
+            long size = Files.size(file);
             if (size == 0) {
                 return false;
             }
-            ByteBuffer last = ByteBuffer.allocate(1);
-            channel.position(size - 1).read(last);
-            return last.get(0) != '\n';
+            try (InputStream content = Files.newInputStream(file)) {
+                content.skipNBytes(size - 1);
+                int last = content.read();
+                // Nothing left to read in a file emptied meanwhile, which then has no line to end
+                return last != -1 && last != '\n';
+            }
         } catch (NoSuchFileException e) {
             return false;
         } catch (IOException e) {
