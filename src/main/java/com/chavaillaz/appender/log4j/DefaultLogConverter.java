@@ -4,7 +4,10 @@ import java.io.PrintWriter;
 import java.io.Serial;
 import java.io.Writer;
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -22,7 +25,8 @@ import com.chavaillaz.appender.LogConfiguration;
 /**
  * Default converter, writing the following fields:
  * <ul>
- *     <li><strong>datetime:</strong> ISO-8601 instant of the logging event</li>
+ *     <li><strong>datetime:</strong> ISO-8601 instant of the logging event in UTC, with its milliseconds, as
+ *     {@code 2026-09-28T10:15:30.000Z}</li>
  *     <li><strong>host</strong>, <strong>environment</strong> and <strong>application:</strong> Taken from the
  *     configuration</li>
  *     <li><strong>logger:</strong> Name of the logger, or {@link LogEvent#getLoggerFqcn()} without one</li>
@@ -46,6 +50,13 @@ public class DefaultLogConverter implements LogConverter {
      * into the appender they are about (see {@link com.chavaillaz.appender.internal.Batcher}).
      */
     private static final Logger log = StatusLogger.getLogger();
+
+    /**
+     * Writes the instant of an event with its milliseconds, three digits whatever their value: left to
+     * {@link Instant#toString()}, an event logged on a whole second has none, one in a thousand taking another
+     * shape than the others, which a parser expecting a fixed pattern rejects.
+     */
+    private static final DateTimeFormatter DATETIME = new DateTimeFormatterBuilder().appendInstant(3).toFormatter(Locale.ROOT);
 
     /**
      * Number of fields written by {@link #writeBasic(Map, LogEvent)}.
@@ -126,7 +137,7 @@ public class DefaultLogConverter implements LogConverter {
      * @param event    The logging event
      */
     protected void writeBasic(Map<String, Object> document, LogEvent event) {
-        document.put("datetime", Instant.ofEpochMilli(event.getInstant().getEpochMillisecond()).toString());
+        document.put("datetime", DATETIME.format(Instant.ofEpochMilli(event.getInstant().getEpochMillisecond())));
         document.put("host", readConfiguration("host", configuration::getHost));
         document.put("environment", readConfiguration("environment", configuration::getEnvironment));
         document.put("application", readConfiguration("application", configuration::getApplication));

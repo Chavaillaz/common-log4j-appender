@@ -234,7 +234,7 @@ fields:
 
 | Field         | Description                                                                          |
 |---------------|---------------------------------------------------------------------------------------|
-| `datetime`    | ISO-8601 timestamp of the logging event                                              |
+| `datetime`    | ISO-8601 instant of the logging event in UTC, always with its milliseconds (`2026-09-28T10:15:30.000Z`) |
 | `host`        | Taken from the configuration                                                         |
 | `environment` | Taken from the configuration                                                         |
 | `application` | Taken from the configuration                                                         |

@@ -132,6 +132,7 @@ group holding them: a test added, renamed or removed changes this list too.
 **Default converter**
 
 - Converts every field of a fully populated logging event
+- Writes the instant of an event with three digits of milliseconds, whatever their value
 - Does not include exception fields when the event carries no exception
 - Converts an event carrying no MDC context data at all, without a warning
 - Does not let an MDC entry override a reserved field

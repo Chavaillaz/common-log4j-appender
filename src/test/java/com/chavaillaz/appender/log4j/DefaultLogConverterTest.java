@@ -29,6 +29,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import com.chavaillaz.appender.LogConfiguration;
@@ -47,7 +48,7 @@ class DefaultLogConverterTest {
         var converter = new DefaultLogConverter(configuration);
         var mdc = new JdkMapAdapterStringMap();
         mdc.putValue("mdc-key", "mdc-value");
-        var epochMilli = Instant.now().toEpochMilli();
+        var epochMilli = Instant.parse("2026-09-28T10:15:30.123Z").toEpochMilli();
         var exception = new RuntimeException("my-exception");
         var event = Log4jLogEvent.newBuilder()
                 .setMessage(new SimpleMessage("Correct horse battery staple"))
@@ -63,7 +64,7 @@ class DefaultLogConverterTest {
         var document = converter.convert(event);
 
         // then
-        assertThat(document.get("datetime")).isEqualTo(Instant.ofEpochMilli(epochMilli).toString());
+        assertThat(document.get("datetime")).isEqualTo("2026-09-28T10:15:30.123Z");
         assertThat(document.get("host")).isEqualTo("my-host");
         assertThat(document.get("environment")).isEqualTo("pre-production");
         assertThat(document.get("application")).isEqualTo("my-application");
@@ -75,6 +76,29 @@ class DefaultLogConverterTest {
         assertThat(document.get("class")).isEqualTo("java.lang.RuntimeException");
         String stacktrace = document.get("stacktrace").toString();
         assertThat(stacktrace).contains("java.lang.RuntimeException: my-exception");
+    }
+
+    @ParameterizedTest(name = "{0} ms past the second")
+    @CsvSource({
+            "0, 2026-09-28T10:15:30.000Z",
+            "7, 2026-09-28T10:15:30.007Z",
+            "120, 2026-09-28T10:15:30.120Z",
+            "999, 2026-09-28T10:15:30.999Z"})
+    @DisplayName("Writes the instant of an event with three digits of milliseconds, whatever their value")
+    void testDatetimeAlwaysCarriesItsMilliseconds(long millis, String expected) {
+        // given: an event logged that many milliseconds past a second
+        var converter = new DefaultLogConverter(TestLogConfiguration.builder().build());
+        var event = Log4jLogEvent.newBuilder()
+                .setMessage(new SimpleMessage("message"))
+                .setTimeMillis(Instant.parse("2026-09-28T10:15:30Z").plusMillis(millis).toEpochMilli())
+                .build();
+
+        // when
+        var document = converter.convert(event);
+
+        // then: one shape for every event, the whole second and the trailing zero included, which a parser
+        // expecting a fixed pattern would otherwise reject once in a while
+        assertThat(document.get("datetime")).isEqualTo(expected);
     }
 
     @Nested
