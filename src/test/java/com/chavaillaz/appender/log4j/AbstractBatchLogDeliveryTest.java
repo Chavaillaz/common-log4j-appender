@@ -3,6 +3,7 @@ package com.chavaillaz.appender.log4j;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -56,6 +57,29 @@ class AbstractBatchLogDeliveryTest {
             }
             Thread.sleep(5);
         }
+    }
+
+    @Nested
+    @DisplayName("When built")
+    class Construction {
+
+        @Test
+        @DisplayName("Cannot be built without a configuration, or with one giving no delivery options, naming what is missing")
+        void testRequiresAConfigurationAndItsDeliveryOptions() {
+            // given: a configuration answering null for its delivery options, as one built without them does
+            var withoutOptions = new ChangingOptionsConfiguration(null);
+
+            // then
+            assertThatThrownBy(() -> new TestLogDelivery(null))
+                    .isInstanceOf(NullPointerException.class).hasMessage("configuration must not be null");
+            assertThatThrownBy(() -> new AbstractBatchLogDelivery<>(withoutOptions) {
+                @Override
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                    return completedFuture(TransmissionResult.success());
+                }
+            }).isInstanceOf(NullPointerException.class).hasMessage("configuration.getDeliveryOptions() must not be null");
+        }
+
     }
 
     @Nested

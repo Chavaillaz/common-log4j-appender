@@ -2,6 +2,7 @@ package com.chavaillaz.appender;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
 
@@ -39,9 +40,13 @@ public interface LogDeliveryListener {
      *
      * @param listeners The listeners to notify, in order
      * @return A listener notifying all of them, {@link #NOOP} for none, or the listener itself for one
-     * @throws NullPointerException If one of the listeners is {@code null}
+     * @throws NullPointerException If the listeners, or one of them, are {@code null}
      */
     static LogDeliveryListener compose(LogDeliveryListener... listeners) {
+        Objects.requireNonNull(listeners, "listeners must not be null");
+        for (LogDeliveryListener listener : listeners) {
+            Objects.requireNonNull(listener, "listeners must not contain null");
+        }
         List<LogDeliveryListener> all = List.of(listeners);
         return switch (all.size()) {
             case 0 -> NOOP;

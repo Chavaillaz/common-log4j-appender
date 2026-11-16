@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 import org.apache.logging.log4j.Logger;
@@ -72,6 +73,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * Creates a delivery sending documents by batches.
      *
      * @param configuration The configuration to use
+     * @throws NullPointerException If the configuration or its delivery options are {@code null}
      */
     protected AbstractBatchLogDelivery(C configuration) {
         this(configuration, LogDeliveryListener.NOOP);
@@ -83,10 +85,12 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * @param configuration The configuration to use
      * @param listener      The listener to notify of the outcome of every transmission attempt, or
      *                      {@code null} to not notify any listener
+     * @throws NullPointerException If the configuration or its delivery options are {@code null}
      */
     protected AbstractBatchLogDelivery(C configuration, @Nullable LogDeliveryListener listener) {
-        this.configuration = configuration;
-        DeliveryOptions options = configuration.getDeliveryOptions();
+        this.configuration = Objects.requireNonNull(configuration, "configuration must not be null");
+        DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),
+                "configuration.getDeliveryOptions() must not be null");
         this.initialCloseTimeout = options.closeTimeout();
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
         this.batcher = Batcher.<Map<String, Object>>builder()

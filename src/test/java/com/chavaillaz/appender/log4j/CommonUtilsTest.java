@@ -8,6 +8,7 @@ import static com.chavaillaz.appender.log4j.CommonUtils.lookUpOnce;
 import static com.chavaillaz.appender.log4j.CommonUtils.start;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assumptions.assumeThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -47,6 +48,14 @@ class CommonUtilsTest {
 
         // then
         assertThat(value).isEqualTo(defaultValue);
+    }
+
+    @Test
+    @DisplayName("Refuses a missing key, naming the argument")
+    void testProperty_MissingKey() {
+        // when / then
+        assertThatThrownBy(() -> getProperty(null, "defaultValue"))
+                .isInstanceOf(NullPointerException.class).hasMessage("key must not be null");
     }
 
     @Test

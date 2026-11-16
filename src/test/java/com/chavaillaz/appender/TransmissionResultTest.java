@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -25,6 +26,16 @@ class TransmissionResultTest {
         // then: what the engine retries is what was rejected, and nothing can change it any longer
         assertThat(result.rejected()).containsExactly("first", "second");
         assertThatThrownBy(() -> result.rejected().add("third")).isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    @DisplayName("Refuses a partial failure without its rejected elements, or with a null one, naming the argument")
+    void testPartialFailureNamesWhatIsMissing() {
+        // then
+        assertThatThrownBy(() -> TransmissionResult.partialFailure(null, null))
+                .isInstanceOf(NullPointerException.class).hasMessage("rejected must not be null");
+        assertThatThrownBy(() -> TransmissionResult.partialFailure(Arrays.asList("first", null), null))
+                .isInstanceOf(NullPointerException.class).hasMessage("rejected must not contain null");
     }
 
 }

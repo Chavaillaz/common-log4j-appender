@@ -256,11 +256,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param name          The appender name
      * @param filter        The filter to associate with the appender, or {@code null} for none
      * @param configuration The configuration of the appender and of its delivery
+     * @throws NullPointerException If the name, the configuration or its delivery options are {@code null}
      */
     protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration) {
         super(name, filter, null, true, Property.EMPTY_ARRAY);
-        this.logConfiguration = configuration;
-        DeliveryOptions options = configuration.getDeliveryOptions();
+        this.logConfiguration = Objects.requireNonNull(configuration, "configuration must not be null");
+        DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),
+                "configuration.getDeliveryOptions() must not be null");
         this.initialCloseTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
         this.defaultConverter = new DefaultLogConverter(configuration);

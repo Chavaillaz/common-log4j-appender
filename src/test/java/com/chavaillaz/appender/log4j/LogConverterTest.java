@@ -88,6 +88,16 @@ class LogConverterTest {
                 .isInstanceOf(ClassNotFoundException.class);
     }
 
+    @Test
+    @DisplayName("Refuses a missing class name or configuration, naming the argument")
+    void testNamesAMissingArgument() {
+        // When / Then
+        assertThatThrownBy(() -> LogConverter.newInstance(null, CONFIGURATION))
+                .isInstanceOf(NullPointerException.class).hasMessage("className must not be null");
+        assertThatThrownBy(() -> LogConverter.newInstance(DefaultLogConverter.class.getName(), null))
+                .isInstanceOf(NullPointerException.class).hasMessage("configuration must not be null");
+    }
+
     public static class ApplicationConverter implements LogConverter {
 
         private final LogConfiguration configuration;

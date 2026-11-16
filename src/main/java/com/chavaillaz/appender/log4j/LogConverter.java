@@ -4,6 +4,7 @@ import java.lang.reflect.Constructor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.util.LoaderUtil;
@@ -50,8 +51,11 @@ public interface LogConverter {
      *                                      configuration, has several of which none is more specific than the
      *                                      others, or its constructor fails
      * @throws ClassCastException           If the class does not implement this interface
+     * @throws NullPointerException         If the class name or the configuration is {@code null}
      */
     static LogConverter newInstance(String className, LogConfiguration configuration) throws ReflectiveOperationException {
+        Objects.requireNonNull(className, "className must not be null");
+        Objects.requireNonNull(configuration, "configuration must not be null");
         Class<? extends LogConverter> type = LoaderUtil.loadClass(className).asSubclass(LogConverter.class);
         List<Class<?>> parameterTypes = new ArrayList<>();
         for (Constructor<?> candidate : type.getConstructors()) {

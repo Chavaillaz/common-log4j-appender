@@ -6,6 +6,7 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.atLeastOnce;
@@ -210,6 +211,29 @@ class AbstractLogDeliveryAppenderTest {
                 errors.add(t != null ? t : new RuntimeException(msg));
             }
         };
+    }
+
+    @Nested
+    @DisplayName("When built")
+    class Construction {
+
+        @Test
+        @DisplayName("Cannot be built without a configuration, or with one giving no delivery options, naming what is missing")
+        void testRequiresAConfigurationAndItsDeliveryOptions() {
+            // given: a configuration answering null for its delivery options, as one built without them does
+            LogConfiguration withoutOptions = mock(LogConfiguration.class);
+
+            // then: refused where the appender is built, with what is missing, rather than once it starts
+            assertThatThrownBy(() -> new LogDeliveryAppender("appender-name", null, null))
+                    .isInstanceOf(NullPointerException.class).hasMessage("configuration must not be null");
+            assertThatThrownBy(() -> new AbstractLogDeliveryAppender<>("appender-name", null, withoutOptions) {
+                @Override
+                protected LogDelivery createLogDeliveryHandler() {
+                    return mock(LogDelivery.class);
+                }
+            }).isInstanceOf(NullPointerException.class).hasMessage("configuration.getDeliveryOptions() must not be null");
+        }
+
     }
 
     @Nested

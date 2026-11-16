@@ -19,6 +19,10 @@ group holding them: a test added, renamed or removed changes this list too.
 
 `AbstractLogDeliveryAppenderTest`
 
+**Construction**
+
+- Cannot be built without a configuration, or with one giving no delivery options, naming what is missing
+
 **Snapshot of an event on the logging thread**
 
 - Formats a message with its arguments as they were when logged, not when processed
@@ -172,10 +176,15 @@ group holding them: a test added, renamed or removed changes this list too.
 - Refuses a converter without a constructor taking the configuration
 - Reports the failure of the constructor of the converter
 - Refuses a class that is not a converter, or cannot be found
+- Refuses a missing class name or configuration, naming the argument
 
 #### Delivery
 
 `AbstractBatchLogDeliveryTest`
+
+**Construction**
+
+- Cannot be built without a configuration, or with one giving no delivery options, naming what is missing
 
 **Below the flush threshold**
 
@@ -463,7 +472,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Throws an Error of a listener as it is, once the next ones were notified
 - Wraps a checked exception a listener sneaks past the compiler, once the next ones were notified
 - Composes no listener into the no-op one, and a single listener into itself
-- Rejects a null listener when composing rather than when notifying
+- Rejects a null listener when composing rather than when notifying, naming the argument
 
 **Dead-letter file**
 
@@ -551,12 +560,14 @@ group holding them: a test added, renamed or removed changes this list too.
 **Transmission results**
 
 - Keeps a partial failure as it was returned, however it was built
+- Refuses a partial failure without its rejected elements, or with a null one, naming the argument
 
 #### Host name and properties
 
 `CommonUtilsTest`
 
 - Falls back to the given default value when the key is not found
+- Refuses a missing key, naming the argument
 - Returns the system property value when the key is found
 - Returns the environment variable of that name before the system property
 - Returns the canonical host name of the local machine

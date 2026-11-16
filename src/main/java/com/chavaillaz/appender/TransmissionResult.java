@@ -1,6 +1,7 @@
 package com.chavaillaz.appender;
 
 import java.util.List;
+import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
 
@@ -92,6 +93,10 @@ public sealed interface TransmissionResult<T> {
          * @throws NullPointerException If the list or one of its elements is {@code null}
          */
         public PartialFailure {
+            Objects.requireNonNull(rejected, "rejected must not be null");
+            for (T element : rejected) {
+                Objects.requireNonNull(element, "rejected must not contain null");
+            }
             rejected = List.copyOf(rejected);
         }
 

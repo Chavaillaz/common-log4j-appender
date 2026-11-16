@@ -101,11 +101,14 @@ class LogDeliveryListenerTest {
     }
 
     @Test
-    @DisplayName("Rejects a null listener when composing rather than when notifying")
+    @DisplayName("Rejects a null listener when composing rather than when notifying, naming the argument")
     void testRejectsNullListeners() {
         var listener = new Recording("only", new CopyOnWriteArrayList<>());
 
-        assertThatThrownBy(() -> LogDeliveryListener.compose(listener, null)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> LogDeliveryListener.compose(listener, null))
+                .isInstanceOf(NullPointerException.class).hasMessage("listeners must not contain null");
+        assertThatThrownBy(() -> LogDeliveryListener.compose((LogDeliveryListener[]) null))
+                .isInstanceOf(NullPointerException.class).hasMessage("listeners must not be null");
     }
 
     /**
