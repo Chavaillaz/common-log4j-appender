@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What an application declares to send its logs through the appender. The port is the one the test listens on -->
+<Configuration status="WARN">
+    <Appenders>
+        <ExampleAppender name="Collector"
+                         CollectorHost="localhost"
+                         CollectorPort="${sys:collector.port}"
+                         Application="example-application"
+                         Environment="test"
+                         FlushThreshold="10"/>
+    </Appenders>
+    <Loggers>
+        <Root level="info">
+            <AppenderRef ref="Collector"/>
+        </Root>
+    </Loggers>
+</Configuration>

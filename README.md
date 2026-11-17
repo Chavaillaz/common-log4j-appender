@@ -27,14 +27,18 @@ references to look at alongside this documentation.
 
 Requires **Java 21 or later** (virtual threads are used internally to transmit batches).
 
-The dependency is available in maven central (see badge for version):
+The dependency is available in Maven Central:
 
 ```xml
 <dependency>
     <groupId>com.chavaillaz</groupId>
     <artifactId>common-log4j-appender</artifactId>
+    <version>2.0.0</version>
 </dependency>
 ```
+
+This page documents version 2. The 1.x versions have another API, which the
+[README of the last of them](https://github.com/chavaillaz/common-log4j-appender/blob/1.1.4/README.md) documents.
 
 You usually don't depend on it directly as an application: instead, use (or create) an appender built on
 top of it, such as the two implementations linked above.
@@ -100,6 +104,10 @@ context class loader, which they would keep reachable until the appender stops.
 
 ## Creating your own appender
 
+The steps below are those of the [example appender](src/it/example-appender) of this repository, which sends
+its documents to a collector listening on a TCP port: a complete project to start from, with its build, the
+Log4j2 configuration of an application using it, and a test.
+
 ### 1. Configuration
 
 Implement `LogConfiguration` to carry whatever settings your delivery mechanism needs, in addition to the
@@ -111,18 +119,21 @@ entirely until you have a reason to tune something.
 
 The interface is read-only: build an immutable instance once, since background threads read it repeatedly
 without synchronization. Log4j2's `@PluginBuilderFactory` pattern gives that shape naturally, its `Builder`
-holding the mutable attributes and its `build()` returning the configuration:
+holding the mutable attributes and its `build()` returning the configuration, a record for instance (the
+implementations linked above generate theirs with Lombok, through `@Value` and `@Builder`):
 
 ```java
-@Value
-@Builder
-public class MyConfiguration implements LogConfiguration {
-    String application;
-    String host;
-    String environment;
-    @Builder.Default // Rather than null when the builder leaves it unset
-    DeliveryOptions deliveryOptions = DeliveryOptions.defaults();
-    String url; // Anything else specific to your delivery mechanism
+public record ExampleConfiguration(String application, String host, String environment,
+                                   DeliveryOptions deliveryOptions, String collectorHost, int collectorPort)
+        implements LogConfiguration {
+
+    @Override
+    public String getApplication() {
+        return application;
+    }
+
+    // ... and the same for getHost(), getEnvironment() and getDeliveryOptions()
+
 }
 ```
 
@@ -132,7 +143,7 @@ actually exposes:
 ```java
 DeliveryOptions options = DeliveryOptions.builder()
         .flushThreshold(flushThreshold)
-        .flushInterval(flushInterval)
+        .flushInterval(Duration.ofMillis(flushInterval))
         .build();
 ```
 
@@ -153,22 +164,33 @@ asynchronous one later, from a thread of its own. The outcome is then handled on
 that neither the listener nor a retry holds up the I/O thread of the client:
 
 ```java
-public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
+public class ExampleLogDelivery extends AbstractBatchLogDelivery<ExampleConfiguration> {
 
-    public MyLogDelivery(MyConfiguration configuration) {
+    public ExampleLogDelivery(ExampleConfiguration configuration) {
         super(configuration);
     }
 
     @Override
     protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
-        try {
-            myClient.send(documents);
-            return CompletableFuture.completedFuture(TransmissionResult.success());
-        } catch (Exception e) {
-            // Logged with its cause and retried by the library
-            return CompletableFuture.completedFuture(TransmissionResult.failure(e));
+        ExampleConfiguration configuration = getConfiguration();
+        // Called on a virtual thread of its own, which a blocking client may hold for as long as the request takes
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(configuration.collectorHost(), configuration.collectorPort()),
+                    CONNECT_TIMEOUT_MILLIS);
+            Writer writer = new OutputStreamWriter(socket.getOutputStream(), UTF_8);
+            for (Map<String, Object> document : documents) {
+                writer.write(toLine(document));
+            }
+            writer.flush();
+            return completedFuture(TransmissionResult.success());
+        } catch (IOException e) {
+            // Logged with its cause by the library, which retries the documents
+            return completedFuture(TransmissionResult.failure(e));
         }
     }
+
+    // ... toLine(document) writing a document the way the collector expects it
+
 }
 ```
 
@@ -202,32 +224,130 @@ first so the current batch is flushed before they're released.
 
 ### 3. Appender
 
-Extend `AbstractLogDeliveryAppender` to wire everything together as a Log4j2 plugin:
+Extend `AbstractLogDeliveryAppender` to wire everything together as a Log4j2 plugin, with the builder Log4j2
+fills from the attributes of the element configuring the appender:
 
 ```java
-@Plugin(name = "MyAppender", category = Core.CATEGORY_NAME, elementType = Appender.ELEMENT_TYPE)
-public class MyAppender extends AbstractLogDeliveryAppender<MyConfiguration> {
+@Plugin(name = "ExampleAppender", category = Core.CATEGORY_NAME, elementType = Appender.ELEMENT_TYPE)
+public class ExampleAppender extends AbstractLogDeliveryAppender<ExampleConfiguration> {
 
-    protected MyAppender(String name, Filter filter, MyConfiguration configuration) {
+    protected ExampleAppender(String name, Filter filter, ExampleConfiguration configuration) {
         super(name, filter, configuration);
+    }
+
+    @PluginBuilderFactory
+    public static Builder newBuilder() {
+        return new Builder();
     }
 
     @Override
     protected LogDelivery createLogDeliveryHandler() {
-        return new MyLogDelivery(getLogConfiguration());
+        return new ExampleLogDelivery(getLogConfiguration());
     }
 
-    // A @PluginBuilderFactory Builder is also needed to expose the configuration as XML/properties/...
-    // attributes; see the linked implementations for a complete example.
+    public static class Builder implements org.apache.logging.log4j.core.util.Builder<ExampleAppender> {
+
+        @PluginBuilderAttribute
+        @Required(message = "No appender name provided")
+        private String name;
+
+        @PluginElement("Filter")
+        private Filter filter;
+
+        @PluginBuilderAttribute("CollectorHost")
+        @Required(message = "No collector host provided")
+        private String collectorHost;
+
+        @PluginBuilderAttribute("FlushThreshold")
+        private int flushThreshold = DeliveryOptions.defaults().flushThreshold();
+
+        // ... CollectorPort, Application, Environment and FlushInterval, declared the same way
+
+        @Override
+        public ExampleAppender build() {
+            DeliveryOptions options = DeliveryOptions.builder()
+                    .flushThreshold(flushThreshold)
+                    .flushInterval(Duration.ofMillis(flushInterval))
+                    .build();
+            ExampleConfiguration configuration = new ExampleConfiguration(application,
+                    CommonUtils.getInitialHostname(), environment, options, collectorHost, collectorPort);
+            return new ExampleAppender(name, filter, configuration);
+        }
+
+        public Builder setCollectorHost(String collectorHost) {
+            this.collectorHost = collectorHost;
+            return this;
+        }
+
+        // ... and a setter for each of the other attributes
+
+    }
+
 }
 ```
+
+Each attribute has a public setter returning the builder: the annotation processor of recent Log4j2 versions
+fails the compilation of a plugin without one. An exception thrown by `build()`, as `DeliveryOptions` does for
+a value out of its range, is reported by Log4j2 on its status logger, the appender being left out of the
+configuration.
 
 Each event is then converted by a `DefaultLogConverter` on the background thread, and the document sent to
 your delivery. Override `getLogConverter()` to convert with another one (see below), or
 `createLogDeliveryTask(LogEvent)` to take over the whole task. The appender has no layout, the document being
 what is sent, so its plugin builder declares no `Layout` element.
 
-### 4. Conversion (optional)
+### 4. Build and configuration
+
+Log4j2 finds a plugin through the `Log4j2Plugins.dat` file of its JAR, which its annotation processor writes
+when compiling the plugin: without that file, the element naming the appender in a configuration is unknown.
+Name the processor in the build, the compiler finding none by itself in a project with a module descriptor,
+nor, from Java 23 on, in one without:
+
+```xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <configuration>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-core</artifactId>
+                <version>${log4j.version}</version>
+            </path>
+        </annotationProcessorPaths>
+    </configuration>
+</plugin>
+```
+
+A project generating code with Lombok names it there too, a path named there replacing the lookup of the
+compiler rather than adding to it. On the module path, the project also declares the module shown under
+[Installation](#installation).
+
+An application then configures the appender by the name of its plugin, with the attributes of its builder:
+
+```xml
+<Configuration>
+    <Appenders>
+        <ExampleAppender name="Collector"
+                         CollectorHost="logs.example.com"
+                         CollectorPort="5000"
+                         Application="shop"
+                         Environment="production"
+                         FlushThreshold="100"/>
+    </Appenders>
+    <Loggers>
+        <Root level="info">
+            <AppenderRef ref="Collector"/>
+        </Root>
+    </Loggers>
+</Configuration>
+```
+
+The [test of the example](src/it/example-appender/src/test/java/com/example/appender/ExampleAppenderTest.java)
+logs through such a configuration and checks what a collector of its own receives: a starting point for the
+test of your appender.
+
+### 5. Conversion (optional)
 
 `DefaultLogConverter` already produces a sensible document for most use cases, with the following
 fields:
@@ -272,9 +392,9 @@ To monitor the health of the delivery pipeline (throughput, latency, failures, d
 `setListener(...)`:
 
 ```java
-public class MyLogDelivery extends AbstractBatchLogDelivery<MyConfiguration> {
+public class ExampleLogDelivery extends AbstractBatchLogDelivery<ExampleConfiguration> {
 
-    public MyLogDelivery(MyConfiguration configuration) {
+    public ExampleLogDelivery(ExampleConfiguration configuration) {
         super(configuration, new LogDeliveryListener() {
             @Override
             public void onTransmissionSucceeded(int documentCount, long durationMillis) {
@@ -480,6 +600,7 @@ to split it further.
 
 ## Example implementations
 
+- The [example appender](src/it/example-appender) of this repository, minimal and complete
 - [Elasticsearch Appender](https://github.com/chavaillaz/elasticsearch-log4j-appender)
 - [OpenSearch Appender](https://github.com/chavaillaz/opensearch-log4j-appender)
 
