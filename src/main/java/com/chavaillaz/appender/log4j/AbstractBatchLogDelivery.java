@@ -45,6 +45,8 @@ import com.chavaillaz.appender.internal.BatcherListener;
  *
  * @param <C> The configuration type
  */
+// close() declares the exception of LogDelivery, for a subclass to fail with the one of the client it closes
+@SuppressWarnings("try")
 public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> implements LogDelivery {
 
     /**
@@ -87,6 +89,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      *                      {@code null} to not notify any listener
      * @throws NullPointerException If the configuration or its delivery options are {@code null}
      */
+    // The engine only keeps the references to this delivery, calling them once it is given documents, which a
+    // delivery under construction is not
+    @SuppressWarnings("this-escape")
     protected AbstractBatchLogDelivery(C configuration, @Nullable LogDeliveryListener listener) {
         this.configuration = Objects.requireNonNull(configuration, "configuration must not be null");
         DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),

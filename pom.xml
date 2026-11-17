@@ -41,6 +41,9 @@
              built. The release script sets it along with the version, through versions:set -->
         <project.build.outputTimestamp>2026-09-28T00:00:00Z</project.build.outputTimestamp>
         <lombok.version>1.18.48</lombok.version>
+        <!-- A warning of the compiler fails the build on the JDK the library is released with, a later one only
+             showing those of the checks it adds (see the profile "later-jdk") -->
+        <maven.compiler.failOnWarning>true</maven.compiler.failOnWarning>
         <!-- Set by the JaCoCo agent in the coverage profile, empty otherwise (see maven-surefire-plugin) -->
         <argLine/>
     </properties>
@@ -169,6 +172,7 @@
                 <version>3.16.0</version>
                 <configuration>
                     <release>21</release>
+                    <showWarnings>true</showWarnings>
                     <annotationProcessorPaths>
                         <path>
                             <groupId>org.projectlombok</groupId>
@@ -177,6 +181,33 @@
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <!-- Every check of the compiler but the two the code has no say in: "processing",
+                                 the library having no annotation for the processor of the tests to claim, and
+                                 "classfile", about the classes of the dependencies, which carry annotations of
+                                 libraries they do not bring along, as those of Log4j2 2.24 do -->
+                            <compilerArgs>
+                                <arg>-Xlint:all,-processing,-classfile</arg>
+                            </compilerArgs>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>default-testCompile</id>
+                        <configuration>
+                            <!-- The same, but for what the tests have no answer to: "try", every delivery of
+                                 theirs inheriting a close() free to throw any exception; "serial", their events,
+                                 queues and exceptions never being serialized; "exports" and
+                                 "missing-explicit-ctor", about what a module shows its clients, the tests being
+                                 compiled into it without being part of it -->
+                            <compilerArgs>
+                                <arg>-Xlint:all,-processing,-classfile,-try,-serial,-exports,-missing-explicit-ctor</arg>
+                            </compilerArgs>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
             <plugin>
@@ -288,6 +319,17 @@
     </build>
 
     <profiles>
+        <profile>
+            <!-- A JDK later than the one the library is released with adds checks of its own to those of the
+                 compiler: their warnings are shown, without failing a build that nothing changed in -->
+            <id>later-jdk</id>
+            <activation>
+                <jdk>[22,)</jdk>
+            </activation>
+            <properties>
+                <maven.compiler.failOnWarning>false</maven.compiler.failOnWarning>
+            </properties>
+        </profile>
         <profile>
             <id>release</id>
             <build>

@@ -8,6 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
@@ -914,7 +915,7 @@ class AbstractLogDeliveryAppenderTest {
                     throw new IllegalStateException("Simulated delivery failure");
                 }
                 return null;
-            }).when(handler).send(any(Map.class));
+            }).when(handler).send(anyMap());
             var appender = new AbstractLogDeliveryAppender<>("appender-name", null, configuration) {
                 @Override
                 protected LogDelivery createLogDeliveryHandler() {

@@ -9,6 +9,9 @@ import org.jspecify.annotations.Nullable;
 /**
  * Transmits the documents converted from logging events to an external system.
  */
+// close() stays the one of AutoCloseable, free to fail with the exception of the client an implementation
+// closes: the compiler reports it for every type able to throw an InterruptedException from there
+@SuppressWarnings("try")
 public interface LogDelivery extends AutoCloseable {
 
     /**

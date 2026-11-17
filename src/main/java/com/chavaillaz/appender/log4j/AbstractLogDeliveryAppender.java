@@ -258,6 +258,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param configuration The configuration of the appender and of its delivery
      * @throws NullPointerException If the name, the configuration or its delivery options are {@code null}
      */
+    // The reporter only keeps the reference to this appender, calling it once an event is discarded, which an
+    // appender under construction receives none of
+    @SuppressWarnings("this-escape")
     protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration) {
         super(name, filter, null, true, Property.EMPTY_ARRAY);
         this.logConfiguration = Objects.requireNonNull(configuration, "configuration must not be null");
