@@ -15,7 +15,8 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>21</maven.compiler.release>
-        <common-log4j-appender.version>2.0-SNAPSHOT</common-log4j-appender.version>
+        <!-- Set by the build of the library, which runs this project against the JAR it has just packaged -->
+        <common-log4j-appender.version>@project.version@</common-log4j-appender.version>
         <log4j.version>2.26.1</log4j.version>
     </properties>
 

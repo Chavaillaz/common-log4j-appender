@@ -336,6 +336,35 @@
                 <artifactId>maven-assembly-plugin</artifactId>
                 <version>3.8.0</version>
             </plugin>
+
+            <plugin>
+                <!-- Builds the example appender of src/it against the JAR just packaged, and runs it, as a module
+                     then on the class path: what an appender depending on the library goes through, where the
+                     tests only see the classes the JAR is made of -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-invoker-plugin</artifactId>
+                <version>3.10.1</version>
+                <configuration>
+                    <cloneProjectsTo>${project.build.directory}/it</cloneProjectsTo>
+                    <cloneClean>true</cloneClean>
+                    <!-- A local repository of its own, the JAR being installed there rather than in the one of
+                         the user, where a build would otherwise replace the version other projects depend on -->
+                    <localRepositoryPath>${project.build.directory}/it-repository</localRepositoryPath>
+                    <settingsFile>src/it/settings.xml</settingsFile>
+                    <streamLogsOnFailures>true</streamLogsOnFailures>
+                    <skipInstallation>${skipTests}</skipInstallation>
+                    <skipInvocation>${skipTests}</skipInvocation>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>example-appender</id>
+                        <goals>
+                            <goal>install</goal>
+                            <goal>run</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 

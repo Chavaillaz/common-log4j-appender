@@ -599,6 +599,15 @@ group holding them: a test added, renamed or removed changes this list too.
 - Discovers the appender by its plugin name, binds attributes to its builder, and delivers a logged message through it
 - Delivers every message logged right before the context stops with no shutdownTimeout set
 
+#### As a packaged library
+
+`ExampleAppenderTest`, the test of the example appender (`src/it/example-appender`), which the build compiles
+against the packaged JAR and runs as a module, then on the class path
+
+**Example appender**
+
+- Delivers every event an application logs to the collector its configuration names
+
 ### Ruled out
 
 The scenarios that cannot happen, and why.

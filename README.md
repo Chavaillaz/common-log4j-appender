@@ -106,7 +106,9 @@ context class loader, which they would keep reachable until the appender stops.
 
 The steps below are those of the [example appender](src/it/example-appender) of this repository, which sends
 its documents to a collector listening on a TCP port: a complete project to start from, with its build, the
-Log4j2 configuration of an application using it, and a test.
+Log4j2 configuration of an application using it, and a test. The build of this library compiles it against
+the JAR it has just packaged and runs that test, as a module then on the class path, so that what is shown
+here works as it stands.
 
 ### 1. Configuration
 
@@ -627,6 +629,11 @@ A change is ready once that passes, which takes:
   left unused.
 - **No compiler warning.** Every check of the compiler is on (`-Xlint:all`), and a warning fails the build on
   JDK 21. A later JDK only shows the warnings of the checks it adds.
+- **The example appender working.** Once the JAR is packaged, the build compiles the
+  [example appender](src/it/example-appender) against it and runs its test, as a module then on the class path:
+  what an appender built on the library goes through, where the tests only see the classes the JAR is made of.
+  A change to what this page shows of the API changes the example too. Its output is in
+  `target/it/example-appender/build.log`, and `-DskipTests` skips it along with the tests.
 
 Every pull request, and every push to `master`, is built that way on Java 21 and on the latest long-term
 support version, with the coverage of the tests measured: `mvn -Pcoverage verify` writes the same report to
