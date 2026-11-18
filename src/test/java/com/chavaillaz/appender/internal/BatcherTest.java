@@ -2512,15 +2512,16 @@ class BatcherTest {
             adder.setDaemon(true);
             adder.start();
 
-            // then: notifications stop being handed off well before the 500 adds, rather than one per add
+            // then: one notification runs on the thread of the engine, four wait for it, and the next one blocks
+            // the caller, rather than one more running per add
             long deadlineNanos = System.nanoTime() + SECONDS.toNanos(2);
-            while (inFlight.get() < 5 && System.nanoTime() < deadlineNanos) {
+            while (inFlight.get() < 2 && System.nanoTime() < deadlineNanos) {
                 Thread.sleep(5);
             }
             Thread.sleep(200);
             assertThat(peak.get())
-                    .as("At most four notifications should be in flight, plus the one blocking the caller, but peaked at " + peak.get())
-                    .isLessThanOrEqualTo(5);
+                    .as("One notification should be in flight, plus the one blocking the caller, but peaked at " + peak.get())
+                    .isEqualTo(2);
 
             release.countDown();
             adder.join(SECONDS.toMillis(5));

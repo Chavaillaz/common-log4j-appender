@@ -1,11 +1,7 @@
 package com.chavaillaz.appender.internal;
 
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
-
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.LongAdder;
 
 import org.apache.logging.log4j.Logger;
@@ -17,9 +13,9 @@ import org.jspecify.annotations.Nullable;
  * letting it escape into the engine, where a throwing {@code onFailed} would skip the handling of the failure
  * following it. Counts the elements reported as dropped along the way, whichever thread reports them.
  * <p>
- * Dropped elements are reported on the calling thread, or on a virtual thread of the engine when the caller must
- * not wait for a slow listener, at most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS} at once: past that, the
- * notification runs on the calling thread, so that a slow listener cannot pile up notifications, and the
+ * Dropped elements are reported on the calling thread, or by a {@link DropReporter} when the caller must not wait
+ * for a slow listener, at most {@link #MAX_WAITING_DROP_NOTIFICATIONS} notifications waiting for it: past that,
+ * the notification runs on the calling thread, so that a slow listener cannot pile up notifications, and the
  * elements they hold, under the very overload causing them.
  *
  * @param <T> The type of element transmitted
@@ -33,18 +29,12 @@ final class ListenerNotifier<T> {
     private static final Logger log = StatusLogger.getLogger();
 
     /**
-     * How many notifications of {@link #droppedInBackground(List, String)} may be in flight at once, the next
+     * How many notifications of {@link #droppedInBackground(List, String)} may wait for the listener, the next
      * ones running on the calling thread, so that a slow listener cannot pile them up without bound.
      */
-    private static final int MAX_CONCURRENT_DROP_NOTIFICATIONS = 4;
+    private static final int MAX_WAITING_DROP_NOTIFICATIONS = 4;
 
     private final BatcherListener<T> listener;
-
-    /**
-     * The executor of the engine, running its transmissions as well as the notifications made in the
-     * background, and shut down by its close.
-     */
-    private final ExecutorService executor;
 
     /**
      * The singular noun describing one element, used only to phrase log messages.
@@ -52,12 +42,10 @@ final class ListenerNotifier<T> {
     private final String elementNoun;
 
     /**
-     * Bounds the drop notifications handed to {@link #executor} at once. Separate from the transmission permits
-     * of the engine, so that a notification never takes the slot of a transmission, nor makes
-     * {@link Batcher#awaitPendingTransmissions()} wait for a listener: only {@link Batcher#close(java.time.Duration)}
-     * waits for them, through {@link #awaitDropNotifications(long)}.
+     * Notifies the listener of the drops the caller must not wait for, on a thread of its own, which only
+     * {@link Batcher#close(java.time.Duration)} waits for, through {@link #awaitDropNotifications(long)}.
      */
-    private final Semaphore dropNotificationPermits = new Semaphore(MAX_CONCURRENT_DROP_NOTIFICATIONS);
+    private final DropReporter<T> backgroundDrops;
 
     /**
      * Elements reported as dropped, whatever the reason, for {@link Batcher#metrics()}.
@@ -67,14 +55,14 @@ final class ListenerNotifier<T> {
     /**
      * Creates a notifier of the given listener.
      *
-     * @param listener    The listener to notify
-     * @param executor    The executor of the engine, running the notifications made in the background
-     * @param elementNoun The singular noun describing one element, used only to phrase log messages
+     * @param listener      The listener to notify
+     * @param threadFactory The factory of the thread notifying it in the background
+     * @param elementNoun   The singular noun describing one element, used only to phrase log messages
      */
-    ListenerNotifier(BatcherListener<T> listener, ExecutorService executor, String elementNoun) {
+    ListenerNotifier(BatcherListener<T> listener, ThreadFactory threadFactory, String elementNoun) {
         this.listener = listener;
-        this.executor = executor;
         this.elementNoun = elementNoun;
+        this.backgroundDrops = new DropReporter<>(this::notifyDropped, MAX_WAITING_DROP_NOTIFICATIONS, threadFactory);
     }
 
     /**
@@ -105,69 +93,36 @@ final class ListenerNotifier<T> {
      */
     void dropped(List<T> elements, String reason) {
         droppedElements.add(elements.size());
-        notifySafely(() -> listener.onDropped(elements, reason));
+        notifyDropped(elements, reason);
     }
 
     /**
-     * Counts dropped elements, and notifies the listener of them on a virtual thread, so that a slow listener
-     * does not stall {@link Batcher#add(List)}, its caller. At most {@link #MAX_CONCURRENT_DROP_NOTIFICATIONS} run
-     * at once: past that, or when no thread starts (the executor shut down, for instance), the notification runs
-     * on the calling thread. Waited for by {@link #awaitDropNotifications(long)}, which the close calls, not by
-     * {@link Batcher#awaitPendingTransmissions()}.
+     * Counts dropped elements, and notifies the listener of them on a thread of its own, so that a slow listener
+     * does not stall {@link Batcher#add(List)}, its caller. Past {@link #MAX_WAITING_DROP_NOTIFICATIONS}
+     * notifications waiting, or once {@link #awaitDropNotifications(long)} was called, the notification runs on
+     * the calling thread.
      *
      * @param elements The elements being discarded
      * @param reason   A short, human-readable explanation of why they were discarded
      */
     void droppedInBackground(List<T> elements, String reason) {
         droppedElements.add(elements.size());
-        if (!dropNotificationPermits.tryAcquire()) {
-            // Every slot is held by a listener yet to return: backpressure rather than one more thread
-            notifySafely(() -> listener.onDropped(elements, reason));
-            return;
-        }
-
-        try {
-            executor.execute(() -> {
-                try {
-                    notifySafely(() -> listener.onDropped(elements, reason));
-                } finally {
-                    dropNotificationPermits.release();
-                }
-            });
-        } catch (Throwable e) {
-            // Throwable, an Error starting the thread keeping the slot for good otherwise (see Batcher.dispatchChunk())
-            dropNotificationPermits.release();
-            if (e instanceof RejectedExecutionException) {
-                log.warn("Notifying the listener of {} dropped {}(s) on the calling thread, the engine is shutting down",
-                        elements.size(), elementNoun);
-            } else {
-                log.warn("Notifying the listener of {} dropped {}(s) on the calling thread, unable to start a thread for it",
-                        elements.size(), elementNoun, e);
-            }
-            notifySafely(() -> listener.onDropped(elements, reason));
+        if (!backgroundDrops.report(elements, reason)) {
+            // Every place is held by a notification waiting for a listener yet to return: backpressure
+            notifyDropped(elements, reason);
         }
     }
 
     /**
-     * Waits, at most the given time, for the drop notifications running on a thread of their own (see
-     * {@link #droppedInBackground(List, String)}), an interruption ending the wait.
+     * Waits, at most the given time, for the drop notifications made in the background (see
+     * {@link #droppedInBackground(List, String)}), those still waiting past it, or once interrupted, being made
+     * on the calling thread. Later ones are made on the calling thread.
      *
      * @param timeoutNanos The maximum time to wait, in nanoseconds, or a negative value to wait indefinitely
      */
     void awaitDropNotifications(long timeoutNanos) {
-        try {
-            if (timeoutNanos < 0) {
-                dropNotificationPermits.acquire(MAX_CONCURRENT_DROP_NOTIFICATIONS);
-            } else if (!dropNotificationPermits.tryAcquire(MAX_CONCURRENT_DROP_NOTIFICATIONS,
-                    timeoutNanos, NANOSECONDS)) {
-                log.warn("Gave up waiting for the listener to return from {} notification(s) of dropped {}s",
-                        MAX_CONCURRENT_DROP_NOTIFICATIONS - dropNotificationPermits.availablePermits(), elementNoun);
-                return;
-            }
-            dropNotificationPermits.release(MAX_CONCURRENT_DROP_NOTIFICATIONS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("Interrupted while waiting for the listener to return from notifications of dropped {}s", elementNoun);
+        if (backgroundDrops.stop(timeoutNanos)) {
+            log.warn("Gave up waiting for the listener to return from a notification of dropped {}s", elementNoun);
         }
     }
 
@@ -178,6 +133,16 @@ final class ListenerNotifier<T> {
      */
     long droppedElements() {
         return droppedElements.sum();
+    }
+
+    /**
+     * Notifies the listener of dropped elements, already counted, on the calling thread.
+     *
+     * @param elements The elements being discarded
+     * @param reason   A short, human-readable explanation of why they were discarded
+     */
+    private void notifyDropped(List<T> elements, String reason) {
+        notifySafely(() -> listener.onDropped(elements, reason));
     }
 
     /**

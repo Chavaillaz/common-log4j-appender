@@ -154,8 +154,8 @@ public class Batcher<T> {
     private final ExecutorService transmissionExecutor;
 
     /**
-     * Notifies the listener, on {@link #transmissionExecutor} for the drops the caller must not wait for, and
-     * counts the elements dropped for {@link #metrics()}.
+     * Notifies the listener, on a thread of its own for the drops the caller must not wait for, and counts the
+     * elements dropped for {@link #metrics()}.
      */
     private final ListenerNotifier<T> notifier;
 
@@ -278,12 +278,12 @@ public class Batcher<T> {
         this.transport = Objects.requireNonNull(builder.transport, "transport must not be null");
         this.pending = newPendingBatch();
         this.transmissionPermits = new Semaphore(builder.maxConcurrentTransmissions);
-        ThreadFactory transmissionThreads = builder.transmissionThreadFactory != null
+        ThreadFactory transmissionThreads = ThreadFactories.withContextClassLoader(builder.transmissionThreadFactory != null
                 ? builder.transmissionThreadFactory
-                : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).inheritInheritableThreadLocals(false).factory();
-        this.transmissionExecutor = Executors.newThreadPerTaskExecutor(
-                ThreadFactories.withContextClassLoader(transmissionThreads, builder.contextClassLoader));
-        this.notifier = new ListenerNotifier<>(builder.listener, transmissionExecutor, elementNoun);
+                : Thread.ofVirtual().name(builder.transmissionThreadPrefix, 0).inheritInheritableThreadLocals(false).factory(),
+                builder.contextClassLoader);
+        this.transmissionExecutor = Executors.newThreadPerTaskExecutor(transmissionThreads);
+        this.notifier = new ListenerNotifier<>(builder.listener, transmissionThreads, elementNoun);
     }
 
     /**
@@ -1341,8 +1341,8 @@ public class Batcher<T> {
             Thread.currentThread().interrupt();
             log.warn("Interrupted while waiting for pending transmissions to complete");
         } finally {
-            // First: past it, a notification runs on the thread dropping its elements, so that the wait misses none
             transmissionExecutor.shutdown();
+            // Past it, a drop is notified on the thread dropping its elements, so that the wait misses none
             notifier.awaitDropNotifications(nanosUntilCloseDeadline());
             reportRemainingAsDropped();
             reportOutstandingAsDropped();

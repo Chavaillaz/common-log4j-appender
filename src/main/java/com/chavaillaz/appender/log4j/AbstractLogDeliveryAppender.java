@@ -36,6 +36,7 @@ import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
+import com.chavaillaz.appender.internal.DropReporter;
 import com.chavaillaz.appender.internal.ThreadFactories;
 
 /**
@@ -200,20 +201,21 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private volatile @Nullable LogDelivery logDeliveryHandler;
 
     /**
-     * The converter {@link #getLogConverter()} returns by default, which {@link #discardReporter} also converts
-     * every discarded event with, whatever converter a subclass returns, one that failed on it included: this one
-     * is known to be safe to call from the thread reporting it.
+     * The converter {@link #getLogConverter()} returns by default, which every discarded event is also converted
+     * with, whatever converter a subclass returns, one that failed on it included: this one is known to be safe
+     * to call from the thread reporting it.
      */
     private final DefaultLogConverter defaultConverter;
 
     /**
-     * Reports the events discarded on their way to the delivery, so that converting them and calling the
-     * listener never holds up the thread logging, nor the worker. Bounded like the queue, a discard past it being
-     * counted and logged rather than waited for. Runs on a virtual thread, which takes neither the inheritable
-     * thread-locals nor the context class loader of the thread discarding the first event, but the class loader
-     * of this appender (see {@link #namedThreadFactory(String, String)}).
+     * Reports the events discarded on their way to the delivery (see {@link #reportDiscarded(List, String)}), so
+     * that converting them and calling the listener never holds up the thread logging, nor the worker. Bounded
+     * like the queue, a discard past it being counted and logged rather than waited for. Runs on a virtual
+     * thread, which takes neither the inheritable thread-locals nor the context class loader of the thread
+     * discarding the first event, but the class loader of this appender (see
+     * {@link #namedThreadFactory(String, String)}).
      */
-    private final DiscardReporter discardReporter;
+    private final DropReporter<LogEvent> discardReporter;
 
     /**
      * Whether a periodic flush is waiting for the background thread, which runs it after the event it is
@@ -286,9 +288,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.closeTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
         this.defaultConverter = new DefaultLogConverter(configuration);
-        this.discardReporter = new DiscardReporter(this, () -> logDeliveryHandler, defaultConverter,
-                options.maxQueuedEvents(), withContextClassLoader(Thread.ofVirtual()
-                        .name(threadName("discard-reporter", name)).inheritInheritableThreadLocals(false).factory()));
+        this.discardReporter = new DropReporter<>(this::reportDiscarded, options.maxQueuedEvents(),
+                withContextClassLoader(Thread.ofVirtual().name(threadName("discard-reporter", name))
+                        .inheritInheritableThreadLocals(false).factory()));
     }
 
     /**
@@ -560,14 +562,71 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * Counts a discarded logging event, and hands it to {@link #discardReporter}, so that converting it and
-     * calling the listener never holds up the thread discarding it, the one logging or the worker.
+     * calling the listener never holds up the thread discarding it, the one logging or the worker. Once stopped,
+     * the event is reported on the calling thread instead.
      *
      * @param event  The logging event being discarded
      * @param reason A short, human-readable explanation of why it was discarded
      */
     private void discard(LogEvent event, String reason) {
         discardedEvents.increment();
-        discardReporter.report(event, reason);
+        if (!discardReporter.report(List.of(event), reason)) {
+            // The report falls behind the discards, which waiting for it would pass on to the application
+            error("Unable to report a discarded logging event, as many as the queue holds are already waiting for "
+                    + "the delivery listener");
+        }
+    }
+
+    /**
+     * Reports discarded events to the listener of the delivery in one notification, on the calling thread: the
+     * one of {@link #discardReporter}, or the one stopping this appender. A listener saving them usually pays
+     * per call, and a stop timing out abandons up to a full queue at once. They are converted by
+     * {@link #defaultConverter}, and only for a listener other than {@link LogDeliveryListener#NOOP}.
+     *
+     * @param events The logging events being discarded
+     * @param reason A short, human-readable explanation of why they were discarded
+     */
+    private void reportDiscarded(List<LogEvent> events, String reason) {
+        LogDelivery handler = logDeliveryHandler;
+        if (handler == null || events.isEmpty()) {
+            return;
+        }
+        try {
+            LogDeliveryListener listener = handler.getListener();
+            if (listener == LogDeliveryListener.NOOP) {
+                // Nothing would read the documents, not worth converting, stack traces included
+                return;
+            }
+            List<Map<String, Object>> documents = new ArrayList<>(events.size());
+            for (LogEvent event : events) {
+                @Nullable Map<String, Object> document = convertDiscarded(event);
+                if (document != null) {
+                    documents.add(document);
+                }
+            }
+            if (!documents.isEmpty()) {
+                listener.onDocumentsDropped(List.copyOf(documents), reason);
+            }
+        } catch (Throwable e) {
+            // Throwable: a listener failing must not end the thread reporting, nor escape a stop
+            error("Failed to report a discarded logging event to the delivery listener", e);
+        }
+    }
+
+    /**
+     * Converts a discarded event, which only an event of a custom {@code LogEventFactory} or memory running out
+     * can make fail: then reported and left out, rather than costing the events reported along with it.
+     *
+     * @param event The logging event being discarded
+     * @return Its document, or {@code null} if it failed to convert
+     */
+    private @Nullable Map<String, Object> convertDiscarded(LogEvent event) {
+        try {
+            return defaultConverter.convert(event);
+        } catch (Throwable e) {
+            error("Failed to convert a discarded logging event, the delivery listener will not receive it", e);
+            return null;
+        }
     }
 
     /**
@@ -734,7 +793,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             // Otherwise left running past the stop, stuck for good or feeding the queue to a closed delivery
             abandonQueuedEvents();
         } finally {
-            discardReporter.stop(remainingBudget(startNanos, budgetNanos));
+            if (discardReporter.stop(remainingNanos(startNanos, budgetNanos))) {
+                error("The delivery listener was still being notified of discarded logging events as the appender "
+                        + "stopped");
+            }
             stopLogDeliveryHandler(remainingBudget(startNanos, budgetNanos));
             // The filter alone, the state of this appender being changed here
             super.stop(timeout, timeUnit, false);
@@ -755,7 +817,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             }
         }
         discardedEvents.add(abandonedEvents.size());
-        discardReporter.reportNow(abandonedEvents, "appender stopped before the event could be processed");
+        reportDiscarded(abandonedEvents, "appender stopped before the event could be processed");
     }
 
     /**
@@ -763,13 +825,23 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      *
      * @param startNanos  The {@link System#nanoTime()} reading the stop started at
      * @param budgetNanos The budget of the whole stop in nanoseconds, {@link Long#MAX_VALUE} for none
+     * @return The time left in nanoseconds, never negative, or {@code -1} to wait indefinitely
+     */
+    private static long remainingNanos(long startNanos, long budgetNanos) {
+        return budgetNanos == Long.MAX_VALUE ? -1 : Math.max(0, budgetNanos - (System.nanoTime() - startNanos));
+    }
+
+    /**
+     * What is left of the budget of {@link #stop(long, TimeUnit)} for its next step (see
+     * {@link #remainingNanos(long, long)}).
+     *
+     * @param startNanos  The {@link System#nanoTime()} reading the stop started at
+     * @param budgetNanos The budget of the whole stop in nanoseconds, {@link Long#MAX_VALUE} for none
      * @return The time left, never negative, or {@code null} to wait indefinitely
      */
     private static @Nullable Duration remainingBudget(long startNanos, long budgetNanos) {
-        if (budgetNanos == Long.MAX_VALUE) {
-            return null;
-        }
-        return Duration.ofNanos(Math.max(0, budgetNanos - (System.nanoTime() - startNanos)));
+        long remaining = remainingNanos(startNanos, budgetNanos);
+        return remaining < 0 ? null : Duration.ofNanos(remaining);
     }
 
     /**
