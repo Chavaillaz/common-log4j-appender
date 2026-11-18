@@ -8,8 +8,7 @@ package com.chavaillaz.appender;
  * where {@link DeliveryOptions} tunes the pipeline the same way for every appender built on this library.
  * <p>
  * Read repeatedly from background threads without synchronization: an implementation is expected to be
- * immutable, as the {@code build()} of a Log4j2 {@code @PluginBuilderFactory} builder produces it, or else to
- * hold what it varies at runtime, such as its delivery options, in {@code volatile} fields.
+ * immutable, as the {@code build()} of a Log4j2 {@code @PluginBuilderFactory} builder produces it.
  */
 public interface LogConfiguration {
 
@@ -38,9 +37,8 @@ public interface LogConfiguration {
      * Gets the settings governing how logs are batched, retried and shipped, defaulting to
      * {@link DeliveryOptions#defaults()}.
      * <p>
-     * Read again each time a setting is used rather than once, so that an implementation can vary most of them
-     * at runtime by returning another instance (see {@link DeliveryOptions}): return one held in a
-     * {@code volatile} field rather than building one on every call.
+     * Read once, when the appender and its delivery are created: a change takes effect with the next appender,
+     * which a reconfiguration of Log4j2 creates.
      *
      * @return The delivery options
      */

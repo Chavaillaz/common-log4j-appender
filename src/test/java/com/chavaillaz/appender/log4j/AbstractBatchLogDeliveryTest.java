@@ -235,8 +235,8 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Follows a flush threshold the configuration changes once the delivery is built")
-        void testFlushThresholdIsReadAgainForEveryDocument() throws Exception {
+        @DisplayName("Keeps the flush threshold it was built with, whatever the configuration returns afterwards")
+        void testFlushThresholdIsReadOnce() throws Exception {
             // given: a configuration answering from options it replaces at runtime, with a threshold of ten for now
             var configuration = new ChangingOptionsConfiguration(DeliveryOptions.builder().flushThreshold(10).build());
             var sent = new CopyOnWriteArrayList<List<Map<String, Object>>>();
@@ -257,8 +257,8 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.send(Map.of("id", 3));
             logDelivery.awaitPendingTransmissions();
 
-            // then: the batch goes out at the new threshold, rather than at the one the delivery was built with
-            assertThat(sent).containsExactly(List.of(Map.of("id", 1), Map.of("id", 2), Map.of("id", 3)));
+            // then: the batch waits for the threshold the delivery was built with, the options being read once
+            assertThat(sent).isEmpty();
         }
 
     }
@@ -358,30 +358,6 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Enforces a pending size limit a subclass supplies by overriding getMaxPendingBytes()")
-        void testOverriddenPendingSizeLimitIsEnforced() throws Exception {
-            // given: the limit comes from the overridable getter alone, the way its own documentation offers
-            // it ("override if the limit should depend on more than just the configuration"), while the
-            // configuration leaves MaxPendingBytes unbounded
-            var configuration = TestLogConfiguration.builder().flushThreshold(1_000).build();
-            var logDelivery = new MeasuredTestLogDelivery(configuration, 100) {
-                @Override
-                protected long getMaxPendingBytes() {
-                    return 150;
-                }
-            };
-
-            // when: two documents of a hundred bytes each reach that limit
-            logDelivery.send(Map.<String, Object>of("id", 1));
-            logDelivery.send(Map.<String, Object>of("id", 2));
-            logDelivery.awaitPendingTransmissions();
-
-            // then: the batch goes out, far below the flush threshold, rather than the limit quietly enforcing
-            // nothing because the measurement it needs was decided against once, from the configuration
-            assertThat(logDelivery.allBulkDocuments).containsExactly(List.of(Map.of("id", 1), Map.of("id", 2)));
-        }
-
-        @Test
         @DisplayName("Never measures a document while both size limits are left at their defaults")
         void testDocumentsAreNotMeasuredWithoutASizeLimit() throws Exception {
             // given: the default configuration, with a delivery that records every measurement it is asked for
@@ -442,45 +418,6 @@ class AbstractBatchLogDeliveryTest {
             assertThat(listener.dropped).hasSize(1);
             assertThat(listener.dropped.get(0).documents()).containsExactly(document);
             assertThat(listener.dropped.get(0).reason()).isEqualTo("still pending when closed");
-        }
-
-        @Test
-        @DisplayName("Closes within the timeout it was built with, and reports what was pending, when the current one cannot be read")
-        void testCloseReportsPendingDocumentsWhenTheTimeoutCannotBeRead() throws Exception {
-            // given: the same "downstream is down, nothing can be retried" setup as above, plus a
-            // configuration that stops resolving right before the delivery is closed
-            var configuration = new FlakyCloseTimeoutConfiguration();
-            var listener = new RecordingListener();
-            var closedWithin = new CopyOnWriteArrayList<Duration>();
-            var logDelivery = new AbstractBatchLogDelivery<FlakyCloseTimeoutConfiguration>(configuration, listener) {
-                @Override
-                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
-                    return completedFuture(TransmissionResult.failure(null));
-                }
-
-                @Override
-                public void close(Duration timeout) throws IOException {
-                    super.close(timeout);
-                    closedWithin.add(timeout);
-                }
-            };
-            var document = Map.<String, Object>of("logmessage", "last words");
-            logDelivery.send(document);
-
-            // when: the close timeout is the argument to the one call that flushes, waits and reports, so
-            // failing to read it used to mean that call never happened at all
-            configuration.broken.set(true);
-            logDelivery.close();
-            configuration.broken.set(false);
-
-            // then: the pending document still got its last chance, instead of being lost in silence by the
-            // very call meant to save it -- and the batching engine was closed rather than left running
-            assertThat(listener.dropped).hasSize(1);
-            assertThat(listener.dropped.get(0).documents()).containsExactly(document);
-            assertThat(listener.dropped.get(0).reason()).isEqualTo("still pending when closed");
-
-            // and: closed within the timeout the delivery was built with, ten seconds, rather than without bound
-            assertThat(closedWithin).containsExactly(Duration.ofSeconds(10));
         }
 
         @Test
@@ -574,8 +511,8 @@ class AbstractBatchLogDeliveryTest {
         }
 
         @Test
-        @DisplayName("Closes with the close timeout configured by then, rather than the one it was built with")
-        void testCloseTimeoutIsReadWhenClosing() throws Exception {
+        @DisplayName("Closes with the close timeout it was built with, whatever the configuration returns by then")
+        void testCloseTimeoutIsReadOnce() throws Exception {
             // given: a delivery built with a close timeout of ten seconds, lowered to seven since
             var configuration = new ChangingOptionsConfiguration(
                     DeliveryOptions.builder().closeTimeout(Duration.ofSeconds(10)).build());
@@ -598,7 +535,7 @@ class AbstractBatchLogDeliveryTest {
             logDelivery.close();
 
             // then
-            assertThat(closedWithin).containsExactly(Duration.ofSeconds(7));
+            assertThat(closedWithin).containsExactly(Duration.ofSeconds(10));
         }
 
     }
@@ -1585,8 +1522,7 @@ class AbstractBatchLogDeliveryTest {
     }
 
     /**
-     * A configuration answering from delivery options it replaces at runtime, held in a volatile field as
-     * {@link com.chavaillaz.appender.LogConfiguration} asks of one varying them.
+     * A configuration answering from delivery options it replaces at runtime, which a delivery reads once.
      */
     static class ChangingOptionsConfiguration implements LogConfiguration {
 
@@ -1613,48 +1549,6 @@ class AbstractBatchLogDeliveryTest {
 
         @Override
         public DeliveryOptions getDeliveryOptions() {
-            return options;
-        }
-
-    }
-
-    /**
-     * A configuration that can be made to stop resolving its delivery options, standing in for one built
-     * from something external — which {@link com.chavaillaz.appender.LogConfiguration} invites by
-     * documenting that they are re-read rather than captured once.
-     */
-    static class FlakyCloseTimeoutConfiguration implements LogConfiguration {
-
-        final AtomicBoolean broken = new AtomicBoolean();
-
-        private final DeliveryOptions options = DeliveryOptions.builder()
-                .flushThreshold(10)
-                .maxConsecutiveFailures(Integer.MAX_VALUE)
-                .retryBackoff(Duration.ZERO)
-                .maxRetryBackoff(Duration.ZERO)
-                .closeTimeout(Duration.ofSeconds(10))
-                .build();
-
-        @Override
-        public String getApplication() {
-            return "test-application";
-        }
-
-        @Override
-        public String getHost() {
-            return "test-host";
-        }
-
-        @Override
-        public String getEnvironment() {
-            return "test-environment";
-        }
-
-        @Override
-        public DeliveryOptions getDeliveryOptions() {
-            if (broken.get()) {
-                throw new IllegalStateException("Simulated configuration failure");
-            }
             return options;
         }
 

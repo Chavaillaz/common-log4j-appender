@@ -53,14 +53,12 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Schedules a periodic flush and waits for it when the flush threshold allows batching
 - Builds a single delivery handler and scheduler however many times it is started
-- Finishes starting when the delivery options cannot be read at all
 - Does not flush before the configured interval elapses
 - Keeps flushing periodically after one flush failed to be queued with an Error
 - Runs a periodic flush the full queue had no room for right after the event in progress
 - Keeps a single periodic flush in a queue backlogged for many periods
 - Keeps flushing periodically once an event evicted the queued flush from a full queue
 - Keeps flushing periodically once a full queue refused the flush of a period
-- Runs a periodic flush the full queue had no room for even while the options cannot be read
 - Retries a failed document without batching nor backoff, before any other event comes
 - Retries a failed document once its retry backoff elapsed, before any other event comes
 
@@ -110,7 +108,6 @@ group holding them: a test added, renamed or removed changes this list too.
 - Closes the delivery within what processing the queued events left of the stop budget
 - Bounds the wait by CloseTimeout when Log4j2 leaves the timeout to the appender
 - Waits without bound when Log4j2 leaves the timeout to an appender whose CloseTimeout is unset
-- Falls back to the close timeout it was built with when the current one cannot be read
 - Never keeps the JVM alive on its own once the application is done
 - Names its threads after the appender, telling two appenders apart in a thread dump
 - Ends its worker and its flush scheduler once stopped, leaving no thread behind
@@ -200,7 +197,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Triggers a single transmission of the accumulated batch
 - Is also reached when several documents are sent in a single call
 - Can also be forced early by calling flush()
-- Follows a flush threshold the configuration changes once the delivery is built
+- Keeps the flush threshold it was built with, whatever the configuration returns afterwards
 
 **Failed transmissions**
 
@@ -226,7 +223,6 @@ group holding them: a test added, renamed or removed changes this list too.
 - Sends a batch reaching MaxPendingBytes below the flush threshold, rather than discarding from it
 - Sends a document heavier than MaxPendingBytes on its own, rather than discarding it
 - Discards the oldest documents once the pending batch exceeds MaxPendingBytes while held off
-- Enforces a pending size limit a subclass supplies by overriding getMaxPendingBytes()
 - Never measures a document while both size limits are left at their defaults
 
 **Requests split by count**
@@ -241,11 +237,10 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Flushes and waits for the remaining batch to be transmitted before returning
 - Reports the documents still pending once closed instead of discarding them silently
-- Closes within the timeout it was built with, and reports what was pending, when the current one cannot be read
 - Gives up after the configured close timeout instead of waiting forever on a stuck transmission
 - Gives up after the timeout it is closed with, however long the configured one
 - Closes through close(Duration) with the configured timeout, so an override releasing resources runs
-- Closes with the close timeout configured by then, rather than the one it was built with
+- Closes with the close timeout it was built with, whatever the configuration returns by then
 
 **Health and metrics**
 
@@ -273,8 +268,8 @@ group holding them: a test added, renamed or removed changes this list too.
 
 #### Batching engine
 
-`BatcherTest`, `BatcherFuzzTest`, `PendingBatchTest`, `ChunkTest`, `BoundedTrimTest`, `DynamicLimitsTest`,
-`BackoffPolicyTest`, `DurationsTest`, `ThreadFactoriesTest`
+`BatcherTest`, `BatcherFuzzTest`, `PendingBatchTest`, `ChunkTest`, `BoundedTrimTest`, `BackoffPolicyTest`,
+`DurationsTest`, `ThreadFactoriesTest`
 
 **Construction**
 
@@ -285,7 +280,6 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Rejects a null element before accumulating any of the elements given with it
 - Accumulates elements of an arbitrary type and transmits once the threshold is reached
-- Re-reads its dynamic limits on every call instead of capturing them once at construction
 - Never hands the transport an empty request, however low the flush threshold
 
 **Failed transmissions**
@@ -366,8 +360,6 @@ group holding them: a test added, renamed or removed changes this list too.
 - Still requeues a failed chunk when the listener notified of that failure throws an Error
 - Still requeues a failed chunk when the backoff policy consulted for it throws an Error
 - Treats a measurement throwing an Error as weightless instead of propagating to the caller
-- Keeps a batch whose request limit could not be read, instead of losing it on the way out
-- Keeps a failed batch whose pending limit could not be read while putting it back
 
 **Threads**
 
@@ -427,12 +419,6 @@ group holding them: a test added, renamed or removed changes this list too.
 - Does not discard anything, or throw, for an empty queue
 - Does not throw when the cap is larger than the queue itself
 - Hands back the discarded elements as an unmodifiable list
-
-**Limits read at runtime**
-
-- Reads each limit from its own supplier, again on every use
-- Leaves a limit whose supplier throws unenforced rather than discarding over it
-- Leaves a limit unenforced when its supplier throws an Error
 
 **Retry backoff**
 
@@ -687,9 +673,8 @@ What an application or an implementer has to know, which the README or the Javad
 - **Messages are formatted on the logging thread,** unless Log4j2 is told to format them in the background, or the
   message is `@AsynchronouslyFormattable`.
 - **A document heavier than `MaxRequestBytes` is still sent,** alone.
-- **A byte limit coming into effect at runtime** under-counts the documents already pending, and is enforced late.
-- **Some settings are read once,** when the appender or its delivery is created: `FlushInterval`,
-  `MaxConcurrentTransmissions`, `MaxQueuedEvents`, `RetryBackoff`, `MaxRetryBackoff` and `TransmissionTimeout`.
+- **The delivery options are read once,** when the appender and its delivery are created: a change takes effect
+  with the next appender, which a reconfiguration of Log4j2 creates.
 - **The time since the last success grows while there is nothing to send,** which is why it is read along with
   the status.
 - **The host name falls back to `localhost`** when its lookup takes more than 5 seconds, a later call getting the
@@ -735,8 +720,6 @@ The scenarios that can hurt, left for now, with what could be done about them.
 
 - **An event of a custom `LogEventFactory` whose `toImmutable()` returns itself** is queued as it is, not copied,
   so that the factory reusing it changes what is sent.
-- **A subclass returning `0` from `getMaxPendingDocuments()`** discards everything while transmissions are held
-  off. `DeliveryOptions` forbids `0`.
 - **A stop called from a thread of the appender itself,** a converter or a listener stopping Log4j2, waits until
   its budget is spent before giving up on that thread.
 - **A custom `LogDelivery` throwing from `getHealth()` or `getMetrics()`** throws from those of the appender too.

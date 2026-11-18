@@ -152,13 +152,10 @@ DeliveryOptions options = DeliveryOptions.builder()
         .build();
 ```
 
-`getDeliveryOptions()` is read on the path taken by every document, not once at construction, so an
-implementation can vary a limit at runtime by returning a different instance — return one held in a
-`volatile` field rather than building a new one on every call. Use
+`getDeliveryOptions()` is read once, when the appender and its delivery are created: options changed later
+take effect with the next appender, which a reconfiguration of Log4j2 creates. Use
 `options.with().maxPendingDocuments(50_000).build()` to derive one instance from another without restating
-the rest. A few settings are read only once, when the appender or its delivery is created:
-`FlushInterval`, `MaxConcurrentTransmissions`, `MaxQueuedEvents`, `RetryBackoff`, `MaxRetryBackoff` and
-`TransmissionTimeout`.
+the rest.
 
 ### 2. Delivery
 

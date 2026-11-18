@@ -12,6 +12,7 @@ import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -67,7 +68,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
-import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.FileDeadLetterListener;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
@@ -319,33 +319,6 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
-        @DisplayName("Finishes starting when the delivery options cannot be read at all")
-        void testStartCompletesWhenTheDeliveryOptionsCannotBeRead() {
-            // given: a configuration that fails to resolve, which the interface invites by documenting that
-            // the options are re-read rather than captured once. start() reads them to decide whether to
-            // schedule the periodic flush, after the delivery handler has already been built
-            var configuration = new FlakyOptionsConfiguration();
-            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, configuration);
-            var errors = new CopyOnWriteArrayList<Throwable>();
-            appender.setHandler(recordingErrorHandler(errors));
-
-            // when
-            configuration.broken.set(true);
-            assertThatNoException().isThrownBy(appender::start);
-            configuration.broken.set(false);
-
-            // then: reported and degraded to no periodic flush, rather than handed to whatever is applying
-            // the Log4j2 configuration -- which also skipped the super.start() below it, leaving an appender
-            // that already had a working handler permanently unstarted
-            assertThat(errors).as("The failure should have been reported through the error handler").isNotEmpty();
-            assertThat(appender.isStarted()).as("The appender should have finished starting").isTrue();
-            assertThat(appender.getLogDeliveryHandler()).isNotNull();
-
-            // cleanup
-            appender.stop(0, MILLISECONDS);
-        }
-
-        @Test
         @DisplayName("Does not flush before the configured interval elapses")
         void testWithThreadPool_DoNotWaitFlush() throws Exception {
             // given
@@ -538,45 +511,6 @@ class AbstractLogDeliveryAppenderTest {
             verify(appender.getLogDeliveryHandler(), timeout(5_000).atLeast(4)).flush();
 
             // cleanup
-            appender.stop(1, SECONDS);
-        }
-
-        @Test
-        @DisplayName("Runs a periodic flush the full queue had no room for even while the options cannot be read")
-        void testPeriodicFlushIsNotLostToUnreadableOptions() throws Exception {
-            // given: the test above, with delivery options that stop resolving once the flush is requested,
-            // which the check of the severity of each event reads
-            var configuration = new FlakyOptionsConfiguration(DeliveryOptions.builder()
-                    .flushThreshold(10)
-                    .flushInterval(Duration.ofMillis(100))
-                    .flushLevel(Level.ERROR)
-                    .maxQueuedEvents(1)
-                    .closeTimeout(Duration.ofSeconds(1))
-                    .build());
-            var releaseFirstTask = new CountDownLatch(1);
-            var appender = new RecordingBlockingLogDeliveryAppender<>("appender-name", null, configuration, releaseFirstTask);
-            appender.setHandler(recordingErrorHandler(new CopyOnWriteArrayList<>()));
-            doAnswer(invocation -> {
-                appender.getProcessedMessages().add("flush");
-                return null;
-            }).when(appender.getLogDeliveryHandler()).flush();
-            appender.start();
-            appender.append(realLogEvent("first"));
-            awaitEmptyQueue(appender);
-            appender.append(realLogEvent("second"));
-            sleep(350);
-            configuration.broken.set(true);
-
-            // when
-            releaseFirstTask.countDown();
-
-            // then: the flush still ran right after the first event, rather than waiting behind a check of its
-            // severity that fails, and every later request with it, for as long as the options cannot be read
-            awaitSize(appender.getProcessedMessages(), 3);
-            assertThat(appender.getProcessedMessages().subList(0, 3)).containsExactly("first", "flush", "second");
-
-            // cleanup
-            configuration.broken.set(false);
             appender.stop(1, SECONDS);
         }
 
@@ -1969,27 +1903,6 @@ class AbstractLogDeliveryAppenderTest {
         }
 
         @Test
-        @DisplayName("Falls back to the close timeout it was built with when the current one cannot be read")
-        void testStopFallsBackToTheCloseTimeoutItWasBuiltWith() throws Exception {
-            // given: a CloseTimeout of a second, whose delivery options fail to resolve by the time it stops
-            var configuration = new FlakyOptionsConfiguration();
-            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, configuration);
-            var errors = new CopyOnWriteArrayList<Throwable>();
-            appender.setHandler(recordingErrorHandler(errors));
-            appender.start();
-            configuration.broken.set(true);
-
-            // when: Log4j2 leaves the timeout to the appender
-            assertThatNoException().isThrownBy(() -> appender.stop(0, MILLISECONDS));
-
-            // then: the failure is reported, and the delivery closed within that second rather than without bound
-            assertThat(errors).anyMatch(IllegalStateException.class::isInstance);
-            verify(appender.getLogDeliveryHandler()).close(argThat((Duration timeout) ->
-                    timeout != null && !timeout.isNegative() && timeout.compareTo(Duration.ofSeconds(1)) <= 0));
-            assertThat(appender.isStopped()).isTrue();
-        }
-
-        @Test
         @DisplayName("Never keeps the JVM alive on its own once the application is done")
         void testBackgroundThreadsDoNotKeepTheJvmAlive() throws Exception {
             // given: batching enabled, so start() also creates the periodic flush scheduler, and a worker
@@ -3009,11 +2922,10 @@ class AbstractLogDeliveryAppenderTest {
         @Test
         @DisplayName("Never reports an event as dropped once it has already been handed to the worker")
         void testEventAlreadyHandedOffIsNotReportedDropped() throws Exception {
-            // given: a configuration that fails to resolve, which the interface documents as legitimate for
-            // an implementation varying its settings at runtime. It is read again by the severity check run
-            // *after* the event is delivered, so that check is what fails here
-            var configuration = new FlakyOptionsConfiguration();
-            var appender = new FlakyOptionsLogDeliveryAppender("appender-name", null, configuration);
+            // given: an event severe enough to flush the batch right after it is delivered, and a delivery whose
+            // flush fails, so that what fails is the step run *after* the event was delivered
+            var configuration = TestLogConfiguration.builder().flushLevel(Level.ERROR).build();
+            var appender = new LogDeliveryAppender("appender-name", null, configuration);
             var errors = new CopyOnWriteArrayList<Throwable>();
             appender.setHandler(recordingErrorHandler(errors));
             var dropped = new CopyOnWriteArrayList<Map<String, Object>>();
@@ -3024,13 +2936,12 @@ class AbstractLogDeliveryAppenderTest {
                 }
             };
             when(appender.getLogDeliveryHandler().getListener()).thenReturn(listener);
+            doThrow(new IllegalStateException("Simulated flush failure")).when(appender.getLogDeliveryHandler()).flush();
 
             // when
             appender.start();
-            configuration.broken.set(true);
-            assertThatNoException().isThrownBy(() -> appender.append(realLogEvent("delivered once")));
+            assertThatNoException().isThrownBy(() -> appender.append(realLogEvent("delivered once", Level.ERROR)));
             awaitSize(errors, 1);
-            configuration.broken.set(false);
             appender.stop(2, SECONDS);
 
             // then: the failure is reported, but the event is not called dropped -- it reached the worker
@@ -3396,77 +3307,6 @@ class AbstractLogDeliveryAppenderTest {
                 }
                 events.add("send");
             };
-        }
-
-    }
-
-    /**
-     * A configuration whose delivery options can be made to fail to resolve, standing in for one that
-     * builds them from something external — which {@link com.chavaillaz.appender.LogConfiguration} invites
-     * by documenting that they are re-read rather than captured once.
-     */
-    static class FlakyOptionsConfiguration implements LogConfiguration {
-
-        final AtomicBoolean broken = new AtomicBoolean();
-
-        private final DeliveryOptions options;
-
-        FlakyOptionsConfiguration() {
-            this(DeliveryOptions.builder()
-                    .flushThreshold(10)
-                    .flushInterval(Duration.ofSeconds(10))
-                    .flushLevel(Level.ERROR)
-                    .closeTimeout(Duration.ofSeconds(1))
-                    .build());
-        }
-
-        FlakyOptionsConfiguration(DeliveryOptions options) {
-            this.options = options;
-        }
-
-        @Override
-        public String getApplication() {
-            return "test-application";
-        }
-
-        @Override
-        public String getHost() {
-            return "test-host";
-        }
-
-        @Override
-        public String getEnvironment() {
-            return "test-environment";
-        }
-
-        @Override
-        public DeliveryOptions getDeliveryOptions() {
-            if (broken.get()) {
-                throw new IllegalStateException("Simulated configuration failure");
-            }
-            return options;
-        }
-
-    }
-
-    @Getter
-    static class FlakyOptionsLogDeliveryAppender extends AbstractLogDeliveryAppender<FlakyOptionsConfiguration> {
-
-        LogDelivery logDeliveryHandler = mock(LogDelivery.class);
-        AtomicInteger countTaskExecuted = new AtomicInteger();
-
-        protected FlakyOptionsLogDeliveryAppender(String name, Filter filter, FlakyOptionsConfiguration configuration) {
-            super(name, filter, configuration);
-        }
-
-        @Override
-        protected LogDelivery createLogDeliveryHandler() {
-            return logDeliveryHandler;
-        }
-
-        @Override
-        protected Runnable createLogDeliveryTask(LogEvent loggingEvent) {
-            return () -> countTaskExecuted.incrementAndGet();
         }
 
     }

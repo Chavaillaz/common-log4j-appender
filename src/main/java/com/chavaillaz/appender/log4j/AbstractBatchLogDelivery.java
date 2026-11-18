@@ -10,8 +10,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
-import org.apache.logging.log4j.Logger;
-import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
 import com.chavaillaz.appender.DeliveryHealth;
@@ -43,16 +41,13 @@ import com.chavaillaz.appender.internal.BatcherListener;
  * {@link DeliveryOptions#maxRequestBytes()}, and documents failing
  * {@link DeliveryOptions#maxConsecutiveFailures()} times in a row are given up on. Every document discarded is
  * reported through {@link LogDeliveryListener#onDocumentsDropped(List, String)}.
+ * <p>
+ * The delivery options are read once, when the delivery is created (see
+ * {@link LogConfiguration#getDeliveryOptions()}).
  *
  * @param <C> The configuration type
  */
 public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> implements LogDelivery {
-
-    /**
-     * The status logger of Log4j2 rather than an application logger, which would feed these diagnostics back
-     * into the appender they are about (see {@link Batcher}).
-     */
-    private static final Logger log = StatusLogger.getLogger();
 
     private final C configuration;
 
@@ -65,10 +60,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     private final Batcher<Map<String, Object>> batcher;
 
     /**
-     * The close timeout this delivery was built with, used by {@link #closeTimeout()} when the current one
-     * cannot be read.
+     * How long {@link #close()} waits for the transmissions in flight, taken from the delivery options.
      */
-    private final @Nullable Duration initialCloseTimeout;
+    private final @Nullable Duration closeTimeout;
 
     /**
      * Creates a delivery sending documents by batches.
@@ -95,20 +89,19 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
         this.configuration = Objects.requireNonNull(configuration, "configuration must not be null");
         DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),
                 "configuration.getDeliveryOptions() must not be null");
-        this.initialCloseTimeout = options.closeTimeout();
+        this.closeTimeout = options.closeTimeout();
         this.listener = listener != null ? listener : LogDeliveryListener.NOOP;
         this.batcher = Batcher.<Map<String, Object>>builder()
-                // Read again on every call, so that a limit varied at runtime is honored
-                .flushThreshold(() -> configuration.getDeliveryOptions().flushThreshold())
-                .maxPendingElements(this::getMaxPendingDocuments)
-                .maxRequestElements(this::getMaxRequestDocuments)
-                .maxConsecutiveFailures(this::getMaxConsecutiveFailures)
-                .maxPendingBytes(this::getMaxPendingBytes)
-                .maxRequestBytes(this::getMaxRequestBytes)
-                // Always wired in, measuring only while a byte limit is in effect, so that the overridable
-                // getters of both limits can turn them on at any time
-                .elementSize(this::measureIfBounded)
-                // Fixed once, unlike the limits above
+                .flushThreshold(options.flushThreshold())
+                .maxPendingElements(options.maxPendingDocuments())
+                .maxRequestElements(options.maxRequestDocuments())
+                .maxConsecutiveFailures(options.maxConsecutiveFailures())
+                .maxPendingBytes(options.maxPendingBytes())
+                .maxRequestBytes(options.maxRequestBytes())
+                // Only under a byte limit, measuring costing something for every document
+                .elementSize(isBounded(options.maxPendingBytes()) || isBounded(options.maxRequestBytes())
+                        ? this::estimateDocumentSize
+                        : null)
                 .maxConcurrentTransmissions(options.maxConcurrentTransmissions())
                 .transmissionTimeout(options.transmissionTimeout())
                 .backoff(backoffOf(options))
@@ -148,28 +141,13 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Whether the given byte limit actually bounds anything, as opposed to being left unset or explicitly
-     * disabled.
+     * Whether the given byte limit actually bounds anything, as opposed to being left at its unbounded default.
      *
      * @param limit The limit to check
      * @return {@code true} if the limit is in effect
      */
     private static boolean isBounded(long limit) {
-        return limit > 0 && limit < Long.MAX_VALUE;
-    }
-
-    /**
-     * Measures the given document through {@link #estimateDocumentSize(Map)}, or counts it as weightless while
-     * neither byte limit is in effect, measuring costing something for every document. A limit coming into
-     * effect under-counts the documents already pending until the next batch, being enforced late at worst.
-     *
-     * @param document The document to measure
-     * @return The estimated size of the document in bytes, or {@code 0} while no byte limit is in effect
-     */
-    private long measureIfBounded(Map<String, Object> document) {
-        return isBounded(getMaxPendingBytes()) || isBounded(getMaxRequestBytes())
-                ? estimateDocumentSize(document)
-                : 0;
+        return limit < Long.MAX_VALUE;
     }
 
     /**
@@ -201,60 +179,9 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     }
 
     /**
-     * Maximum number of documents the pending batch holds: a batch reaching it is sent, and loses its oldest
-     * documents past it while transmissions are held off after a failure. Defaults to
-     * {@link DeliveryOptions#maxPendingDocuments()}; override it for a limit depending on more than that.
-     *
-     * @return The maximum number of documents a pending batch can hold in memory
-     */
-    protected int getMaxPendingDocuments() {
-        return configuration.getDeliveryOptions().maxPendingDocuments();
-    }
-
-    /**
-     * Maximum number of documents per request, a bigger batch being split into chunks. Defaults to
-     * {@link DeliveryOptions#maxRequestDocuments()}; override it for a limit depending on more than that.
-     *
-     * @return The maximum number of documents sent together in a single request
-     */
-    protected int getMaxRequestDocuments() {
-        return configuration.getDeliveryOptions().maxRequestDocuments();
-    }
-
-    /**
-     * Maximum number of consecutive failed attempts for the same documents before they are discarded. Defaults
-     * to {@link DeliveryOptions#maxConsecutiveFailures()}; override it for a limit depending on more than that.
-     *
-     * @return The maximum number of consecutive failed attempts allowed
-     */
-    protected int getMaxConsecutiveFailures() {
-        return configuration.getDeliveryOptions().maxConsecutiveFailures();
-    }
-
-    /**
-     * Maximum estimated size of the pending batch, which it bounds as {@link #getMaxPendingDocuments()} does by
-     * count. Defaults to {@link DeliveryOptions#maxPendingBytes()}; override it for a limit depending on more
-     * than that.
-     *
-     * @return The maximum estimated size a pending batch can reach, in bytes
-     */
-    protected long getMaxPendingBytes() {
-        return configuration.getDeliveryOptions().maxPendingBytes();
-    }
-
-    /**
-     * Maximum estimated size of a request, a heavier batch being split into chunks. Defaults to
-     * {@link DeliveryOptions#maxRequestBytes()}; override it for a limit depending on more than that.
-     *
-     * @return The maximum estimated size of a single request, in bytes
-     */
-    protected long getMaxRequestBytes() {
-        return configuration.getDeliveryOptions().maxRequestBytes();
-    }
-
-    /**
-     * Estimates how many bytes the given document takes on the wire, to enforce {@link #getMaxPendingBytes()}
-     * and {@link #getMaxRequestBytes()}, and never called while both are unbounded.
+     * Estimates how many bytes the given document takes on the wire, to enforce
+     * {@link DeliveryOptions#maxPendingBytes()} and {@link DeliveryOptions#maxRequestBytes()}, and never called
+     * while both are unbounded.
      * <p>
      * Defaults to {@link DocumentSizeEstimator#estimate(Map)}, a compact JSON approximation. Override it when
      * the encoding differs enough to matter: an Elasticsearch bulk body adds an action line per document, and a
@@ -351,8 +278,8 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     /**
      * {@inheritDoc}
      * <p>
-     * The pending size is only estimated while a byte limit is in effect (see {@link #getMaxPendingBytes()}),
-     * and {@code 0} otherwise.
+     * The pending size is only estimated under a byte limit (see {@link #estimateDocumentSize(Map)}), and
+     * {@code 0} otherwise.
      *
      * @return The current metrics
      */
@@ -411,7 +338,7 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      */
     @Override
     public final void close() throws IOException {
-        close(closeTimeout());
+        close(closeTimeout);
     }
 
     /**
@@ -434,22 +361,6 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
     @Override
     public void close(@Nullable Duration timeout) throws IOException {
         batcher.close(timeout);
-    }
-
-    /**
-     * Reads how long to wait for in-flight transmissions while closing, falling back to the value this
-     * delivery was built with: a failure here would skip the close flushing and reporting the pending batch.
-     *
-     * @return The close timeout, or {@code null} to wait indefinitely
-     */
-    private @Nullable Duration closeTimeout() {
-        try {
-            return configuration.getDeliveryOptions().closeTimeout();
-        } catch (Throwable e) {
-            log.warn("Unable to read the close timeout, falling back to the one configured at startup ({})",
-                    initialCloseTimeout, e);
-            return initialCloseTimeout;
-        }
     }
 
     /**

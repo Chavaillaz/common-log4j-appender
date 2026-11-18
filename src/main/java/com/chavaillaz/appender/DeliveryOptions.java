@@ -16,11 +16,7 @@ import org.jspecify.annotations.Nullable;
  * {@link #with()}, every setting having a usable default (see {@link #defaults()}): a setting a later version
  * adds comes with a default of its own, so that code building options keeps compiling, and behaving as it did.
  * <p>
- * {@link LogConfiguration#getDeliveryOptions()} is read again each time a setting is used, so that a
- * configuration can vary a setting at runtime by returning another instance, held in a field rather than built
- * on every call. A few settings are read only once, when the appender or its delivery is created:
- * {@code flushInterval}, {@code maxConcurrentTransmissions}, {@code maxQueuedEvents}, {@code retryBackoff},
- * {@code maxRetryBackoff} and {@code transmissionTimeout}.
+ * {@link LogConfiguration#getDeliveryOptions()} is read once, when the appender and its delivery are created.
  * <p>
  * Every setting is validated when built, a value out of its range throwing an {@link IllegalArgumentException}
  * and a missing one a {@link NullPointerException}, so that a misconfiguration fails the configuration rather

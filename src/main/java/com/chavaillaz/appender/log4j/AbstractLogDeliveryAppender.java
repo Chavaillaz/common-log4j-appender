@@ -62,6 +62,9 @@ import com.chavaillaz.appender.internal.ThreadFactories;
  * The threads of an appender run with its class loader, the one of the concrete plugin, as their context class
  * loader, whatever thread starts it: a converter, or a library it calls, finds through it what it looks up
  * that way, in an application loaded by class loaders of its own as on a plain class path.
+ * <p>
+ * The delivery options are read once, when the appender is created (see
+ * {@link LogConfiguration#getDeliveryOptions()}).
  *
  * @param <C> The configuration type
  */
@@ -238,10 +241,21 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final LongAdder discardedEvents = new LongAdder();
 
     /**
-     * The close timeout this appender was built with, used by {@link #stop(long, TimeUnit)} when the current
-     * one cannot be read.
+     * The time between two periodic flushes, in milliseconds, taken from the delivery options.
      */
-    private final @Nullable Duration initialCloseTimeout;
+    private final long flushIntervalMillis;
+
+    /**
+     * The minimum severity of an event flushing the batch right after it, or {@code null} for none, taken from
+     * the delivery options.
+     */
+    private final @Nullable Level flushLevel;
+
+    /**
+     * How long {@link #stop(long, TimeUnit)} may take when Log4j2 leaves it to the appender, or {@code null}
+     * without bound, taken from the delivery options.
+     */
+    private final @Nullable Duration closeTimeout;
 
     /**
      * The {@link System#nanoTime()} reading when this appender was created, which {@link #getHealth()} counts
@@ -266,7 +280,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.logConfiguration = Objects.requireNonNull(configuration, "configuration must not be null");
         DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),
                 "configuration.getDeliveryOptions() must not be null");
-        this.initialCloseTimeout = options.closeTimeout();
+        // At least a millisecond, as the delivery options require
+        this.flushIntervalMillis = options.flushInterval().toMillis();
+        this.flushLevel = options.flushLevel();
+        this.closeTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
         this.defaultConverter = new DefaultLogConverter(configuration);
         this.discardReporter = new DiscardReporter(this, () -> logDeliveryHandler, defaultConverter,
@@ -315,22 +332,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     /**
      * Schedules the periodic flush, sending what would otherwise wait for the next event, however long that
      * takes: a batch under the threshold, documents stacked while the retry backoff holds transmissions off, or
-     * put back by a failed transmission. Delivery options that cannot be read are reported rather than thrown,
-     * which would leave the appender unstarted for good, its handler already created.
+     * put back by a failed transmission.
      */
     private void startPeriodicFlush() {
-        long intervalMillis;
-        try {
-            // At least a millisecond, as the delivery options require
-            intervalMillis = logConfiguration.getDeliveryOptions().flushInterval().toMillis();
-        } catch (Throwable e) {
-            error("Unable to read the delivery options, no periodic flush will be scheduled and partial "
-                    + "batches may be delayed indefinitely", e);
-            return;
-        }
-
         flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("flush-scheduler", getName()));
-        flushScheduler.scheduleWithFixedDelay(this::requestFlush, intervalMillis, intervalMillis, MILLISECONDS);
+        flushScheduler.scheduleWithFixedDelay(this::requestFlush, flushIntervalMillis, flushIntervalMillis, MILLISECONDS);
     }
 
     /**
@@ -341,7 +347,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return {@code true} if this event should trigger an immediate flush
      */
     private boolean isUrgent(LogEvent event) {
-        Level flushLevel = logConfiguration.getDeliveryOptions().flushLevel();
         Level eventLevel = event.getLevel();
         return flushLevel != null && eventLevel != null && eventLevel.isMoreSpecificThan(flushLevel);
     }
@@ -769,20 +774,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * How long {@link #stop(long, TimeUnit)} may take when Log4j2 leaves it to the appender:
-     * {@link DeliveryOptions#closeTimeout()}, or the one this appender was built with if it cannot be read.
+     * {@link DeliveryOptions#closeTimeout()}.
      *
      * @return The time to wait in nanoseconds, {@link Long#MAX_VALUE} to wait indefinitely
      */
     private long defaultStopTimeoutNanos() {
-        Duration closeTimeout;
-        try {
-            closeTimeout = logConfiguration.getDeliveryOptions().closeTimeout();
-        } catch (Throwable e) {
-            error("Unable to read the close timeout, falling back to the one configured at startup", e);
-            closeTimeout = initialCloseTimeout;
-        }
-        // Saturates rather than overflows, and a negative timeout waits no more than a zero one does
-        return closeTimeout == null ? Long.MAX_VALUE : Math.max(0, NANOSECONDS.convert(closeTimeout));
+        // Saturates rather than overflows, a close timeout never being negative
+        return closeTimeout == null ? Long.MAX_VALUE : NANOSECONDS.convert(closeTimeout);
     }
 
     /**
