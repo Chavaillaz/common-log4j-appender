@@ -23,8 +23,6 @@ import static org.mockito.Mockito.when;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,7 +38,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import lombok.Getter;
 import org.apache.logging.log4j.Level;
@@ -64,14 +61,14 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
+import com.chavaillaz.appender.DeadLetterListener;
 import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
-import com.chavaillaz.appender.FileDeadLetterListener;
 import com.chavaillaz.appender.LogConfiguration;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.LogDeliveryListener;
+import com.chavaillaz.appender.RecordingAppender;
 import com.chavaillaz.appender.TransmissionResult;
 
 @DisplayName("AbstractLogDeliveryAppender")
@@ -2954,10 +2951,11 @@ class AbstractLogDeliveryAppenderTest {
 
         @Test
         @DisplayName("Logs nothing of its own failures back into the appender, whatever fails while it delivers an event")
-        void testFailuresOfThePipelineAreNotLoggedBackIntoIt(@TempDir Path tempDir) throws Exception {
+        void testFailuresOfThePipelineAreNotLoggedBackIntoIt() throws Exception {
             // given: an appender counting the events it is given, with everything failing around the one it gets:
             // its message does not format, one of its values does not render, each of its requests is refused,
-            // and two of its three listeners throw, the third one saving it to a file once it is given up on
+            // and two of its three listeners throw, the third one handing it to a dead-letter appender once it is
+            // given up on
             var configuration = TestLogConfiguration.builder()
                     .flushThreshold(1)
                     .flushInterval(Duration.ofMillis(20))
@@ -2973,7 +2971,8 @@ class AbstractLogDeliveryAppenderTest {
                     throw new IllegalStateException("Simulated misbehaving listener");
                 }
             };
-            var deadLetters = new FileDeadLetterListener(tempDir.resolve("dead-letters.ndjson"));
+            var deadLetterAppender = RecordingAppender.started("dead-letters");
+            var deadLetters = new DeadLetterListener(deadLetterAppender);
             var appended = new AtomicInteger();
             var appender = new AbstractLogDeliveryAppender<>("logged-back-into", null, configuration) {
                 @Override
@@ -3018,7 +3017,7 @@ class AbstractLogDeliveryAppenderTest {
                 // when: the event is refused twice, given up on and saved, each failure on the way being logged
                 appender.append(loggingEvent);
                 long deadlineNanos = System.nanoTime() + SECONDS.toNanos(5);
-                while (isEmptyDirectory(tempDir)) {
+                while (deadLetterAppender.events().isEmpty()) {
                     assertThat(System.nanoTime()).as("The event should have been saved by now").isLessThan(deadlineNanos);
                     sleep(1);
                 }
@@ -3031,12 +3030,6 @@ class AbstractLogDeliveryAppenderTest {
             // then: the status logger of Log4j2 took every one of those logs, feeding nothing back. Through an
             // ordinary logger each would be one more event to deliver, whose own failures are logged in turn
             assertThat(appended).as("Events the appender was given").hasValue(1);
-        }
-
-        private static boolean isEmptyDirectory(Path directory) throws IOException {
-            try (Stream<Path> files = Files.list(directory)) {
-                return files.findAny().isEmpty();
-            }
         }
 
     }

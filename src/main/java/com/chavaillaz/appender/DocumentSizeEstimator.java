@@ -16,7 +16,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * {@code null}, {@link Boolean}, {@link Number}, {@link Map}, {@link Iterable} and array values count as their
  * JSON counterpart, the latter three recursively, and anything else as a JSON string of its
- * {@link String#valueOf(Object)} rendering, as {@link FileDeadLetterListener} writes them. Escaping is not
+ * {@link String#valueOf(Object)} rendering, as {@link DeadLetterListener} writes them. Escaping is not
  * counted, and nesting is followed to a bounded depth, past which a value counts as zero, so that a document
  * containing itself cannot recurse forever.
  */

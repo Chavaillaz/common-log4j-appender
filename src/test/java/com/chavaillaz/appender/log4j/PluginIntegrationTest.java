@@ -1,18 +1,26 @@
 package com.chavaillaz.appender.log4j;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiConsumer;
 import java.util.stream.IntStream;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.ErrorHandler;
+import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.config.builder.api.AppenderComponentBuilder;
 import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilder;
@@ -20,6 +28,7 @@ import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFact
 import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.core.util.NetUtils;
+import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.status.StatusData;
 import org.apache.logging.log4j.status.StatusListener;
 import org.apache.logging.log4j.status.StatusLogger;
@@ -27,8 +36,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import com.chavaillaz.appender.DeliveryOptions;
+import com.chavaillaz.appender.LogDelivery;
+import com.chavaillaz.appender.LogDeliveryListener;
+import com.chavaillaz.appender.RecordingAppender;
+import com.chavaillaz.appender.TransmissionResult;
 
 /**
  * Exercises {@link PluginIntegrationTestAppender} (and, transitively, {@link AbstractLogDeliveryAppender},
@@ -116,6 +130,36 @@ class PluginIntegrationTest {
     }
 
     @Test
+    @DisplayName("Hands what a stop reports to the appender nested in its element, which it starts and stops itself")
+    void testDeadLettersReachTheNestedAppender(@TempDir Path directory) throws IOException {
+        // given: requests answered long after a stop gives up on them, and a file appender nested in the element
+        Path file = directory.resolve("dead-letters.ndjson");
+        Logger logger = startContext(Map.of(), Map.of(
+                        "application", "integration-test-app",
+                        "transmissionDelayMillis", "3600000",
+                        "CloseTimeout", "200"),
+                (builder, appender) -> appender.addComponent(builder.newAppender("DeadLetters", "File")
+                        .addAttribute("fileName", file.toString())
+                        .add(builder.newLayout("PatternLayout").addAttribute("pattern", "%m%n"))));
+        for (int i = 0; i < 3; i++) {
+            logger.info("message {}", i);
+        }
+
+        // and: an appender the configuration does not know of, which would otherwise stop it in any order
+        assertThat(context.getConfiguration().getAppenders()).containsOnlyKeys("Test");
+
+        // when
+        context.stop();
+
+        // then: the documents still in flight once the stop gave up on them are lines of the file, which its
+        // appender closed, every one of them written
+        List<String> lines = Files.readAllLines(file, UTF_8);
+        assertThat(lines).hasSize(3)
+                .allSatisfy(line -> assertThat(line).startsWith("{\"reason\":\"still in flight when closed\""));
+        assertThat(lines).anySatisfy(line -> assertThat(line).contains("\"logmessage\":\"message 0\""));
+    }
+
+    @Test
     @DisplayName("Delivers every message logged right before the context stops with no shutdownTimeout set")
     void testStopWithoutShutdownTimeoutDeliversEveryLoggedMessage() {
         // given: batching and a slow transport, so a burst logged right before stopping is still queued for
@@ -163,6 +207,22 @@ class PluginIntegrationTest {
      * @return A logger of the started context
      */
     private Logger startContext(Map<String, String> properties, Map<String, String> attributes) {
+        return startContext(properties, attributes, (builder, appender) -> {
+            // Nothing nested
+        });
+    }
+
+    /**
+     * Starts a dedicated {@link LoggerContext} routing the root logger to the test appender (see
+     * {@link #startContext(int, long)}).
+     *
+     * @param properties The properties of the configuration, by name
+     * @param attributes The attributes of the appender, by name
+     * @param nested     Adds the elements nested in the one of the appender
+     * @return A logger of the started context
+     */
+    private Logger startContext(Map<String, String> properties, Map<String, String> attributes,
+                                BiConsumer<ConfigurationBuilder<BuiltConfiguration>, AppenderComponentBuilder> nested) {
         PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.clear();
         ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
         builder.setStatusLevel(Level.ERROR);
@@ -171,6 +231,7 @@ class PluginIntegrationTest {
         properties.forEach(builder::addProperty);
         AppenderComponentBuilder appender = builder.newAppender("Test", "TestDeliveryAppender");
         attributes.forEach(appender::addAttribute);
+        nested.accept(builder, appender);
         builder.add(appender);
         builder.add(builder.newRootLogger(Level.INFO)
                 .add(builder.newAppenderRef("Test")));
@@ -341,6 +402,67 @@ class PluginIntegrationTest {
         }
 
         @Test
+        @DisplayName("Hands the documents dropped to its dead-letter appender as well as to the listener of its delivery")
+        void testDeadLettersAreAddedToTheListenerOfTheDelivery() {
+            // given: a dead-letter appender not started yet, and a delivery giving up on a document at its first
+            // failure, whose own listener records it
+            var deadLetters = new RecordingAppender("DeadLetters", null);
+            var appender = new ListeningAppender(new OptionsBuilder(DeliveryOptions.defaults())
+                    .setName("Listening")
+                    .setDeadLetterAppender(deadLetters));
+
+            // when
+            appender.start();
+            appender.append(Log4jLogEvent.newBuilder()
+                    .setLoggerName("test")
+                    .setLevel(Level.INFO)
+                    .setMessage(new SimpleMessage("given up"))
+                    .build());
+            appender.stop(5, SECONDS);
+
+            // then: both got it, the appender having started the dead-letter appender, and stopped it once done
+            assertThat(appender.dropped).singleElement().satisfies(document -> assertThat(document).containsEntry("logmessage", "given up"));
+            assertThat(deadLetters.lines()).singleElement().satisfies(line -> assertThat(line)
+                    .startsWith("{\"reason\":\"maximum consecutive transmission failures exceeded\"")
+                    .contains("\"logmessage\":\"given up\""));
+            assertThat(deadLetters.isStopped()).isTrue();
+        }
+
+        @Test
+        @DisplayName("Reports a delivery taking no listener rather than leaving its dead-letter appender idle in silence")
+        void testDeliveryTakingNoListenerIsReported() {
+            // given
+            var deadLetters = new RecordingAppender("DeadLetters", null);
+            var appender = new ListenerlessAppender(new OptionsBuilder(DeliveryOptions.defaults())
+                    .setName("Listenerless")
+                    .setDeadLetterAppender(deadLetters));
+            var errors = new CopyOnWriteArrayList<String>();
+            appender.setHandler(new ErrorHandler() {
+                @Override
+                public void error(String message) {
+                    errors.add(message);
+                }
+
+                @Override
+                public void error(String message, Throwable throwable) {
+                    errors.add(message);
+                }
+
+                @Override
+                public void error(String message, LogEvent event, Throwable throwable) {
+                    errors.add(message);
+                }
+            });
+
+            // when
+            appender.start();
+            appender.stop(1, SECONDS);
+
+            // then
+            assertThat(errors).anySatisfy(error -> assertThat(error).contains("takes no listener", "DeadLetters"));
+        }
+
+        @Test
         @DisplayName("Requires a name, as every appender does")
         void testNameIsRequired() {
             // when / then
@@ -369,6 +491,73 @@ class PluginIntegrationTest {
         @Override
         public PluginIntegrationTestAppender build() {
             throw new UnsupportedOperationException("Never built by these tests");
+        }
+
+    }
+
+    /**
+     * An appender whose delivery refuses every request, giving up on a document at its first failure, and has a
+     * listener of its own recording the documents dropped.
+     */
+    static final class ListeningAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        final List<Map<String, Object>> dropped = new CopyOnWriteArrayList<>();
+
+        ListeningAppender(OptionsBuilder builder) {
+            super(builder, new TestLogConfiguration("test-application", "test-host", "test-environment",
+                    DeliveryOptions.builder().maxConsecutiveFailures(1).build()));
+        }
+
+        @Override
+        protected LogDelivery createLogDeliveryHandler() {
+            return new AbstractBatchLogDelivery<>(getLogConfiguration(), new LogDeliveryListener() {
+                @Override
+                public void onDocumentsDropped(List<Map<String, Object>> documents, String reason) {
+                    dropped.addAll(documents);
+                }
+            }) {
+                @Override
+                protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
+                    return CompletableFuture.completedFuture(TransmissionResult.failure(null));
+                }
+            };
+        }
+
+    }
+
+    /**
+     * An appender whose delivery implements only what {@link LogDelivery} requires, taking no listener.
+     */
+    static final class ListenerlessAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
+
+        ListenerlessAppender(OptionsBuilder builder) {
+            super(builder, new TestLogConfiguration("test-application", "test-host", "test-environment",
+                    DeliveryOptions.defaults()));
+        }
+
+        @Override
+        protected LogDelivery createLogDeliveryHandler() {
+            return new LogDelivery() {
+                @Override
+                public void send(Map<String, Object> document) {
+                    // Nothing sent
+                }
+
+                @Override
+                public void send(List<Map<String, Object>> documents) {
+                    // Nothing sent
+                }
+
+                @Override
+                public void flush() {
+                    // Nothing pending
+                }
+
+                @Override
+                public void close() {
+                    // Nothing to release
+                }
+            };
         }
 
     }

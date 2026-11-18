@@ -12,7 +12,7 @@ import org.apache.logging.log4j.status.StatusLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Writes the documents {@link FileDeadLetterListener} saves as JSON, without any dependency: see its class
+ * Writes the documents {@link DeadLetterListener} hands over as JSON, without any dependency: see its class
  * documentation for what is supported, and for how a value that cannot be written is replaced, so that no value
  * leaves a line a parser cannot read. {@link DocumentSizeEstimator} approximates the size of what it writes.
  */

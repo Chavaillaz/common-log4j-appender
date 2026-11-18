@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.Appender;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
@@ -37,6 +38,7 @@ import org.apache.logging.log4j.message.AsynchronouslyFormattable;
 import org.apache.logging.log4j.message.Message;
 import org.jspecify.annotations.Nullable;
 
+import com.chavaillaz.appender.DeadLetterListener;
 import com.chavaillaz.appender.DeliveryHealth;
 import com.chavaillaz.appender.DeliveryMetrics;
 import com.chavaillaz.appender.DeliveryOptions;
@@ -75,7 +77,8 @@ import com.chavaillaz.appender.internal.ThreadFactories;
  * {@link LogConfiguration#getDeliveryOptions()}).
  * <p>
  * Log4j2 creates the appender through the builder of its plugin, which extends {@link Builder}: the attributes
- * every appender takes come with it.
+ * every appender takes come with it, along with an appender nested in its element, which this one starts and
+ * stops itself, and hands the documents dropped to (see {@link DeadLetterListener}).
  *
  * @param <C> The configuration type
  */
@@ -223,6 +226,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final @Nullable LogConverter namedConverter;
 
     /**
+     * The appender nested in the element of this one, which the dropped documents are handed to, or
+     * {@code null} for none. Neither started nor stopped by Log4j2, which only knows of it through this one.
+     */
+    private final @Nullable Appender deadLetterAppender;
+
+    /**
      * Reports the events discarded on their way to the delivery (see {@link #reportDiscarded(List, String)}), so
      * that converting them and calling the listener never holds up the thread logging, nor the worker. Bounded
      * like the queue, a discard past it being counted and logged rather than waited for. Runs on a virtual
@@ -290,12 +299,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @throws NullPointerException If the name, the configuration or its delivery options are {@code null}
      */
     protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration) {
-        this(name, filter, configuration, null);
+        this(name, filter, configuration, null, null);
     }
 
     /**
-     * Creates a new appender from the builder of its plugin, which gives its name, its filter and its converter
-     * (see {@link Builder}), along with the configuration it built.
+     * Creates a new appender from the builder of its plugin, which gives its name, its filter, its converter
+     * and its dead-letter appender (see {@link Builder}), along with the configuration it built.
      *
      * @param builder       The builder of the plugin
      * @param configuration The configuration of the appender and of its delivery
@@ -303,7 +312,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     protected AbstractLogDeliveryAppender(Builder<?, ?> builder, C configuration) {
         this(Objects.requireNonNull(builder.getName(), "name must not be null"), builder.getFilter(), configuration,
-                builder.getConverter());
+                builder.getConverter(), builder.getDeadLetterAppender());
     }
 
     /**
@@ -313,11 +322,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param filter        The filter to associate with the appender, or {@code null} for none
      * @param configuration The configuration of the appender and of its delivery
      * @param converter     The class name of the converter, or {@code null} for the default one
+     * @param deadLetters   The appender the dropped documents are handed to, or {@code null} for none
      */
     // The reporter only keeps the reference to this appender, calling it once an event is discarded, which an
     // appender under construction receives none of
     @SuppressWarnings("this-escape")
-    private AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration, @Nullable String converter) {
+    private AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration, @Nullable String converter,
+                                        @Nullable Appender deadLetters) {
         super(name, filter, null, true, Property.EMPTY_ARRAY);
         this.logConfiguration = Objects.requireNonNull(configuration, "configuration must not be null");
         DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),
@@ -329,6 +340,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
         this.defaultConverter = new DefaultLogConverter(configuration);
         this.namedConverter = createConverter(converter, configuration);
+        this.deadLetterAppender = deadLetters;
         this.discardReporter = new DropReporter<>(this::reportDiscarded, options.maxQueuedEvents(),
                 withContextClassLoader(Thread.ofVirtual().name(threadName("discard-reporter", name))
                         .inheritInheritableThreadLocals(false).factory()));
@@ -485,15 +497,49 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      */
     private void startLogDeliveryHandler() {
         try {
-            logDeliveryHandler = createLogDeliveryHandler();
-            if (logDeliveryHandler == null) {
+            LogDelivery handler = createLogDeliveryHandler();
+            if (handler == null) {
                 // Every event is then discarded, as after a creation that threw, which at least was reported
                 error("Log delivery starting error: createLogDeliveryHandler() returned null, "
                         + "every logging event will be discarded");
+                return;
             }
+            try {
+                attachDeadLetters(handler);
+            } catch (Throwable e) {
+                // Throwable, as below: the delivery still works, the documents it drops reaching no dead letters
+                error("Dead-letter appender starting error, the documents dropped will not reach it", e);
+            }
+            logDeliveryHandler = handler;
         } catch (Throwable e) {
             // Throwable: a client library missing at runtime is an Error, which would fail the whole configuration
             error("Log delivery starting error", e);
+        }
+    }
+
+    /**
+     * Starts the dead-letter appender, if any, and adds the listener handing it the dropped documents to the
+     * one of the delivery, which every document dropped reaches, those this appender discards included.
+     *
+     * @param handler The delivery just created
+     */
+    private void attachDeadLetters(LogDelivery handler) {
+        Appender deadLetters = deadLetterAppender;
+        if (deadLetters == null) {
+            return;
+        }
+        if (!deadLetters.isStarted()) {
+            deadLetters.start();
+        }
+        if (handler instanceof AbstractBatchLogDelivery<?> delivery) {
+            LogDeliveryListener listener = delivery.getListener();
+            DeadLetterListener deadLetterListener = new DeadLetterListener(deadLetters);
+            delivery.setListener(listener == LogDeliveryListener.NOOP
+                    ? deadLetterListener
+                    : LogDeliveryListener.compose(listener, deadLetterListener));
+        } else {
+            error("The delivery " + handler.getClass().getName() + " takes no listener: the documents it drops "
+                    + "will not reach the dead-letter appender " + deadLetters.getName());
         }
     }
 
@@ -860,6 +906,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
                         + "stopped");
             }
             stopLogDeliveryHandler(remainingBudget(startNanos, budgetNanos));
+            // Last, once the delivery reported what it still held
+            stopDeadLetterAppender();
             // The filter alone, the state of this appender being changed here
             super.stop(timeout, timeUnit, false);
             setStopped();
@@ -918,6 +966,21 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
+     * Stops the dead-letter appender, if any, which no part of the configuration stops but this appender.
+     */
+    private void stopDeadLetterAppender() {
+        Appender deadLetters = deadLetterAppender;
+        if (deadLetters == null || !deadLetters.isStarted()) {
+            return;
+        }
+        try {
+            deadLetters.stop();
+        } catch (Throwable e) {
+            error("Dead-letter appender stopping error", e);
+        }
+    }
+
+    /**
      * Closes the delivery.
      *
      * @param timeout The maximum time closing it may take, or {@code null} to wait indefinitely
@@ -947,6 +1010,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      *     lookups of Log4j2, as {@code ${env:APP:-unknown}} or {@code ${sys:app}}</li>
      *     <li>{@code Converter}, the class name of the converter, built through its public constructor taking the
      *     configuration (see {@link LogConverter#newInstance(String, LogConfiguration)})</li>
+     *     <li>an appender nested in the element, which the dropped documents are handed to as lines of JSON (see
+     *     {@link DeadLetterListener}), a {@code RollingFile} for instance: declared there rather than among the
+     *     other appenders, it is started and stopped by the appender it serves, which Log4j2 would otherwise stop in
+     *     any order, possibly before the last of them reached it</li>
      *     <li>every delivery option, named as its accessor in {@link DeliveryOptions} but capitalized, such as
      *     {@code FlushThreshold}, durations in milliseconds, {@code TransmissionTimeout} waiting indefinitely at
      *     {@code 0}</li>
@@ -970,6 +1037,13 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         @PluginElement("Filter")
         private @Nullable Filter filter;
+
+        /**
+         * Any appender nested in the element, Log4j2 injecting into a field of this type the first child whose
+         * plugin is an appender, whatever its element name.
+         */
+        @PluginElement("DeadLetters")
+        private @Nullable Appender deadLetterAppender;
 
         /**
          * The configuration of Log4j2 creating the appender, which resolves the host name by default.
@@ -1159,6 +1233,15 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         }
 
         /**
+         * The appender nested in the element, which the dropped documents are handed to.
+         *
+         * @return The appender, or {@code null} for none
+         */
+        public @Nullable Appender getDeadLetterAppender() {
+            return deadLetterAppender;
+        }
+
+        /**
          * Sets the name of the appender.
          *
          * @param name The name
@@ -1233,6 +1316,17 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
          */
         public B setConverter(@Nullable String converter) {
             this.converter = converter;
+            return asBuilder();
+        }
+
+        /**
+         * Sets the appender the dropped documents are handed to, which the appender built starts and stops.
+         *
+         * @param deadLetterAppender The appender, or {@code null} for none
+         * @return This builder
+         */
+        public B setDeadLetterAppender(@Nullable Appender deadLetterAppender) {
+            this.deadLetterAppender = deadLetterAppender;
             return asBuilder();
         }
 

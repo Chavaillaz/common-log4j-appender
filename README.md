@@ -448,27 +448,39 @@ messages would come back to the appender as documents, each failure logging one 
 sending requests as fast as the downstream system refuses them while neither batching nor `RetryBackoff` holds
 them off.
 
-`FileDeadLetterListener` provides a ready-made `onDocumentsDropped` for the most common case: it appends
-every dropped document to a local file, one JSON object per line (newline-delimited JSON), wrapped with the
-reason and a timestamp, so nothing irrecoverably discarded is lost outright. Use it as-is, or combine it
-with your own listener (e.g. one that also records metrics) through `LogDeliveryListener.compose(...)`,
-which notifies each in turn, one failing not keeping the others from being notified:
+For the most common case, saving every dropped document to a file so that nothing irrecoverably discarded is
+lost outright, nest an appender of Log4j2 in the element of yours. The builder of the library takes it, and
+your appender starts it, hands it each dropped document as an event whose message is a line of JSON wrapping
+the document with the reason and a timestamp, and stops it once its own stop reported what it still held. A
+`RollingFile` writing the message alone keeps newline-delimited JSON, rotated, compressed, with the permissions
+and the retention it is given:
 
-```java
-LogDeliveryListener.compose(
-        new MetricsListener(),
-        new FileDeadLetterListener(Path.of("/var/log/myapp/dead-letters.ndjson")));
+```xml
+<ExampleAppender name="Collector" CollectorHost="logs.example.com" FlushThreshold="100">
+    <RollingFile name="DeadLetters" fileName="/var/log/shop/dead-letters.ndjson"
+                 filePattern="/var/log/shop/dead-letters-%d{yyyy-MM-dd}.ndjson.gz" filePermissions="rw-------">
+        <PatternLayout pattern="%m%n"/>
+        <TimeBasedTriggeringPolicy/>
+        <DefaultRolloverStrategy>
+            <Delete basePath="/var/log/shop" maxDepth="1">
+                <IfFileName glob="dead-letters-*.ndjson.gz"/>
+                <IfLastModified age="P30D"/>
+            </Delete>
+        </DefaultRolloverStrategy>
+    </RollingFile>
+</ExampleAppender>
 ```
+
+Declared there rather than among the other appenders, it is started and stopped by yours alone: Log4j2 stops
+the appenders of a configuration in no particular order, and could close the file before the last documents
+reached it. Your appender adds it to the listener of its delivery, which receives the documents as well.
+`DeadLetterListener` hands the dropped documents to an appender you give it in code, to combine with your own
+listener (e.g. one that also records metrics) through `LogDeliveryListener.compose(...)`, which notifies each in
+turn, one failing not keeping the others from being notified.
 
 The `Failover` appender of Log4j2 cannot stand in for it: it switches to its failovers once the appender it
 wraps throws, and this one never fails a call to `append()`, its transmissions failing later on threads of
 their own.
-
-The file rotates every day, the date being inserted before its extension: the documents dropped on 28
-September 2026 go to `dead-letters-2026-09-28.ndjson`, so that each day can be replayed, archived or deleted
-on its own. A day starts at midnight in the default time zone of the system, or in the one of the `Clock`
-passed as second argument. Several appenders, or applications on the same host, can share the file on a local
-disk: each line is appended whole, never cut by the lines of another.
 
 Four methods also let you poll the current state of the pipeline directly, e.g. from a health indicator, an
 alert or a metrics library, instead of only reacting to listener callbacks:

@@ -449,7 +449,7 @@ group holding them: a test added, renamed or removed changes this list too.
 
 #### Listeners and dead letters
 
-`LogDeliveryListenerTest`, `FileDeadLetterListenerTest`
+`LogDeliveryListenerTest`, `DeadLetterListenerTest`
 
 **Composed listeners**
 
@@ -460,19 +460,14 @@ group holding them: a test added, renamed or removed changes this list too.
 - Composes no listener into the no-op one, and a single listener into itself
 - Rejects a null listener when composing rather than when notifying, naming the argument
 
-**Dead-letter file**
+**Dead letters, handed to an appender**
 
-- Appends one JSON line per dropped document, wrapping it with the reason and a timestamp
-- Moves on to the file of the next day at midnight
-- Starts a day at midnight in the time zone of its clock
-- Appends the date to a file name with no extension, a leading dot not starting one
-- Appends across multiple calls instead of overwriting
-- Ends a line a write cut short left incomplete rather than appending to it
-- Appends on an interrupted thread, as an interrupted stop reports what it abandons
-- Ends an incomplete line before appending to it on an interrupted thread too
-- Starts an existing file left empty with its first line, without ending one that is not there
-- Keeps each line whole while another listener appends to the same file
-- Writes one line per document when multiple are dropped together
+- Hands the appender one event per dropped document, its message the document wrapped with the reason and the time it was dropped
+- Hands the appender nothing when no document is dropped
+- Leaves out a document the filter of the appender denies, as Log4j2 does
+
+**Dead letters, written as JSON**
+
 - Escapes characters JSON requires escaping in string values
 - Escapes control characters too, which JSON does not allow raw in a string
 - Saves half of a surrogate pair as its JSON escape rather than losing it
@@ -484,18 +479,14 @@ group holding them: a test added, renamed or removed changes this list too.
 - Truncates a self-referential document instead of overflowing the stack
 - Truncates a document nested deeper than the limit instead of overflowing the stack
 - Writes nesting up to the depth limit in full
-- Creates the parent directory of the target file if it does not exist yet
-- Fails at construction when the parent directory cannot be created, rather than at the first drop
-- Creates the parent directory again once removed, as a cleaner of old files does
 - Saves the rest of a document when one of its values cannot be rendered
 - Replaces a collection failing partway through its iteration as a whole, keeping the line valid
-- Reports a write failure through onWriteFailure instead of throwing
-- Logs the documents it could not save by default, so that they appear somewhere
-- Hands over only the documents a write failing partway left out of the file
-- Hands over every document when only closing the file fails, which can mean none reached it
-- Renders the documents write by write rather than all of them before the first write
-- Does not create the file at all when there is nothing to append
-- Leaves other virtual threads a carrier while writers wait for their turn at the file
+
+**Dead letters the appender does not take**
+
+- Hands the document an appender failed on, and those after it, to onAppendFailure instead of throwing
+- Hands every document to onAppendFailure while the appender is not started
+- Logs the documents the appender did not take by default, so that they appear somewhere
 
 #### Size estimate, options, metrics, health and results
 
@@ -568,6 +559,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Discovers the appender by its plugin name, binds attributes to its builder, and delivers a logged message through it
 - Binds the attributes every appender takes to the builder of the library, which the one of the plugin extends
 - Takes as host the hostName of the configuration of Log4j2 unless Host is set, one it defines included
+- Hands what a stop reports to the appender nested in its element, which it starts and stops itself
 - Delivers every message logged right before the context stops with no shutdownTimeout set
 
 **Plugin builder**
@@ -579,6 +571,8 @@ group holding them: a test added, renamed or removed changes this list too.
 - Takes the name of the machine as host when built without a configuration, unless Host is set
 - Converts with the converter its Converter attribute names, built with the configuration
 - Converts with the default converter, reporting why, when the one named cannot be created
+- Hands the documents dropped to its dead-letter appender as well as to the listener of its delivery
+- Reports a delivery taking no listener rather than leaving its dead-letter appender idle in silence
 - Requires a name, as every appender does
 
 #### As a packaged library
@@ -641,8 +635,8 @@ What an application or an implementer has to know, which the README or the Javad
   them all, the pipeline stalls, its queue discarding the oldest events.
 - **A transport ignoring interruption keeps its thread past the timeout.** The slot is freed and the documents are
   retried, but each attempt leaves one more virtual thread waiting in the client, with the documents it was given.
-- **A `Failover` appender never falls back from this one,** which never fails a call to `append()`. A
-  `FileDeadLetterListener` is the fallback.
+- **A `Failover` appender never falls back from this one,** which never fails a call to `append()`. An appender
+  nested in its element for its dead letters is the fallback.
 - **The health of the delivery gating the readiness of the application.** An outage of the downstream system then
   takes every instance out of service at once, and an instance out of service logs nothing that could bring it
   back. The health and the backpressure signal are meant for health indicators and alerts.
@@ -674,9 +668,13 @@ What an application or an implementer has to know, which the README or the Javad
 - **The host defaults to what `${hostName}` gives in the configuration of Log4j2,** the name of the machine as
   `InetAddress.getHostName()` finds it unless the configuration defines it, which may be its short name rather than
   its canonical one.
-- **Lines of a dead-letter file are kept whole only on a local file system.**
-- **Documents a dead-letter file fails to save are logged on the status logger by default,** at error level, which
-  Log4j2 prints to the standard error.
+- **Dead letters are kept as the appender nested for them is told,** the permissions of its file, its rotation,
+  compression and retention left to it, a `RollingFile` with `filePermissions` and a rollover strategy for
+  instance. Nested in the element of the appender, it is started and stopped with it alone, Log4j2 stopping the
+  appenders of a configuration in no particular order.
+- **Documents the dead-letter appender does not take,** stopped or failing, are logged on the status logger by
+  default, at error level, which Log4j2 prints to the standard error. An event logged once the appender stopped,
+  which Log4j2 still allows, is one of them, the dead-letter appender being stopped along with it.
 
 ### Known limitations
 
@@ -695,19 +693,14 @@ The scenarios that can hurt, left for now, with what could be done about them.
 - **Logging threads overloading the queue contend with the worker.** At `FlushThreshold` 1, throughput falls from
   570,000 to 250,000 events a second when four threads overload it, each eviction taking the lock the worker takes
   events under. A handoff without that lock, for many producers and a single consumer, would keep it.
-- **Held off at its pending cap, a batch reports each document it evicts on its own:** a `FileDeadLetterListener`
-  then opens its file once per event logged. Evictions could be reported in groups.
 - **Status warnings are not throttled.** A fault hitting every document, a size estimate always throwing for
   instance, logs one warning per document, which `-Dlog4j2.debug` prints.
-- **Dead-letter files have neither retention nor size cap.** An outage of days fills the disk, after which each
-  failing write logs its documents on the status logger.
-- **The size estimate and the dead-letter file copy a primitive array into a list of boxed values** to measure or
-  write it, taking memory in proportion to the array. A view of the array would not.
+- **The size estimate and the JSON of dead letters copy a primitive array into a list of boxed values** to measure
+  or write it, taking memory in proportion to the array. A view of the array would not.
 - **An MDC value that is a mutable object is kept by reference:** a document sent, or retried, later carries its
   state at that time.
-- **Dead-letter files follow symbolic links and take the default permissions of the process.** In a directory
-  other users can write to, the predictable name of the file of the next day can be redirected: the directory
-  should be private to the application.
+- **The file appenders of Log4j2 write inside `synchronized` code,** which keeps a virtual thread handing them dead
+  letters on its carrier while it writes, on Java 21 to 23.
 
 ### Minor
 
