@@ -548,23 +548,6 @@ group holding them: a test added, renamed or removed changes this list too.
 - Keeps a partial failure as it was returned, however it was built
 - Refuses a partial failure without its rejected elements, or with a null one, naming the argument
 
-#### Host name and properties
-
-`CommonUtilsTest`
-
-- Falls back to the given default value when the key is not found
-- Refuses a missing key, naming the argument
-- Returns the system property value when the key is found
-- Returns the environment variable of that name before the system property
-- Returns the canonical host name of the local machine
-- Falls back to localhost when the local machine has no name that resolves
-- Gives the host name its lookup finds, and localhost to a call made before it found it
-- Looks the host name up once, every later call sharing its result
-- Returns the lookup's result when it completes before the timeout
-- Falls back to localhost instead of waiting when the lookup exceeds the timeout
-- Hands a later call the result of a lookup that outlived the wait of an earlier one
-- Falls back to localhost when the lookup itself throws
-
 #### Under load, and through Log4j2
 
 `LoadTest`, `PluginIntegrationTest`
@@ -584,6 +567,7 @@ group holding them: a test added, renamed or removed changes this list too.
 
 - Discovers the appender by its plugin name, binds attributes to its builder, and delivers a logged message through it
 - Binds the attributes every appender takes to the builder of the library, which the one of the plugin extends
+- Takes as host the hostName of the configuration of Log4j2 unless Host is set, one it defines included
 - Delivers every message logged right before the context stops with no shutdownTimeout set
 
 **Plugin builder**
@@ -592,7 +576,7 @@ group holding them: a test added, renamed or removed changes this list too.
 - Sets every delivery option from the attribute named after it, durations in milliseconds
 - Waits indefinitely for an answer at a TransmissionTimeout of zero, and flushes on no severity at a blank FlushLevel
 - Fails on a FlushLevel naming no level, as on an option out of its range, rather than ignoring it
-- Takes the name of the machine as host unless Host is set
+- Takes the name of the machine as host when built without a configuration, unless Host is set
 - Converts with the converter its Converter attribute names, built with the configuration
 - Converts with the default converter, reporting why, when the one named cannot be created
 - Requires a name, as every appender does
@@ -626,8 +610,6 @@ The scenarios that cannot happen, and why.
   compared through their difference, exact for any delay that fits a `long`.
 - **The metric of transmissions in flight counting permits a close took in part.** `Semaphore.tryAcquire(n)` takes
   all of them at once or none.
-- **A hanging lookup of the host name keeping a carrier thread.** The lookups of `InetAddress` let the scheduler of
-  virtual threads add a carrier meanwhile.
 - **A dead-letter escape written with localized digits.** Hexadecimal formatting is never localized, unlike
   decimal (checked under `ar-SA`, `th-TH`, `hi-IN` and `fa-IR`).
 - **The pattern of a JSON number backtracking on a huge rendering.** It has no nested quantifier, and matches in
@@ -689,8 +671,9 @@ What an application or an implementer has to know, which the README or the Javad
   with the next appender, which a reconfiguration of Log4j2 creates.
 - **The time since the last success grows while there is nothing to send,** which is why it is read along with
   the status.
-- **The host name falls back to `localhost`** when its lookup takes more than 5 seconds, a later call getting the
-  real one.
+- **The host defaults to what `${hostName}` gives in the configuration of Log4j2,** the name of the machine as
+  `InetAddress.getHostName()` finds it unless the configuration defines it, which may be its short name rather than
+  its canonical one.
 - **Lines of a dead-letter file are kept whole only on a local file system.**
 - **Documents a dead-letter file fails to save are logged on the status logger by default,** at error level, which
   Log4j2 prints to the standard error.
@@ -712,8 +695,6 @@ The scenarios that can hurt, left for now, with what could be done about them.
 - **Logging threads overloading the queue contend with the worker.** At `FlushThreshold` 1, throughput falls from
   570,000 to 250,000 events a second when four threads overload it, each eviction taking the lock the worker takes
   events under. A handoff without that lock, for many producers and a single consumer, would keep it.
-- **Every appender built while the lookup of the host name hangs waits 5 seconds again.** The wait could be paid
-  once.
 - **Held off at its pending cap, a batch reports each document it evicts on its own:** a `FileDeadLetterListener`
   then opens its file once per event logged. Evictions could be reported in groups.
 - **Status warnings are not throttled.** A fault hitting every document, a size estimate always throwing for

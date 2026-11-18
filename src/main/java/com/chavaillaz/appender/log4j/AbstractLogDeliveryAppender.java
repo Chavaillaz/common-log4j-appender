@@ -25,11 +25,14 @@ import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
 import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.config.plugins.PluginBuilderAttribute;
+import org.apache.logging.log4j.core.config.plugins.PluginConfiguration;
 import org.apache.logging.log4j.core.config.plugins.PluginElement;
 import org.apache.logging.log4j.core.config.plugins.validation.constraints.Required;
 import org.apache.logging.log4j.core.util.Constants;
+import org.apache.logging.log4j.core.util.NetUtils;
 import org.apache.logging.log4j.message.AsynchronouslyFormattable;
 import org.apache.logging.log4j.message.Message;
 import org.jspecify.annotations.Nullable;
@@ -940,7 +943,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * <ul>
      *     <li>{@code name} (required) and a {@code Filter} element, as for any appender</li>
      *     <li>{@code Application}, {@code Host} and {@code Environment}, identifying the application in every
-     *     document (see {@link LogConfiguration})</li>
+     *     document (see {@link LogConfiguration}), which a configuration takes from the environment through the
+     *     lookups of Log4j2, as {@code ${env:APP:-unknown}} or {@code ${sys:app}}</li>
      *     <li>{@code Converter}, the class name of the converter, built through its public constructor taking the
      *     configuration (see {@link LogConverter#newInstance(String, LogConfiguration)})</li>
      *     <li>every delivery option, named as its accessor in {@link DeliveryOptions} but capitalized, such as
@@ -966,6 +970,12 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
         @PluginElement("Filter")
         private @Nullable Filter filter;
+
+        /**
+         * The configuration of Log4j2 creating the appender, which resolves the host name by default.
+         */
+        @PluginConfiguration
+        private @Nullable Configuration configuration;
 
         @PluginBuilderAttribute("Application")
         private String application = "unknown";
@@ -1116,12 +1126,18 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         }
 
         /**
-         * The name of the host the application runs on, the name of the machine unless set.
+         * The name of the host the application runs on, unless set the one {@code ${hostName}} gives in the
+         * configuration of Log4j2: a property of that name it defines, or else the name of the machine, which
+         * Log4j2 finds once per logger context. Without a configuration, the name of the machine.
          *
          * @return The host name
          */
         public String getHost() {
-            return host != null ? host : CommonUtils.getInitialHostname();
+            if (host != null) {
+                return host;
+            }
+            String hostName = configuration != null ? configuration.getStrSubstitutor().replace("${hostName:-}") : "";
+            return hostName == null || hostName.isEmpty() ? NetUtils.getLocalHostname() : hostName;
         }
 
         /**
@@ -1165,6 +1181,17 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         }
 
         /**
+         * Sets the configuration of Log4j2 creating the appender, which Log4j2 does itself.
+         *
+         * @param configuration The configuration
+         * @return This builder
+         */
+        public B setConfiguration(@Nullable Configuration configuration) {
+            this.configuration = configuration;
+            return asBuilder();
+        }
+
+        /**
          * Sets the name of the application generating the logs.
          *
          * @param application The application name
@@ -1178,7 +1205,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         /**
          * Sets the name of the host the application runs on.
          *
-         * @param host The host name, or {@code null} for the name of the machine
+         * @param host The host name, or {@code null} for the one {@code ${hostName}} gives (see
+         *             {@link #getHost()})
          * @return This builder
          */
         public B setHost(@Nullable String host) {

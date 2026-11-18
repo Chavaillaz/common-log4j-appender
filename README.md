@@ -351,6 +351,12 @@ An application then configures the appender by the name of its plugin, with the 
 </Configuration>
 ```
 
+An attribute takes its value from the environment through the lookups of Log4j2: `Application="${env:APP:-shop}"`
+reads the variable `APP`, and falls back to `shop` while it is unset, as `${sys:app}` reads a system property.
+`Host` defaults to what `${hostName}` gives: a property of that name the configuration defines, or else the
+name of the machine as Log4j2 finds it (`InetAddress.getHostName()`), which may be its short name rather than its
+canonical one.
+
 The [test of the example](src/it/example-appender/src/test/java/com/example/appender/ExampleAppenderTest.java)
 logs through such a configuration and checks what a collector of its own receives: a starting point for the
 test of your appender.
@@ -515,7 +521,7 @@ name, durations in milliseconds, along with `Converter`, the class name of the c
 | Setting         | Description                                                                                              |
 |-----------------|-------------------------------------------------------------------------------------------------------------|
 | `Application`   | Name of the application generating the logs, included in every document. Defaults to `unknown`. |
-| `Host`          | Name of the host the application is running on, included in every document. Defaults to the name of the machine. |
+| `Host`          | Name of the host the application is running on, included in every document. Defaults to what `${hostName}` gives in the configuration of Log4j2, the name of the machine unless the configuration defines it (see [Build and configuration](#4-build-and-configuration)). |
 | `Environment`   | Name of the environment the application is running in, included in every document. Defaults to `local`. |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. `1` sends every log individually (no batching). Defaults to `1`, an appender shipping logs over the network normally raising it. |
 | `FlushInterval` | Time between two periodic flushes, so that documents aren't delayed indefinitely under low traffic: a batch under `FlushThreshold`, documents stacked while `RetryBackoff` holds off transmissions, and those a failed transmission put back, all waiting for the next log otherwise. Defaults to `5s`; at least `1ms`. |

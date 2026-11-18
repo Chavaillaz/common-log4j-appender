@@ -19,6 +19,7 @@ import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilder;
 import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFactory;
 import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
+import org.apache.logging.log4j.core.util.NetUtils;
 import org.apache.logging.log4j.status.StatusData;
 import org.apache.logging.log4j.status.StatusListener;
 import org.apache.logging.log4j.status.StatusLogger;
@@ -87,7 +88,7 @@ class PluginIntegrationTest {
         attributes.put("TransmissionTimeout", "1500");
 
         // when
-        startContext(attributes);
+        startContext(Map.of(), attributes);
         var appender = (PluginIntegrationTestAppender) context.getConfiguration().getAppender("Test");
 
         // then: Log4j2 set the fields the plugin inherits, as it sets those it declares
@@ -98,6 +99,20 @@ class PluginIntegrationTest {
         assertThat(appender.getLogConfiguration().getDeliveryOptions().transmissionTimeout())
                 .isEqualTo(Duration.ofMillis(1_500));
         assertThat(appender.getLogConverter()).isInstanceOf(LogConverterTest.ApplicationConverter.class);
+    }
+
+    @Test
+    @DisplayName("Takes as host the hostName of the configuration of Log4j2 unless Host is set, one it defines included")
+    void testHostDefaultsToTheHostNameOfTheConfiguration() {
+        // given: a configuration defining the property ${hostName} resolves to, which otherwise holds the name of
+        // the machine Log4j2 found
+        startContext(Map.of("hostName", "configured-host"), Map.of("application", "integration-test-app"));
+
+        // when
+        var appender = (PluginIntegrationTestAppender) context.getConfiguration().getAppender("Test");
+
+        // then
+        assertThat(appender.getLogConfiguration().getHost()).isEqualTo("configured-host");
     }
 
     @Test
@@ -133,7 +148,7 @@ class PluginIntegrationTest {
      * @return A logger of the started context
      */
     private Logger startContext(int flushThreshold, long transmissionDelayMillis) {
-        return startContext(Map.of(
+        return startContext(Map.of(), Map.of(
                 "application", "integration-test-app",
                 "flushThreshold", String.valueOf(flushThreshold),
                 "transmissionDelayMillis", String.valueOf(transmissionDelayMillis)));
@@ -143,15 +158,17 @@ class PluginIntegrationTest {
      * Starts a dedicated {@link LoggerContext} routing the root logger to the test appender (see
      * {@link #startContext(int, long)}).
      *
+     * @param properties The properties of the configuration, by name
      * @param attributes The attributes of the appender, by name
      * @return A logger of the started context
      */
-    private Logger startContext(Map<String, String> attributes) {
+    private Logger startContext(Map<String, String> properties, Map<String, String> attributes) {
         PluginIntegrationTestAppender.RECEIVED_DOCUMENTS.clear();
         ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
         builder.setStatusLevel(Level.ERROR);
         builder.setConfigurationName("PluginIntegrationTest");
         builder.setPackages("com.chavaillaz.appender.log4j");
+        properties.forEach(builder::addProperty);
         AppenderComponentBuilder appender = builder.newAppender("Test", "TestDeliveryAppender");
         attributes.forEach(appender::addAttribute);
         builder.add(appender);
@@ -255,13 +272,13 @@ class PluginIntegrationTest {
         }
 
         @Test
-        @DisplayName("Takes the name of the machine as host unless Host is set")
-        void testHostDefaultsToTheMachine() {
-            // given
+        @DisplayName("Takes the name of the machine as host when built without a configuration, unless Host is set")
+        void testHostDefaultsToTheMachineWithoutAConfiguration() {
+            // given: a builder created in code, which no configuration of Log4j2 fills
             var builder = new OptionsBuilder(DeliveryOptions.defaults());
 
             // when / then
-            assertThat(builder.getHost()).isEqualTo(CommonUtils.getInitialHostname());
+            assertThat(builder.getHost()).isEqualTo(NetUtils.getLocalHostname());
             assertThat(builder.setHost("my-host").getHost()).isEqualTo("my-host");
         }
 
