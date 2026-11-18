@@ -225,7 +225,17 @@ against the ones you were given by reference identity, not `equals()`) are retri
 discarded, while the rest are reported delivered.
 
 To release resources (e.g. an HTTP client), override `close(Duration)`, calling `super.close(timeout)`
-first so the current batch is flushed before they're released.
+first so the current batch is flushed before they're released. It declares the `IOException` closing a client
+usually throws, and no broader exception, which would cover an `InterruptedException` that `AutoCloseable`
+advises against throwing:
+
+```java
+@Override
+public void close(@Nullable Duration timeout) throws IOException {
+    super.close(timeout);
+    client.close();
+}
+```
 
 ### 3. Appender
 

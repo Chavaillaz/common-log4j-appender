@@ -5,6 +5,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -458,7 +459,7 @@ class AbstractBatchLogDeliveryTest {
                 }
 
                 @Override
-                public void close(Duration timeout) throws Exception {
+                public void close(Duration timeout) throws IOException {
                     super.close(timeout);
                     closedWithin.add(timeout);
                 }
@@ -559,7 +560,7 @@ class AbstractBatchLogDeliveryTest {
             var closedWithin = new CopyOnWriteArrayList<Duration>();
             var logDelivery = new TestLogDelivery(configuration) {
                 @Override
-                public void close(Duration timeout) throws Exception {
+                public void close(Duration timeout) throws IOException {
                     super.close(timeout);
                     closedWithin.add(timeout);
                 }
@@ -586,7 +587,7 @@ class AbstractBatchLogDeliveryTest {
                 }
 
                 @Override
-                public void close(Duration timeout) throws Exception {
+                public void close(Duration timeout) throws IOException {
                     super.close(timeout);
                     closedWithin.add(timeout);
                 }

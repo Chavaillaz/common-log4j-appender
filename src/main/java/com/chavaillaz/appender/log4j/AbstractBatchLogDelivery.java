@@ -2,6 +2,7 @@ package com.chavaillaz.appender.log4j;
 
 import static java.util.Collections.singletonList;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -45,8 +46,6 @@ import com.chavaillaz.appender.internal.BatcherListener;
  *
  * @param <C> The configuration type
  */
-// close() declares the exception of LogDelivery, for a subclass to fail with the one of the client it closes
-@SuppressWarnings("try")
 public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> implements LogDelivery {
 
     /**
@@ -407,10 +406,11 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * Closes this delivery within {@link DeliveryOptions#closeTimeout()} (see {@link #close(Duration)}, the
      * one to override).
      *
-     * @throws Exception If closing fails
+     * @throws IOException If a subclass fails to release the resources of its client (see
+     *                     {@link #close(Duration)})
      */
     @Override
-    public final void close() throws Exception {
+    public final void close() throws IOException {
         close(closeTimeout());
     }
 
@@ -427,11 +427,12 @@ public abstract class AbstractBatchLogDelivery<C extends LogConfiguration> imple
      * within its own timeout, rather than waiting again for the transmissions it gave up on.
      *
      * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
-     * @throws Exception Never thrown by this implementation (an interruption while waiting is caught,
-     *                    re-flagged on the current thread, and logged instead)
+     * @throws IOException Never thrown by this implementation, but by a subclass failing to release the resources
+     *                     of its client: an interruption while waiting is caught, re-flagged on the current
+     *                     thread, and logged instead
      */
     @Override
-    public void close(@Nullable Duration timeout) throws Exception {
+    public void close(@Nullable Duration timeout) throws IOException {
         batcher.close(timeout);
     }
 

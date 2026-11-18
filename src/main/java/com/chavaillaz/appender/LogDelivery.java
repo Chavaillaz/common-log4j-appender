@@ -1,5 +1,6 @@
 package com.chavaillaz.appender;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -9,9 +10,6 @@ import org.jspecify.annotations.Nullable;
 /**
  * Transmits the documents converted from logging events to an external system.
  */
-// close() stays the one of AutoCloseable, free to fail with the exception of the client an implementation
-// closes: the compiler reports it for every type able to throw an InterruptedException from there
-@SuppressWarnings("try")
 public interface LogDelivery extends AutoCloseable {
 
     /**
@@ -71,14 +69,24 @@ public interface LogDelivery extends AutoCloseable {
     }
 
     /**
+     * Closes this delivery, sending first what it still holds. An interruption while waiting is not thrown, as
+     * {@link AutoCloseable#close()} advises: the interrupt flag of the current thread is set again instead.
+     *
+     * @throws IOException If releasing the resources of this delivery fails, the connections of its client for
+     *                     instance
+     */
+    @Override
+    void close() throws IOException;
+
+    /**
      * Closes this delivery, waiting at most the given time for what it still has to send, so that an appender
      * stopping can hand it what is left of its own budget. Defaults to {@link #close()}, for an implementation
      * with nothing to wait for.
      *
      * @param timeout The maximum time to wait, or {@code null} to wait indefinitely
-     * @throws Exception If closing fails
+     * @throws IOException If releasing the resources of this delivery fails
      */
-    default void close(@Nullable Duration timeout) throws Exception {
+    default void close(@Nullable Duration timeout) throws IOException {
         close();
     }
 

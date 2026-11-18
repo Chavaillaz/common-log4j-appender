@@ -245,13 +245,12 @@
                     <execution>
                         <id>default-testCompile</id>
                         <configuration>
-                            <!-- The same, but for what the tests have no answer to: "try", every delivery of
-                                 theirs inheriting a close() free to throw any exception; "serial", their events,
-                                 queues and exceptions never being serialized; "exports" and
-                                 "missing-explicit-ctor", about what a module shows its clients, the tests being
-                                 compiled into it without being part of it -->
+                            <!-- The same, but for what the tests have no answer to: "serial", their events, queues
+                                 and exceptions never being serialized; "exports" and "missing-explicit-ctor", about
+                                 what a module shows its clients, the tests being compiled into it without being
+                                 part of it -->
                             <compilerArgs>
-                                <arg>-Xlint:all,-processing,-classfile,-try,-serial,-exports,-missing-explicit-ctor</arg>
+                                <arg>-Xlint:all,-processing,-classfile,-serial,-exports,-missing-explicit-ctor</arg>
                             </compilerArgs>
                         </configuration>
                     </execution>
