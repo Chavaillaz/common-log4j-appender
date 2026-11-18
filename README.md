@@ -668,7 +668,9 @@ with the library compiled as it is released, which `mvn compile` followed by
 ### Releasing
 
 A release is made by the maintainer, from a clean working tree: `sh release.sh` asks for the version, sets it
-in the POM, and pushes that commit as a tag of the same name, `master` keeping its snapshot version.
+in the POM and in the dependency this page shows, and pushes that commit as a tag of the same name. `master`
+keeps its snapshot version, and takes the README naming the new version in a commit of its own, to push with
+the next ones.
 Publishing a GitHub release for that tag then starts the [workflow](.github/workflows/maven-publish.yml)
 building, signing and publishing the artifacts to Maven Central.
 
