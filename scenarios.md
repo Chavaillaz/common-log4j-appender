@@ -583,7 +583,19 @@ group holding them: a test added, renamed or removed changes this list too.
 **Plugin loaded by Log4j2**
 
 - Discovers the appender by its plugin name, binds attributes to its builder, and delivers a logged message through it
+- Binds the attributes every appender takes to the builder of the library, which the one of the plugin extends
 - Delivers every message logged right before the context stops with no shutdownTimeout set
+
+**Plugin builder**
+
+- Keeps the delivery options it defaults to for every attribute left unset
+- Sets every delivery option from the attribute named after it, durations in milliseconds
+- Waits indefinitely for an answer at a TransmissionTimeout of zero, and flushes on no severity at a blank FlushLevel
+- Fails on a FlushLevel naming no level, as on an option out of its range, rather than ignoring it
+- Takes the name of the machine as host unless Host is set
+- Converts with the converter its Converter attribute names, built with the configuration
+- Converts with the default converter, reporting why, when the one named cannot be created
+- Requires a name, as every appender does
 
 #### As a packaged library
 

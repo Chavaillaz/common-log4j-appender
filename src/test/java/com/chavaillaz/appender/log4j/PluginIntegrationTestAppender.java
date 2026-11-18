@@ -9,12 +9,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.core.Appender;
 import org.apache.logging.log4j.core.Core;
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.plugins.Plugin;
 import org.apache.logging.log4j.core.config.plugins.PluginBuilderAttribute;
 import org.apache.logging.log4j.core.config.plugins.PluginBuilderFactory;
 
+import com.chavaillaz.appender.DeliveryOptions;
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.TransmissionResult;
 
@@ -38,35 +37,39 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
 
     private final long transmissionDelayMillis;
 
-    private PluginIntegrationTestAppender(String name, Filter filter, TestLogConfiguration configuration,
-                                          long transmissionDelayMillis) {
-        super(name, filter, configuration);
-        this.transmissionDelayMillis = transmissionDelayMillis;
+    private PluginIntegrationTestAppender(Builder builder, TestLogConfiguration configuration) {
+        super(builder, configuration);
+        this.transmissionDelayMillis = builder.transmissionDelayMillis;
     }
 
     /**
      * The builder Log4j2 discovers (via {@link PluginBuilderFactory}) and populates from the matching XML
-     * (or programmatically built, see {@link PluginIntegrationTest}) appender element's attributes.
+     * (or programmatically built, see {@link PluginIntegrationTest}) appender element's attributes: those of
+     * the builder of the library, inherited, and one of its own.
      */
-    public static class Builder extends AbstractAppender.Builder<Builder>
-            implements org.apache.logging.log4j.core.util.Builder<PluginIntegrationTestAppender> {
-
-        @PluginBuilderAttribute
-        private String application = "unnamed-application";
-
-        @PluginBuilderAttribute
-        private int flushThreshold = 1;
+    public static class Builder extends AbstractLogDeliveryAppender.Builder<PluginIntegrationTestAppender, Builder> {
 
         @PluginBuilderAttribute
         private long transmissionDelayMillis = 0;
 
+        /**
+         * The options of the configuration of the other tests, which disable the retry backoff.
+         */
+        @Override
+        protected DeliveryOptions defaultDeliveryOptions() {
+            return TestLogConfiguration.builder().build().getDeliveryOptions();
+        }
+
         @Override
         public PluginIntegrationTestAppender build() {
-            TestLogConfiguration configuration = TestLogConfiguration.builder()
-                    .application(application)
-                    .flushThreshold(flushThreshold)
-                    .build();
-            return new PluginIntegrationTestAppender(getName(), getFilter(), configuration, transmissionDelayMillis);
+            TestLogConfiguration configuration = new TestLogConfiguration(getApplication(), getHost(),
+                    getEnvironment(), getDeliveryOptions());
+            return new PluginIntegrationTestAppender(this, configuration);
+        }
+
+        public Builder setTransmissionDelayMillis(long transmissionDelayMillis) {
+            this.transmissionDelayMillis = transmissionDelayMillis;
+            return this;
         }
 
     }

@@ -19,12 +19,16 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Consumer;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.Filter;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.config.plugins.PluginBuilderAttribute;
+import org.apache.logging.log4j.core.config.plugins.PluginElement;
+import org.apache.logging.log4j.core.config.plugins.validation.constraints.Required;
 import org.apache.logging.log4j.core.util.Constants;
 import org.apache.logging.log4j.message.AsynchronouslyFormattable;
 import org.apache.logging.log4j.message.Message;
@@ -66,6 +70,9 @@ import com.chavaillaz.appender.internal.ThreadFactories;
  * <p>
  * The delivery options are read once, when the appender is created (see
  * {@link LogConfiguration#getDeliveryOptions()}).
+ * <p>
+ * Log4j2 creates the appender through the builder of its plugin, which extends {@link Builder}: the attributes
+ * every appender takes come with it.
  *
  * @param <C> The configuration type
  */
@@ -208,6 +215,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final DefaultLogConverter defaultConverter;
 
     /**
+     * The converter the builder of the plugin named, or {@code null} for {@link #defaultConverter}.
+     */
+    private final @Nullable LogConverter namedConverter;
+
+    /**
      * Reports the events discarded on their way to the delivery (see {@link #reportDiscarded(List, String)}), so
      * that converting them and calling the listener never holds up the thread logging, nor the worker. Bounded
      * like the queue, a discard past it being counted and logged rather than waited for. Runs on a virtual
@@ -274,10 +286,35 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param configuration The configuration of the appender and of its delivery
      * @throws NullPointerException If the name, the configuration or its delivery options are {@code null}
      */
+    protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration) {
+        this(name, filter, configuration, null);
+    }
+
+    /**
+     * Creates a new appender from the builder of its plugin, which gives its name, its filter and its converter
+     * (see {@link Builder}), along with the configuration it built.
+     *
+     * @param builder       The builder of the plugin
+     * @param configuration The configuration of the appender and of its delivery
+     * @throws NullPointerException If the name, the configuration or its delivery options are {@code null}
+     */
+    protected AbstractLogDeliveryAppender(Builder<?, ?> builder, C configuration) {
+        this(Objects.requireNonNull(builder.getName(), "name must not be null"), builder.getFilter(), configuration,
+                builder.getConverter());
+    }
+
+    /**
+     * Creates a new appender transmitting logs.
+     *
+     * @param name          The appender name
+     * @param filter        The filter to associate with the appender, or {@code null} for none
+     * @param configuration The configuration of the appender and of its delivery
+     * @param converter     The class name of the converter, or {@code null} for the default one
+     */
     // The reporter only keeps the reference to this appender, calling it once an event is discarded, which an
     // appender under construction receives none of
     @SuppressWarnings("this-escape")
-    protected AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration) {
+    private AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration, @Nullable String converter) {
         super(name, filter, null, true, Property.EMPTY_ARRAY);
         this.logConfiguration = Objects.requireNonNull(configuration, "configuration must not be null");
         DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),
@@ -288,9 +325,31 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.closeTimeout = options.closeTimeout();
         this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
         this.defaultConverter = new DefaultLogConverter(configuration);
+        this.namedConverter = createConverter(converter, configuration);
         this.discardReporter = new DropReporter<>(this::reportDiscarded, options.maxQueuedEvents(),
                 withContextClassLoader(Thread.ofVirtual().name(threadName("discard-reporter", name))
                         .inheritInheritableThreadLocals(false).factory()));
+    }
+
+    /**
+     * Creates the converter of the given class, built with the configuration (see
+     * {@link LogConverter#newInstance(String, LogConfiguration)}). One that cannot be created is reported, the
+     * default one converting the events instead, rather than every event being lost to a name misspelled.
+     *
+     * @param className     The class name of the converter, or {@code null} for the default one
+     * @param configuration The configuration to build it with
+     * @return The converter, or {@code null} for the default one
+     */
+    private static @Nullable LogConverter createConverter(@Nullable String className, LogConfiguration configuration) {
+        if (className == null || className.isBlank() || DefaultLogConverter.class.getName().equals(className)) {
+            return null;
+        }
+        try {
+            return LogConverter.newInstance(className, configuration);
+        } catch (Exception | LinkageError e) {
+            LOGGER.error("Unable to create the converter {}, converting with the default one instead", className, e);
+            return null;
+        }
     }
 
     /**
@@ -679,11 +738,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
 
     /**
      * The converter turning an event into the document sent, called for every event on the background thread by
-     * the task {@link #createLogDeliveryTask(LogEvent)} creates by default. Defaults to a
+     * the task {@link #createLogDeliveryTask(LogEvent)} creates by default. Defaults to the one the
+     * {@code Converter} attribute of the plugin names (see {@link Builder}), or else to a
      * {@link DefaultLogConverter} built with the configuration of this appender; override it to return another
-     * one, created once rather than on every call (see {@link LogConverter#newInstance(String, LogConfiguration)}
-     * for one named in a configuration), along with {@link #requiresLocation()} for one reading the location of
-     * the caller.
+     * one, created once rather than on every call, along with {@link #requiresLocation()} for one reading the
+     * location of the caller.
      * <p>
      * The events this appender discards, when its queue is full, a stop gives up on them, this converter fails on
      * them or the delivery throws on them, are reported to the listener converted by a {@link DefaultLogConverter}
@@ -693,7 +752,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return The converter to use
      */
     protected LogConverter getLogConverter() {
-        return defaultConverter;
+        return namedConverter != null ? namedConverter : defaultConverter;
     }
 
     /**
@@ -873,6 +932,436 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             // super.stop() must still run
             error("Log delivery closing error", e);
         }
+    }
+
+    /**
+     * The builder of an appender plugin, holding the attributes every appender built on this library takes,
+     * which Log4j2 sets from the element configuring it before calling {@link #build()}:
+     * <ul>
+     *     <li>{@code name} (required) and a {@code Filter} element, as for any appender</li>
+     *     <li>{@code Application}, {@code Host} and {@code Environment}, identifying the application in every
+     *     document (see {@link LogConfiguration})</li>
+     *     <li>{@code Converter}, the class name of the converter, built through its public constructor taking the
+     *     configuration (see {@link LogConverter#newInstance(String, LogConfiguration)})</li>
+     *     <li>every delivery option, named as its accessor in {@link DeliveryOptions} but capitalized, such as
+     *     {@code FlushThreshold}, durations in milliseconds, {@code TransmissionTimeout} waiting indefinitely at
+     *     {@code 0}</li>
+     * </ul>
+     * A delivery option left unset keeps the value {@link #defaultDeliveryOptions()} gives it. The builder of an
+     * appender extends this one with the attributes of its own, each with a public setter returning the builder,
+     * which the annotation processor of Log4j2 requires, and builds its configuration from
+     * {@link #getApplication()}, {@link #getHost()}, {@link #getEnvironment()} and {@link #getDeliveryOptions()},
+     * before creating the appender with it (see
+     * {@link AbstractLogDeliveryAppender#AbstractLogDeliveryAppender(Builder, LogConfiguration)}).
+     *
+     * @param <A> The type of the appender built
+     * @param <B> The type of the builder, which its setters return
+     */
+    public abstract static class Builder<A extends AbstractLogDeliveryAppender<?>, B extends Builder<A, B>>
+            implements org.apache.logging.log4j.core.util.Builder<A> {
+
+        @PluginBuilderAttribute
+        @Required(message = "No appender name provided")
+        private @Nullable String name;
+
+        @PluginElement("Filter")
+        private @Nullable Filter filter;
+
+        @PluginBuilderAttribute("Application")
+        private String application = "unknown";
+
+        @PluginBuilderAttribute("Host")
+        private @Nullable String host;
+
+        @PluginBuilderAttribute("Environment")
+        private String environment = "local";
+
+        @PluginBuilderAttribute("Converter")
+        private @Nullable String converter;
+
+        @PluginBuilderAttribute("FlushThreshold")
+        private @Nullable Integer flushThreshold;
+
+        @PluginBuilderAttribute("FlushInterval")
+        private @Nullable Long flushInterval;
+
+        @PluginBuilderAttribute("FlushLevel")
+        private @Nullable String flushLevel;
+
+        @PluginBuilderAttribute("MaxConcurrentTransmissions")
+        private @Nullable Integer maxConcurrentTransmissions;
+
+        @PluginBuilderAttribute("MaxPendingDocuments")
+        private @Nullable Integer maxPendingDocuments;
+
+        @PluginBuilderAttribute("MaxRequestDocuments")
+        private @Nullable Integer maxRequestDocuments;
+
+        @PluginBuilderAttribute("MaxPendingBytes")
+        private @Nullable Long maxPendingBytes;
+
+        @PluginBuilderAttribute("MaxRequestBytes")
+        private @Nullable Long maxRequestBytes;
+
+        @PluginBuilderAttribute("MaxConsecutiveFailures")
+        private @Nullable Integer maxConsecutiveFailures;
+
+        @PluginBuilderAttribute("MaxQueuedEvents")
+        private @Nullable Integer maxQueuedEvents;
+
+        @PluginBuilderAttribute("RetryBackoff")
+        private @Nullable Long retryBackoff;
+
+        @PluginBuilderAttribute("MaxRetryBackoff")
+        private @Nullable Long maxRetryBackoff;
+
+        @PluginBuilderAttribute("TransmissionTimeout")
+        private @Nullable Long transmissionTimeout;
+
+        @PluginBuilderAttribute("CloseTimeout")
+        private @Nullable Long closeTimeout;
+
+        /**
+         * Creates a builder, every attribute unset.
+         */
+        protected Builder() {
+            // Extended by the builder of each appender plugin
+        }
+
+        /**
+         * This builder, as the type its setters return.
+         *
+         * @return This builder
+         */
+        @SuppressWarnings("unchecked")
+        protected B asBuilder() {
+            return (B) this;
+        }
+
+        /**
+         * The delivery options an attribute left unset keeps the value of, {@link DeliveryOptions#defaults()}
+         * by default. Override it for other defaults, an appender sending documents over the network batching
+         * them for instance.
+         *
+         * @return The default delivery options
+         */
+        protected DeliveryOptions defaultDeliveryOptions() {
+            return DeliveryOptions.defaults();
+        }
+
+        /**
+         * Builds the delivery options from {@link #defaultDeliveryOptions()} and the attributes set.
+         *
+         * @return The delivery options
+         * @throws IllegalArgumentException If an option is out of its range, or the flush level is not a level
+         */
+        public DeliveryOptions getDeliveryOptions() {
+            DeliveryOptions.Builder options = defaultDeliveryOptions().with();
+            ifSet(flushThreshold, options::flushThreshold);
+            ifSet(flushInterval, millis -> options.flushInterval(Duration.ofMillis(millis)));
+            // Failing the configuration rather than ignoring a level misspelled
+            ifSet(flushLevel, level -> options.flushLevel(level.isBlank() ? null : Level.valueOf(level)));
+            ifSet(maxConcurrentTransmissions, options::maxConcurrentTransmissions);
+            ifSet(maxPendingDocuments, options::maxPendingDocuments);
+            ifSet(maxRequestDocuments, options::maxRequestDocuments);
+            ifSet(maxPendingBytes, options::maxPendingBytes);
+            ifSet(maxRequestBytes, options::maxRequestBytes);
+            ifSet(maxConsecutiveFailures, options::maxConsecutiveFailures);
+            ifSet(maxQueuedEvents, options::maxQueuedEvents);
+            ifSet(retryBackoff, millis -> options.retryBackoff(Duration.ofMillis(millis)));
+            ifSet(maxRetryBackoff, millis -> options.maxRetryBackoff(Duration.ofMillis(millis)));
+            ifSet(transmissionTimeout, millis -> options.transmissionTimeout(millis == 0 ? null : Duration.ofMillis(millis)));
+            ifSet(closeTimeout, millis -> options.closeTimeout(Duration.ofMillis(millis)));
+            return options.build();
+        }
+
+        /**
+         * Hands the given attribute to the given setter of the options, unless it was left unset.
+         *
+         * @param value  The value of the attribute, or {@code null} if left unset
+         * @param setter The setter of the options taking it
+         * @param <V>    The type of the attribute
+         */
+        private static <V> void ifSet(@Nullable V value, Consumer<V> setter) {
+            if (value != null) {
+                setter.accept(value);
+            }
+        }
+
+        /**
+         * The name of the appender.
+         *
+         * @return The name, or {@code null} if not set yet
+         */
+        public @Nullable String getName() {
+            return name;
+        }
+
+        /**
+         * The filter of the appender.
+         *
+         * @return The filter, or {@code null} for none
+         */
+        public @Nullable Filter getFilter() {
+            return filter;
+        }
+
+        /**
+         * The name of the application generating the logs, {@code unknown} unless set.
+         *
+         * @return The application name
+         */
+        public String getApplication() {
+            return application;
+        }
+
+        /**
+         * The name of the host the application runs on, the name of the machine unless set.
+         *
+         * @return The host name
+         */
+        public String getHost() {
+            return host != null ? host : CommonUtils.getInitialHostname();
+        }
+
+        /**
+         * The name of the environment the application runs in, {@code local} unless set.
+         *
+         * @return The environment name
+         */
+        public String getEnvironment() {
+            return environment;
+        }
+
+        /**
+         * The class name of the converter.
+         *
+         * @return The class name, or {@code null} for the default converter
+         */
+        public @Nullable String getConverter() {
+            return converter;
+        }
+
+        /**
+         * Sets the name of the appender.
+         *
+         * @param name The name
+         * @return This builder
+         */
+        public B setName(String name) {
+            this.name = name;
+            return asBuilder();
+        }
+
+        /**
+         * Sets the filter of the appender.
+         *
+         * @param filter The filter, or {@code null} for none
+         * @return This builder
+         */
+        public B setFilter(@Nullable Filter filter) {
+            this.filter = filter;
+            return asBuilder();
+        }
+
+        /**
+         * Sets the name of the application generating the logs.
+         *
+         * @param application The application name
+         * @return This builder
+         */
+        public B setApplication(String application) {
+            this.application = application;
+            return asBuilder();
+        }
+
+        /**
+         * Sets the name of the host the application runs on.
+         *
+         * @param host The host name, or {@code null} for the name of the machine
+         * @return This builder
+         */
+        public B setHost(@Nullable String host) {
+            this.host = host;
+            return asBuilder();
+        }
+
+        /**
+         * Sets the name of the environment the application runs in.
+         *
+         * @param environment The environment name
+         * @return This builder
+         */
+        public B setEnvironment(String environment) {
+            this.environment = environment;
+            return asBuilder();
+        }
+
+        /**
+         * Sets the class name of the converter.
+         *
+         * @param converter The class name, or {@code null} for the default converter
+         * @return This builder
+         */
+        public B setConverter(@Nullable String converter) {
+            this.converter = converter;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code FlushThreshold} (see {@link DeliveryOptions#flushThreshold()}).
+         *
+         * @param flushThreshold The flush threshold
+         * @return This builder
+         */
+        public B setFlushThreshold(int flushThreshold) {
+            this.flushThreshold = flushThreshold;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code FlushInterval} (see {@link DeliveryOptions#flushInterval()}).
+         *
+         * @param flushInterval The flush interval, in milliseconds
+         * @return This builder
+         */
+        public B setFlushInterval(long flushInterval) {
+            this.flushInterval = flushInterval;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code FlushLevel} (see {@link DeliveryOptions#flushLevel()}).
+         *
+         * @param flushLevel The name of the level, whatever its case, or a blank one for none
+         * @return This builder
+         */
+        public B setFlushLevel(@Nullable String flushLevel) {
+            this.flushLevel = flushLevel;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxConcurrentTransmissions} (see {@link DeliveryOptions#maxConcurrentTransmissions()}).
+         *
+         * @param maxConcurrentTransmissions The maximum number of concurrent transmissions
+         * @return This builder
+         */
+        public B setMaxConcurrentTransmissions(int maxConcurrentTransmissions) {
+            this.maxConcurrentTransmissions = maxConcurrentTransmissions;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxPendingDocuments} (see {@link DeliveryOptions#maxPendingDocuments()}).
+         *
+         * @param maxPendingDocuments The maximum number of pending documents
+         * @return This builder
+         */
+        public B setMaxPendingDocuments(int maxPendingDocuments) {
+            this.maxPendingDocuments = maxPendingDocuments;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxRequestDocuments} (see {@link DeliveryOptions#maxRequestDocuments()}).
+         *
+         * @param maxRequestDocuments The maximum number of documents per request
+         * @return This builder
+         */
+        public B setMaxRequestDocuments(int maxRequestDocuments) {
+            this.maxRequestDocuments = maxRequestDocuments;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxPendingBytes} (see {@link DeliveryOptions#maxPendingBytes()}).
+         *
+         * @param maxPendingBytes The maximum pending size, in bytes
+         * @return This builder
+         */
+        public B setMaxPendingBytes(long maxPendingBytes) {
+            this.maxPendingBytes = maxPendingBytes;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxRequestBytes} (see {@link DeliveryOptions#maxRequestBytes()}).
+         *
+         * @param maxRequestBytes The maximum request size, in bytes
+         * @return This builder
+         */
+        public B setMaxRequestBytes(long maxRequestBytes) {
+            this.maxRequestBytes = maxRequestBytes;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxConsecutiveFailures} (see {@link DeliveryOptions#maxConsecutiveFailures()}).
+         *
+         * @param maxConsecutiveFailures The maximum number of consecutive failures
+         * @return This builder
+         */
+        public B setMaxConsecutiveFailures(int maxConsecutiveFailures) {
+            this.maxConsecutiveFailures = maxConsecutiveFailures;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxQueuedEvents} (see {@link DeliveryOptions#maxQueuedEvents()}).
+         *
+         * @param maxQueuedEvents The maximum number of queued events
+         * @return This builder
+         */
+        public B setMaxQueuedEvents(int maxQueuedEvents) {
+            this.maxQueuedEvents = maxQueuedEvents;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code RetryBackoff} (see {@link DeliveryOptions#retryBackoff()}).
+         *
+         * @param retryBackoff The base retry delay, in milliseconds
+         * @return This builder
+         */
+        public B setRetryBackoff(long retryBackoff) {
+            this.retryBackoff = retryBackoff;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code MaxRetryBackoff} (see {@link DeliveryOptions#maxRetryBackoff()}).
+         *
+         * @param maxRetryBackoff The maximum retry delay, in milliseconds
+         * @return This builder
+         */
+        public B setMaxRetryBackoff(long maxRetryBackoff) {
+            this.maxRetryBackoff = maxRetryBackoff;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code TransmissionTimeout} (see {@link DeliveryOptions#transmissionTimeout()}).
+         *
+         * @param transmissionTimeout The transmission timeout, in milliseconds, or {@code 0} to wait indefinitely
+         * @return This builder
+         */
+        public B setTransmissionTimeout(long transmissionTimeout) {
+            this.transmissionTimeout = transmissionTimeout;
+            return asBuilder();
+        }
+
+        /**
+         * Sets {@code CloseTimeout} (see {@link DeliveryOptions#closeTimeout()}).
+         *
+         * @param closeTimeout The close timeout, in milliseconds
+         * @return This builder
+         */
+        public B setCloseTimeout(long closeTimeout) {
+            this.closeTimeout = closeTimeout;
+            return asBuilder();
+        }
+
     }
 
 }

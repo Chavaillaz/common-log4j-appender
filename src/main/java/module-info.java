@@ -11,7 +11,7 @@
  * exported.
  * The Log4j2 and JSpecify APIs are required transitively, the API of this module exposing their types. An
  * appender built on it is a plugin Log4j2 creates by reflection, so the module declaring it opens its package to
- * {@code org.apache.logging.log4j.core}.
+ * {@code org.apache.logging.log4j.core}, as this module opens the package of the builder every plugin extends.
  */
 module com.chavaillaz.appender {
 
@@ -21,5 +21,8 @@ module com.chavaillaz.appender {
 
     exports com.chavaillaz.appender;
     exports com.chavaillaz.appender.log4j;
+    // The builder every appender plugin extends (see AbstractLogDeliveryAppender.Builder), whose fields Log4j2
+    // sets by reflection, as it sets those of the plugin itself
+    opens com.chavaillaz.appender.log4j to org.apache.logging.log4j.core;
 
 }

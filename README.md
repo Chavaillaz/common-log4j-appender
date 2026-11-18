@@ -142,13 +142,13 @@ public record ExampleConfiguration(String application, String host, String envir
 }
 ```
 
-Your plugin `Builder` assembles the options from its own attributes, and only needs to name the ones it
-actually exposes:
+The builder of the plugin builds them from the attributes of the element configuring the appender (see
+[Appender](#3-appender)). Built in code, they only name what they tune:
 
 ```java
 DeliveryOptions options = DeliveryOptions.builder()
-        .flushThreshold(flushThreshold)
-        .flushInterval(Duration.ofMillis(flushInterval))
+        .flushThreshold(100)
+        .flushInterval(Duration.ofSeconds(2))
         .build();
 ```
 
@@ -236,15 +236,16 @@ public void close(@Nullable Duration timeout) throws IOException {
 
 ### 3. Appender
 
-Extend `AbstractLogDeliveryAppender` to wire everything together as a Log4j2 plugin, with the builder Log4j2
-fills from the attributes of the element configuring the appender:
+Extend `AbstractLogDeliveryAppender` to wire everything together as a Log4j2 plugin, with a builder extending
+`AbstractLogDeliveryAppender.Builder`, which Log4j2 fills from the attributes of the element configuring the
+appender:
 
 ```java
 @Plugin(name = "ExampleAppender", category = Core.CATEGORY_NAME, elementType = Appender.ELEMENT_TYPE)
 public class ExampleAppender extends AbstractLogDeliveryAppender<ExampleConfiguration> {
 
-    protected ExampleAppender(String name, Filter filter, ExampleConfiguration configuration) {
-        super(name, filter, configuration);
+    protected ExampleAppender(Builder builder, ExampleConfiguration configuration) {
+        super(builder, configuration);
     }
 
     @PluginBuilderFactory
@@ -257,33 +258,20 @@ public class ExampleAppender extends AbstractLogDeliveryAppender<ExampleConfigur
         return new ExampleLogDelivery(getLogConfiguration());
     }
 
-    public static class Builder implements org.apache.logging.log4j.core.util.Builder<ExampleAppender> {
-
-        @PluginBuilderAttribute
-        @Required(message = "No appender name provided")
-        private String name;
-
-        @PluginElement("Filter")
-        private Filter filter;
+    public static class Builder extends AbstractLogDeliveryAppender.Builder<ExampleAppender, Builder> {
 
         @PluginBuilderAttribute("CollectorHost")
         @Required(message = "No collector host provided")
         private String collectorHost;
 
-        @PluginBuilderAttribute("FlushThreshold")
-        private int flushThreshold = DeliveryOptions.defaults().flushThreshold();
-
-        // ... CollectorPort, Application, Environment and FlushInterval, declared the same way
+        @PluginBuilderAttribute("CollectorPort")
+        private int collectorPort = 5000;
 
         @Override
         public ExampleAppender build() {
-            DeliveryOptions options = DeliveryOptions.builder()
-                    .flushThreshold(flushThreshold)
-                    .flushInterval(Duration.ofMillis(flushInterval))
-                    .build();
-            ExampleConfiguration configuration = new ExampleConfiguration(application,
-                    CommonUtils.getInitialHostname(), environment, options, collectorHost, collectorPort);
-            return new ExampleAppender(name, filter, configuration);
+            ExampleConfiguration configuration = new ExampleConfiguration(getApplication(), getHost(),
+                    getEnvironment(), getDeliveryOptions(), collectorHost, collectorPort);
+            return new ExampleAppender(this, configuration);
         }
 
         public Builder setCollectorHost(String collectorHost) {
@@ -291,20 +279,28 @@ public class ExampleAppender extends AbstractLogDeliveryAppender<ExampleConfigur
             return this;
         }
 
-        // ... and a setter for each of the other attributes
+        public Builder setCollectorPort(int collectorPort) {
+            this.collectorPort = collectorPort;
+            return this;
+        }
 
     }
 
 }
 ```
 
-Each attribute has a public setter returning the builder: the annotation processor of recent Log4j2 versions
-fails the compilation of a plugin without one. An exception thrown by `build()`, as `DeliveryOptions` does for
-a value out of its range, is reported by Log4j2 on its status logger, the appender being left out of the
-configuration.
+The builder of the library holds the attributes every appender takes: `name` and a `Filter` element,
+`Application`, `Host` and `Environment`, `Converter` (see [Conversion](#5-conversion-optional)), and every
+setting of the [configuration reference](#configuration-reference), durations in milliseconds. A setting left
+unset keeps its default, the one of `DeliveryOptions`, or the one `defaultDeliveryOptions()` gives when the
+builder of your plugin overrides it, to batch documents by default for instance. Your builder only declares
+the attributes of its own, each with a public setter returning the builder: the annotation processor of recent
+Log4j2 versions fails the compilation of a plugin without one. An exception thrown by `build()`, as
+`DeliveryOptions` does for a value out of its range, is reported by Log4j2 on its status logger, the appender
+being left out of the configuration.
 
-Each event is then converted by a `DefaultLogConverter` on the background thread, and the document sent to
-your delivery. Override `getLogConverter()` to convert with another one (see below), or
+Each event is then converted on the background thread, by a `DefaultLogConverter` unless the `Converter`
+attribute names another one (see below), and the document sent to your delivery. Override
 `createLogDeliveryTask(LogEvent)` to take over the whole task. The appender has no layout, the document being
 what is sent, so its plugin builder declares no `Layout` element.
 
@@ -380,9 +376,10 @@ fields:
 All MDC (context) entries are also added as-is, without overriding any of the fields above should a key
 collide with one of them, even one left `null`. To customize this behaviour, extend `DefaultLogConverter`
 and override the relevant `write*` method, or implement `LogConverter` from scratch for full control, then
-return it from `getLogConverter()` of your appender. A converter takes the configuration it needs in its
-constructor: `LogConverter.newInstance(className, configuration)` creates the one a configuration names by
-its class, through its public constructor taking the configuration. A converter returns a new document for every
+name it in the `Converter` attribute of the appender, which creates it through its public constructor taking the
+configuration (see `LogConverter.newInstance(className, configuration)`), and converts with the default one,
+reporting why on the status logger, when it cannot. Override `getLogConverter()` of your appender instead to
+create it otherwise, once rather than for every event. A converter returns a new document for every
 event, never reused nor modified afterwards: the delivery keeps it until it is sent, retried or reported as
 dropped. It runs on the background thread of the appender, and logs through `StatusLogger.getLogger()` if it
 logs at all: an ordinary logger hands each of its messages back to the appender as one more event to convert.
@@ -511,19 +508,20 @@ nothing that could bring it back.
 ## Configuration reference
 
 These settings are defined by `LogConfiguration` and its `DeliveryOptions`, and used regardless of the
-delivery mechanism (each appender implementation typically exposes them as its own plugin attributes, see
-its documentation):
+delivery mechanism. The builder every appender plugin extends takes each of them as an attribute of the same
+name, durations in milliseconds, along with `Converter`, the class name of the converter (see
+[Conversion](#5-conversion-optional)):
 
 | Setting         | Description                                                                                              |
 |-----------------|-------------------------------------------------------------------------------------------------------------|
-| `Application`   | Name of the application generating the logs, included in every document.                                    |
-| `Host`          | Name of the host the application is running on, included in every document.                                 |
-| `Environment`   | Name of the environment the application is running in, included in every document.                         |
+| `Application`   | Name of the application generating the logs, included in every document. Defaults to `unknown`. |
+| `Host`          | Name of the host the application is running on, included in every document. Defaults to the name of the machine. |
+| `Environment`   | Name of the environment the application is running in, included in every document. Defaults to `local`. |
 | `FlushThreshold`| Number of accumulated documents that triggers a transmission. `1` sends every log individually (no batching). Defaults to `1`, an appender shipping logs over the network normally raising it. |
 | `FlushInterval` | Time between two periodic flushes, so that documents aren't delayed indefinitely under low traffic: a batch under `FlushThreshold`, documents stacked while `RetryBackoff` holds off transmissions, and those a failed transmission put back, all waiting for the next log otherwise. Defaults to `5s`; at least `1ms`. |
 | `FlushLevel` | Minimum severity (e.g. `WARN`) that triggers an immediate flush of the whole current batch right after that event, instead of waiting for `FlushThreshold`/`FlushInterval`. Defaults to unset, disabling this behavior. |
 | `MaxConcurrentTransmissions` | Maximum number of requests transmitted at the same time (see step 4 above). Defaults to `4`. |
-| `TransmissionTimeout` | Maximum time a request waits for its answer before it counts as failed: its slot is freed and its documents are retried, an answer coming later being ignored (see [Delivery](#2-delivery)). Kept above the request timeout of the client, whose own failure says more. Defaults to `1min`; `null` waits indefinitely. |
+| `TransmissionTimeout` | Maximum time a request waits for its answer before it counts as failed: its slot is freed and its documents are retried, an answer coming later being ignored (see [Delivery](#2-delivery)). Kept above the request timeout of the client, whose own failure says more. Defaults to `1min`; `null`, or `0` as an attribute, waits indefinitely. |
 | `MaxPendingDocuments` | Maximum documents a pending batch can hold in memory: reaching it sends the batch as `FlushThreshold` does, and while retries are held off, the oldest are discarded past it (see step 5 above). Independent of `MaxRequestDocuments`. Defaults to `10'000`. |
 | `MaxRequestDocuments` | Maximum documents sent together in a single request; a bigger batch is split into chunks of that size (see step 4 above), each retried independently. Defaults to unbounded (no chunking); set to match a downstream system's per-request limit. |
 | `MaxPendingBytes` | Maximum estimated size a pending batch can hold in memory, which it bounds exactly as `MaxPendingDocuments` does by count. Defaults to unbounded. |
@@ -535,9 +533,7 @@ its documentation):
 | `CloseTimeout` | Maximum time the delivery waits, while closing, for in-flight transmissions to complete before giving up and reporting what's still pending as dropped. Bounds how long an unresponsive downstream system can hold up shutdown. While Log4j2's `shutdownTimeout` is left at `0`, also the budget of the whole appender stop, already-accepted events included, to keep under the time the platform waits before killing the process (see [Shutdown](#shutdown-and-failure-handling)). Defaults to `5s`; `null` waits indefinitely. |
 
 `Application`, `Host` and `Environment` come from `LogConfiguration` itself; everything else is a component
-of the `DeliveryOptions` it returns, all with usable defaults. An appender implementation typically exposes
-only some of them as plugin attributes — the rest stay available through `DeliveryOptions.builder()` in your
-own configuration class, whether or not the appender surfaces them.
+of the `DeliveryOptions` it returns, all with usable defaults.
 
 Every setting is validated when `DeliveryOptions` is built: a count or size below `1`, a negative duration, or
 a `FlushInterval` or `TransmissionTimeout` under a millisecond throws an `IllegalArgumentException` naming it, so a misconfiguration
