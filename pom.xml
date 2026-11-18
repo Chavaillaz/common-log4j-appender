@@ -41,6 +41,10 @@
              built. The release script sets it along with the version, through versions:set -->
         <project.build.outputTimestamp>2026-09-28T00:00:00Z</project.build.outputTimestamp>
         <lombok.version>1.18.48</lombok.version>
+        <!-- The version of Log4j2 the library is compiled with and brings along. Set on the command line, another
+             one runs the tests and the example appender, as continuous integration does with the oldest one
+             supported, which the README names -->
+        <log4j.version>2.26.1</log4j.version>
         <!-- A warning of the compiler fails the build on the JDK the library is released with, a later one only
              showing those of the checks it adds (see the profile "later-jdk") -->
         <maven.compiler.failOnWarning>true</maven.compiler.failOnWarning>
@@ -53,7 +57,7 @@
             <dependency>
                 <groupId>org.apache.logging.log4j</groupId>
                 <artifactId>log4j-bom</artifactId>
-                <version>2.26.1</version>
+                <version>${log4j.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -351,6 +355,11 @@
                          the user, where a build would otherwise replace the version other projects depend on -->
                     <localRepositoryPath>${project.build.directory}/it-repository</localRepositoryPath>
                     <settingsFile>src/it/settings.xml</settingsFile>
+                    <!-- The version of Log4j2 the example is built with, passed on explicitly: it would otherwise
+                         be the one declared above, even with another one set on the command line -->
+                    <filterProperties>
+                        <log4j.version>${log4j.version}</log4j.version>
+                    </filterProperties>
                     <streamLogsOnFailures>true</streamLogsOnFailures>
                     <skipInstallation>${skipTests}</skipInstallation>
                     <skipInvocation>${skipTests}</skipInvocation>

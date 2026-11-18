@@ -52,3 +52,27 @@ jobs:
         if: env.SONAR_TOKEN != '' && matrix.java == '21'
         uses: sonarsource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
+
+  log4j:
+    name: Log4j2 ${{ matrix.log4j }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The oldest version supported, which the README names: an application managing its own version of
+        # Log4j2 may run the library on it, the builds above running it on the one it is compiled with
+        log4j: [ '2.24.0' ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up
+        uses: ./.github/actions/setup
+
+      - name: Compile
+        # With the version of Log4j2 the POM declares, as the library is released
+        run: mvn -B compile
+
+      - name: Build
+        # The classes compiled above are kept as they are: the tests and the example appender alone are
+        # compiled with the older version, and run on it
+        run: mvn -B verify -Dmaven.main.skip -Dlog4j.version=${{ matrix.log4j }}

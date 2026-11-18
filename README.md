@@ -25,7 +25,10 @@ references to look at alongside this documentation.
 
 ## Installation
 
-Requires **Java 21 or later** (virtual threads are used internally to transmit batches).
+Requires **Java 21 or later** (virtual threads are used internally to transmit batches), and **Log4j2 2.24.0
+or later**: the library brings along the version it is compiled with, 2.26.1, and an application managing that
+version itself, as one built on Spring Boot does, can stay on an older one down to 2.24.0. The tests and the
+example appender run on both.
 
 The dependency is available in Maven Central:
 
@@ -637,7 +640,9 @@ A change is ready once that passes, which takes:
 
 Every pull request, and every push to `master`, is built that way on Java 21 and on the latest long-term
 support version, with the coverage of the tests measured: `mvn -Pcoverage verify` writes the same report to
-`target/site/jacoco`.
+`target/site/jacoco`. One more build runs the tests and the example on the oldest Log4j2 version supported,
+with the library compiled as it is released, which `mvn compile` followed by
+`mvn verify -Dmaven.main.skip -Dlog4j.version=2.24.0` does too.
 
 ### Releasing
 
