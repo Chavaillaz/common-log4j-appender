@@ -45,6 +45,8 @@
              one runs the tests and the example appender, as continuous integration does with the oldest one
              supported, which the README names -->
         <log4j.version>2.26.1</log4j.version>
+        <!-- The version of Byte Buddy the tests run on, the newest one their dependencies ask for (see below) -->
+        <byte-buddy.version>1.18.3</byte-buddy.version>
         <!-- A warning of the compiler fails the build on the JDK the library is released with, a later one only
              showing those of the checks it adds (see the profile "later-jdk") -->
         <maven.compiler.failOnWarning>true</maven.compiler.failOnWarning>
@@ -68,6 +70,24 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- Asked for in version 1.0.0 by JUnit, which runs on the one of the library -->
+            <dependency>
+                <groupId>org.jspecify</groupId>
+                <artifactId>jspecify</artifactId>
+                <version>1.0.1</version>
+            </dependency>
+            <!-- Asked for by Mockito and by AssertJ in different versions, which the build settles on the newest
+                 of, the agent of Mockito along with it, rather than on the one Maven reaches first -->
+            <dependency>
+                <groupId>net.bytebuddy</groupId>
+                <artifactId>byte-buddy</artifactId>
+                <version>${byte-buddy.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>net.bytebuddy</groupId>
+                <artifactId>byte-buddy-agent</artifactId>
+                <version>${byte-buddy.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -83,7 +103,6 @@
         <dependency>
             <groupId>org.jspecify</groupId>
             <artifactId>jspecify</artifactId>
-            <version>1.0.1</version>
         </dependency>
 
         <!-- Logs -->
@@ -208,6 +227,18 @@
                                 </requireMavenVersion>
                                 <!-- Fails a plugin added without a version, rather than leaving it to Maven -->
                                 <requirePluginVersions/>
+                                <!-- Fails two dependencies asking for different versions of a third one, which Maven
+                                     would otherwise settle by taking the nearest, whatever the other one needs: the
+                                     version is then managed above. The test dependencies included, which both rules
+                                     leave out by default, the tests running on what they resolve to -->
+                                <dependencyConvergence>
+                                    <excludedScopes/>
+                                </dependencyConvergence>
+                                <!-- Fails a dependency resolved to an older version than one asked for, which Maven
+                                     settles the same way, an older one possibly missing what the other needs -->
+                                <requireUpperBoundDeps>
+                                    <excludedScopes/>
+                                </requireUpperBoundDeps>
                             </rules>
                         </configuration>
                     </execution>

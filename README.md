@@ -653,6 +653,9 @@ A change is ready once that passes, which takes:
   left unused.
 - **No compiler warning.** Every check of the compiler is on (`-Xlint:all`), and a warning fails the build on
   JDK 21. A later JDK only shows the warnings of the checks it adds.
+- **Dependency versions converging.** Two dependencies asking for different versions of a third one, the test
+  ones included, fail the build, rather than Maven taking whichever it reaches first: the version is then managed
+  in the POM, the newest one asked for unless something rules it out.
 - **The example appender working.** Once the JAR is packaged, the build compiles the
   [example appender](src/it/example-appender) against it and runs its test, as a module then on the class path:
   what an appender built on the library goes through, where the tests only see the classes the JAR is made of.
