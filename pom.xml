@@ -537,6 +537,60 @@
                 </plugins>
             </build>
         </profile>
+        <profile>
+            <!-- Mutation testing, too slow for every build: "mvn -Pmutation test" alters the compiled classes one
+                 change at a time, a condition negated or a value returned replaced for instance, and runs the tests
+                 covering each change, one of which should fail. Below the threshold of changes some test caught,
+                 the build fails. The report goes to target/pit-reports -->
+            <id>mutation</id>
+            <properties>
+                <!-- The changes tried at once, each in a JVM of its own -->
+                <pit.threads>2</pit.threads>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pitest</groupId>
+                        <artifactId>pitest-maven</artifactId>
+                        <version>1.30.2</version>
+                        <dependencies>
+                            <dependency>
+                                <!-- Runs the tests of JUnit Jupiter -->
+                                <groupId>org.pitest</groupId>
+                                <artifactId>pitest-junit5-plugin</artifactId>
+                                <version>1.2.3</version>
+                            </dependency>
+                        </dependencies>
+                        <!-- Every class of the library, with the tests run in JVMs taking the argLine of
+                             maven-surefire-plugin, which loads Mockito as an agent: -DtargetClasses narrows it -->
+                        <configuration>
+                            <excludedTestClasses>
+                                <!-- Its results depending on timing, which the changes tried side by side upset -->
+                                <param>com.chavaillaz.appender.log4j.LoadTest*</param>
+                            </excludedTestClasses>
+                            <threads>${pit.threads}</threads>
+                            <!-- 90% of the changes are caught today: a few points under, for the tests depending
+                                 on timing, which can let a change through from one run to the next -->
+                            <mutationThreshold>87</mutationThreshold>
+                            <timestampedReports>false</timestampedReports>
+                            <outputFormats>
+                                <param>HTML</param>
+                                <param>XML</param>
+                            </outputFormats>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>mutation-coverage</id>
+                                <phase>test</phase>
+                                <goals>
+                                    <goal>mutationCoverage</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 
     <distributionManagement>
