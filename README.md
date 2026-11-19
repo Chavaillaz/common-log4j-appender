@@ -660,9 +660,10 @@ A change is ready once that passes, which takes:
   `target/it/example-appender/build.log`, and `-DskipTests` skips it along with the tests.
 
 Every pull request, and every push to `master`, is built that way on Java 21 and on the latest long-term
-support version, with the coverage of the tests measured: `mvn -Pcoverage verify` writes the same report to
-`target/site/jacoco`. One more build runs the tests and the example on the oldest Log4j2 version supported,
-with the library compiled as it is released, which `mvn compile` followed by
+support version, with the coverage of the tests measured, and failing once they cover less than 80% of the lines
+or of the branches of the library: `mvn clean -Pcoverage verify` writes the same report to `target/site/jacoco`,
+the `clean` keeping the data of an earlier build out of it. One more build runs the tests and the example on the
+oldest Log4j2 version supported, with the library compiled as it is released, which `mvn compile` followed by
 `mvn verify -Dmaven.main.skip -Dlog4j.version=2.24.0` does too.
 
 ### Releasing
