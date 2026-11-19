@@ -1,0 +1,32 @@
+name: Mutation testing
+on:
+  # Every week rather than on every push, a run taking most of an hour on a runner, and by hand from the Actions tab
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pitest:
+    name: Mutation testing
+    runs-on: ubuntu-latest
+    # A change the tests never see the end of is cut by PIT itself: this only bounds a run stuck otherwise
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up
+        uses: ./.github/actions/setup
+
+      - name: Test
+        # Fails once the tests catch too few of the changes made to the classes (see the profile "mutation")
+        run: mvn -B -Pmutation test
+
+      - name: Upload the report
+        # Kept for a failing run too, whose surviving changes are what to look at
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-report
+          path: target/pit-reports

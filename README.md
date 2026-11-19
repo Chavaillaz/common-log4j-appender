@@ -677,6 +677,8 @@ once the tests catch less than 87% of the changes, 90% of them being caught toda
 see. A run takes about twenty minutes with `-Dpit.threads=4`, which tries four changes at once rather than two,
 and `-DtargetClasses=com.chavaillaz.appender.internal.Batcher` limits it to one class. `LoadTest` is left out,
 its results depending on timing.
+A [workflow](.github/workflows/mutation-testing.yml) runs it every Monday, and on demand, keeping the report of
+each run.
 
 ### Releasing
 
