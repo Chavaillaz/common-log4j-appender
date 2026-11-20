@@ -2476,7 +2476,7 @@ class BatcherTest {
             // given: a listener that never returns, and a pending cap of one so that every add() past the first
             // discards. Handing each notification to its own thread would let them (and the elements each one
             // holds) pile up without bound, turning the cap that bounds memory into the thing consuming it.
-            var release = new java.util.concurrent.CountDownLatch(1);
+            var release = new CountDownLatch(1);
             var inFlight = new AtomicInteger();
             var peak = new AtomicInteger();
             Batcher<String> batcher = Batcher.<String>builder()

@@ -1,5 +1,7 @@
 package com.chavaillaz.appender.log4j;
 
+import static java.util.concurrent.CompletableFuture.completedFuture;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -67,7 +69,7 @@ public final class ContextReportingAppender extends AbstractLogDeliveryAppender<
             @Override
             protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
                 observe("transport");
-                return CompletableFuture.completedFuture(TransmissionResult.success());
+                return completedFuture(TransmissionResult.success());
             }
         };
     }

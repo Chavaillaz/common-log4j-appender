@@ -1,5 +1,6 @@
 package com.chavaillaz.appender.log4j;
 
+import static java.util.concurrent.CompletableFuture.delayedExecutor;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import java.util.List;
@@ -94,7 +95,7 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
                 return CompletableFuture.supplyAsync(() -> {
                     RECEIVED_DOCUMENTS.addAll(documents);
                     return TransmissionResult.success();
-                }, CompletableFuture.delayedExecutor(transmissionDelayMillis, MILLISECONDS));
+                }, delayedExecutor(transmissionDelayMillis, MILLISECONDS));
             }
         };
     }

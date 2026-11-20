@@ -11,6 +11,7 @@ import org.apache.logging.log4j.core.config.plugins.PluginBuilderAttribute;
 import org.apache.logging.log4j.core.config.plugins.PluginConfiguration;
 import org.apache.logging.log4j.core.config.plugins.PluginElement;
 import org.apache.logging.log4j.core.config.plugins.validation.constraints.Required;
+import org.apache.logging.log4j.core.util.Builder;
 import org.apache.logging.log4j.core.util.NetUtils;
 import org.jspecify.annotations.Nullable;
 
@@ -47,7 +48,7 @@ import com.chavaillaz.appender.LogConfiguration;
  * @param <B> The type of the builder, which its setters return
  */
 public abstract class LogDeliveryAppenderBuilder<A extends AbstractLogDeliveryAppender<?>,
-        B extends LogDeliveryAppenderBuilder<A, B>> implements org.apache.logging.log4j.core.util.Builder<A> {
+        B extends LogDeliveryAppenderBuilder<A, B>> implements Builder<A> {
 
     @PluginBuilderAttribute
     @Required(message = "No appender name provided")

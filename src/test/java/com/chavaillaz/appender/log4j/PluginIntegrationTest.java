@@ -1,6 +1,7 @@
 package com.chavaillaz.appender.log4j;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -518,7 +519,7 @@ class PluginIntegrationTest {
             }) {
                 @Override
                 protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
-                    return CompletableFuture.completedFuture(TransmissionResult.failure(null));
+                    return completedFuture(TransmissionResult.failure(null));
                 }
             };
         }

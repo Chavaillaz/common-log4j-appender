@@ -1,6 +1,7 @@
 package com.chavaillaz.appender.log4j;
 
 import static java.lang.Thread.sleep;
+import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -588,10 +589,10 @@ class AbstractLogDeliveryAppenderTest {
                         @Override
                         protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
                             if (attempts.incrementAndGet() == 1) {
-                                return CompletableFuture.completedFuture(TransmissionResult.failure(new IllegalStateException("Simulated outage")));
+                                return completedFuture(TransmissionResult.failure(new IllegalStateException("Simulated outage")));
                             }
                             delivered.countDown();
-                            return CompletableFuture.completedFuture(TransmissionResult.success());
+                            return completedFuture(TransmissionResult.success());
                         }
                     };
                 }
@@ -2528,7 +2529,7 @@ class AbstractLogDeliveryAppenderTest {
             while (appender.getMetrics().transmissionsInFlight() != 1 || appender.getMetrics().queuedEvents() != 0
                     || appender.getMetrics().pendingDocuments() != 0) {
                 assertThat(System.nanoTime()).as("The worker should be waiting for the slot by now").isLessThan(deadlineNanos);
-                Thread.sleep(1);
+                sleep(1);
             }
 
             // when: stopped within a budget that the worker, waiting for a slot nothing frees, spends
@@ -3000,7 +3001,7 @@ class AbstractLogDeliveryAppenderTest {
                     return new AbstractBatchLogDelivery<>(configuration, LogDeliveryListener.compose(throwing, throwing, deadLetters)) {
                         @Override
                         protected CompletableFuture<TransmissionResult<Map<String, Object>>> sendBulk(List<Map<String, Object>> documents) {
-                            return CompletableFuture.completedFuture(TransmissionResult.failure(new IOException("Connection refused")));
+                            return completedFuture(TransmissionResult.failure(new IOException("Connection refused")));
                         }
                     };
                 }
