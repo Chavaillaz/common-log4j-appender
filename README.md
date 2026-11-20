@@ -237,8 +237,7 @@ public void close(@Nullable Duration timeout) throws IOException {
 ### 3. Appender
 
 Extend `AbstractLogDeliveryAppender` to wire everything together as a Log4j2 plugin, with a builder extending
-`AbstractLogDeliveryAppender.Builder`, which Log4j2 fills from the attributes of the element configuring the
-appender:
+`LogDeliveryAppenderBuilder`, which Log4j2 fills from the attributes of the element configuring the appender:
 
 ```java
 @Plugin(name = "ExampleAppender", category = Core.CATEGORY_NAME, elementType = Appender.ELEMENT_TYPE)
@@ -258,7 +257,7 @@ public class ExampleAppender extends AbstractLogDeliveryAppender<ExampleConfigur
         return new ExampleLogDelivery(getLogConfiguration());
     }
 
-    public static class Builder extends AbstractLogDeliveryAppender.Builder<ExampleAppender, Builder> {
+    public static class Builder extends LogDeliveryAppenderBuilder<ExampleAppender, Builder> {
 
         @PluginBuilderAttribute("CollectorHost")
         @Required(message = "No collector host provided")

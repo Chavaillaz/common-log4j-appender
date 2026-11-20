@@ -21,7 +21,7 @@ module com.chavaillaz.appender {
 
     exports com.chavaillaz.appender;
     exports com.chavaillaz.appender.log4j;
-    // The builder every appender plugin extends (see AbstractLogDeliveryAppender.Builder), whose fields Log4j2
+    // The builder every appender plugin extends (see LogDeliveryAppenderBuilder), whose fields Log4j2
     // sets by reflection, as it sets those of the plugin itself
     opens com.chavaillaz.appender.log4j to org.apache.logging.log4j.core;
 

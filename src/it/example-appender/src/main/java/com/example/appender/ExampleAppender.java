@@ -9,6 +9,7 @@ import org.apache.logging.log4j.core.config.plugins.validation.constraints.Requi
 
 import com.chavaillaz.appender.LogDelivery;
 import com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender;
+import com.chavaillaz.appender.log4j.LogDeliveryAppenderBuilder;
 
 /**
  * The plugin Log4j2 creates for an {@code <ExampleAppender>} element of its configuration.
@@ -35,7 +36,7 @@ public class ExampleAppender extends AbstractLogDeliveryAppender<ExampleConfigur
      * appender built on the library takes, inherited, and those of this one, each with a public setter returning
      * the builder, which the annotation processor of Log4j2 requires.
      */
-    public static class Builder extends AbstractLogDeliveryAppender.Builder<ExampleAppender, Builder> {
+    public static class Builder extends LogDeliveryAppenderBuilder<ExampleAppender, Builder> {
 
         @PluginBuilderAttribute("CollectorHost")
         @Required(message = "No collector host provided")

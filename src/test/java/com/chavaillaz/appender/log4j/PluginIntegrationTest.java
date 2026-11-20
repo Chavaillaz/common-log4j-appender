@@ -475,7 +475,7 @@ class PluginIntegrationTest {
     /**
      * A builder of the library defaulting to the given delivery options, whose appender these tests never build.
      */
-    static final class OptionsBuilder extends AbstractLogDeliveryAppender.Builder<PluginIntegrationTestAppender, OptionsBuilder> {
+    static final class OptionsBuilder extends LogDeliveryAppenderBuilder<PluginIntegrationTestAppender, OptionsBuilder> {
 
         private final DeliveryOptions defaults;
 

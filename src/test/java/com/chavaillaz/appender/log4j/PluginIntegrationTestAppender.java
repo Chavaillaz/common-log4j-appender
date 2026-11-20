@@ -47,7 +47,7 @@ public final class PluginIntegrationTestAppender extends AbstractLogDeliveryAppe
      * (or programmatically built, see {@link PluginIntegrationTest}) appender element's attributes: those of
      * the builder of the library, inherited, and one of its own.
      */
-    public static class Builder extends AbstractLogDeliveryAppender.Builder<PluginIntegrationTestAppender, Builder> {
+    public static class Builder extends LogDeliveryAppenderBuilder<PluginIntegrationTestAppender, Builder> {
 
         @PluginBuilderAttribute
         private long transmissionDelayMillis = 0;

@@ -27,7 +27,7 @@ import org.jspecify.annotations.Nullable;
  * ({@code %m%n}) keeps newline-delimited JSON, rotated and compressed as it is told, with the permissions of its
  * {@code filePermissions} and the retention of its rollover strategy. An appender built on this library creates
  * this listener for the appender nested in its element (see
- * {@link com.chavaillaz.appender.log4j.AbstractLogDeliveryAppender.Builder}).
+ * {@link com.chavaillaz.appender.log4j.LogDeliveryAppenderBuilder}).
  * <p>
  * Each line wraps the document, unmodified, with the reason it was dropped and when:
  * {@code {"reason":"...","droppedAt":"...","document":{...}}}. Its event has the level {@code ERROR}, the name of
