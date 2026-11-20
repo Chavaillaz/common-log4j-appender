@@ -671,7 +671,7 @@ oldest Log4j2 version supported, with the library compiled as it is released, wh
 Mutation testing tells how much of what the tests run they check: `mvn -Pmutation test` has
 [PIT](https://pitest.org) alter the compiled classes one change at a time, a condition negated or a value
 returned replaced for instance, and run the tests covering each change, one of which should fail. The build fails
-once the tests catch less than 87% of the changes, 90% of them being caught today. The report, in
+once the tests catch less than 80% of the changes, 89% of them being caught today. The report, in
 `target/pit-reports`, lists the changes no test caught, either worth a test or making no difference a test could
 see. A run takes about twenty minutes with `-Dpit.threads=4`, which tries four changes at once rather than two,
 and `-DtargetClasses=com.chavaillaz.appender.internal.Batcher` limits it to one class. `LoadTest` is left out,
