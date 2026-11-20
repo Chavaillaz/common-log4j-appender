@@ -41,12 +41,8 @@
              built. The release script sets it along with the version, through versions:set -->
         <project.build.outputTimestamp>2026-09-28T00:00:00Z</project.build.outputTimestamp>
         <lombok.version>1.18.48</lombok.version>
-        <!-- The version of Log4j2 the library is compiled with and brings along. Set on the command line, another
-             one runs the tests and the example appender, as continuous integration does with the oldest one
-             supported, which the README names -->
         <log4j.version>2.26.1</log4j.version>
-        <!-- The version of Byte Buddy the tests run on, the newest one their dependencies ask for (see below) -->
-        <byte-buddy.version>1.18.3</byte-buddy.version>
+        <byte-buddy.version>1.18.17</byte-buddy.version>
         <!-- A warning of the compiler fails the build on the JDK the library is released with, a later one only
              showing those of the checks it adds (see the profile "later-jdk") -->
         <maven.compiler.failOnWarning>true</maven.compiler.failOnWarning>
@@ -70,14 +66,13 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            <!-- Asked for in version 1.0.0 by JUnit, which runs on the one of the library -->
+            <!-- Asked for by JUnit, which runs on the one of the library -->
             <dependency>
                 <groupId>org.jspecify</groupId>
                 <artifactId>jspecify</artifactId>
                 <version>1.0.1</version>
             </dependency>
-            <!-- Asked for by Mockito and by AssertJ in different versions, which the build settles on the newest
-                 of, the agent of Mockito along with it, rather than on the one Maven reaches first -->
+            <!-- Asked for by Mockito and by AssertJ in different versions -->
             <dependency>
                 <groupId>net.bytebuddy</groupId>
                 <artifactId>byte-buddy</artifactId>
@@ -92,7 +87,6 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- Annotation processor of the tests, the library itself exposing only what it declares -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
@@ -151,8 +145,6 @@
                 <directory>src/main/resources</directory>
             </resource>
             <resource>
-                <!-- The license travels inside the archive of the classes and the one of the sources, where
-                     whoever holds only that file, or scans it for its terms, finds it -->
                 <directory>${project.basedir}</directory>
                 <includes>
                     <include>LICENSE</include>
@@ -209,7 +201,7 @@
                      needs the same JDK, otherwise fails on an older one in words that do not name it -->
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
-                <version>3.6.3</version>
+                <version>3.7.0</version>
                 <executions>
                     <execution>
                         <id>enforce-build</id>
@@ -220,7 +212,7 @@
                             <rules>
                                 <requireJavaVersion>
                                     <version>[21,)</version>
-                                    <message>The build needs JDK 21 or later and runs on ${java.version}: point JAVA_HOME at a newer one</message>
+                                    <message>The build needs JDK 21 or later and runs on ${java.version}</message>
                                 </requireJavaVersion>
                                 <requireMavenVersion>
                                     <version>3.8</version>
@@ -264,10 +256,6 @@
                     <execution>
                         <id>default-compile</id>
                         <configuration>
-                            <!-- Every check of the compiler but the two the code has no say in: "processing",
-                                 the library having no annotation for the processor of the tests to claim, and
-                                 "classfile", about the classes of the dependencies, which carry annotations of
-                                 libraries they do not bring along, as those of Log4j2 2.24 do -->
                             <compilerArgs>
                                 <arg>-Xlint:all,-processing,-classfile</arg>
                             </compilerArgs>
@@ -276,10 +264,6 @@
                     <execution>
                         <id>default-testCompile</id>
                         <configuration>
-                            <!-- The same, but for what the tests have no answer to: "serial", their events, queues
-                                 and exceptions never being serialized; "exports" and "missing-explicit-ctor", about
-                                 what a module shows its clients, the tests being compiled into it without being
-                                 part of it -->
                             <compilerArgs>
                                 <arg>-Xlint:all,-processing,-classfile,-serial,-exports,-missing-explicit-ctor</arg>
                             </compilerArgs>
@@ -291,7 +275,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.6.0</version>
+                <version>3.6.1</version>
                 <configuration>
                     <!-- The tests run in the module, where Log4j2 builds the plugin of PluginIntegrationTest by
                          reflection, which the module of an appender allows by opening its package. Mockito is
@@ -307,10 +291,8 @@
             </plugin>
 
             <plugin>
-                <!-- Enforces the import order convention defined in checkstyle.xml (static, then JDK,
-                     then third-party, then com.chavaillaz packages, each group sorted alphabetically and
-                     separated by a blank line). Bound to "validate" so a style violation fails the build
-                     before compilation is even attempted. -->
+                <!-- Enforces the import order convention defined in checkstyle.xml.
+                     Bound to "validate" so a style violation fails the build before compilation is even attempted. -->
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-checkstyle-plugin</artifactId>
                 <version>3.6.0</version>
@@ -354,12 +336,9 @@
             </plugin>
 
             <plugin>
-                <!-- Invoke manually with e.g. "mvn versions:display-dependency-updates": binding it to a
-                     default lifecycle phase would require network access (and slow down) every single
-                     build, including offline or CI ones that only need to compile or run tests. -->
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>versions-maven-plugin</artifactId>
-                <version>2.22.0</version>
+                <version>2.23.0</version>
                 <configuration>
                     <rulesUri>file:///${project.basedir}/versions.xml</rulesUri>
                 </configuration>
@@ -409,8 +388,6 @@
 
     <profiles>
         <profile>
-            <!-- A JDK later than the one the library is released with adds checks of its own to those of the
-                 compiler: their warnings are shown, without failing a build that nothing changed in -->
             <id>later-jdk</id>
             <activation>
                 <jdk>[22,)</jdk>
@@ -473,7 +450,7 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.11.0</version>
+                        <version>0.12.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
@@ -491,7 +468,7 @@
                     <plugin>
                         <groupId>org.jacoco</groupId>
                         <artifactId>jacoco-maven-plugin</artifactId>
-                        <version>0.8.15</version>
+                        <version>0.8.16</version>
                         <executions>
                             <execution>
                                 <id>prepare-agent</id>
@@ -555,7 +532,6 @@
                         <version>1.30.2</version>
                         <dependencies>
                             <dependency>
-                                <!-- Runs the tests of JUnit Jupiter -->
                                 <groupId>org.pitest</groupId>
                                 <artifactId>pitest-junit5-plugin</artifactId>
                                 <version>1.2.3</version>
@@ -569,9 +545,8 @@
                                 <param>com.chavaillaz.appender.log4j.LoadTest*</param>
                             </excludedTestClasses>
                             <threads>${pit.threads}</threads>
-                            <!-- The floor the coverage has too, 89% of the changes being caught today: the margin
-                                 absorbs the tests depending on timing, which can let a change through from one run
-                                 to the next, and the changes a refactoring adds -->
+                            <!-- The margin absorbs the tests depending on timing, which can let a change through from
+                                 one run to the next, and the changes a refactoring adds -->
                             <mutationThreshold>80</mutationThreshold>
                             <timestampedReports>false</timestampedReports>
                             <outputFormats>
