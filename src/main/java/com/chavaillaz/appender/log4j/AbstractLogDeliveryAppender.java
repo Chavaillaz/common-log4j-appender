@@ -1,8 +1,5 @@
 package com.chavaillaz.appender.log4j;
 
-import static java.lang.Thread.currentThread;
-import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import java.time.Duration;
@@ -10,14 +7,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.RejectedExecutionHandler;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
 import org.apache.logging.log4j.Level;
@@ -122,82 +114,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * A task queued on {@link #workerExecutor}, carrying the {@link LogEvent} it was created for, so that
-     * {@link AbstractLogDeliveryAppender.DiscardOldestEventPolicy} can report it when evicting it. A requested
-     * flush is not one, not being an event to discard.
-     *
-     * @param event    The logging event this task was created for
-     * @param delegate The actual work to run
-     */
-    private record EventTask(LogEvent event, Runnable delegate) implements Runnable {
-
-        @Override
-        public void run() {
-            delegate.run();
-        }
-
-    }
-
-    /**
-     * Makes a full queue discard its oldest event to make room for the new one, rather than rejecting the new
-     * one as the default {@code AbortPolicy} does, through the constant-time {@code poll()} and {@code offer()}
-     * of the queue. Anything other than an {@link EventTask}, such as a requested flush, which must never evict
-     * an event, and any task once the executor is shutting down, are still rejected.
-     */
-    private final class DiscardOldestEventPolicy implements RejectedExecutionHandler {
-
-        @Override
-        public void rejectedExecution(Runnable task, ThreadPoolExecutor executor) {
-            // Rejected without describing the task, whose event would format its message, application code
-            if (executor.isShutdown()) {
-                throw new RejectedExecutionException("The appender is stopping");
-            }
-            if (!(task instanceof EventTask newTask)) {
-                throw new RejectedExecutionException("The queue is full");
-            }
-
-            // Retried first, the worker having possibly taken an event since the offer that failed
-            if (!executor.getQueue().offer(newTask)) {
-                // A race against the worker thread dequeuing the same event is harmless: nothing left to evict.
-                Runnable evicted = executor.getQueue().poll();
-                boolean queued = executor.getQueue().offer(newTask);
-
-                if (evicted instanceof EventTask evictedTask) {
-                    error("Log delivery task rejected: the internal queue is full, discarding the oldest pending event");
-                    discard(evictedTask.event(), "internal queue capacity exceeded, discarding the oldest pending event");
-                } else if (evicted == flushTask) {
-                    // The flush it requested is left to the next event, and the next one requested queued again
-                    flushTaskQueued.set(false);
-                }
-                if (!queued) {
-                    // Another event took the freed slot first, so this one is discarded instead
-                    error("Log delivery task rejected: the internal queue is full, discarding the newest event");
-                    discard(newTask.event(), "internal queue capacity exceeded, discarding the newest event");
-                    return;
-                }
-            }
-
-            // Checked again once queued, as ThreadPoolExecutor.execute() does: shut down since the check above,
-            // the executor may have no worker left to run it, nor anything left to report it
-            if (executor.isShutdown() && executor.remove(newTask)) {
-                throw new RejectedExecutionException("The appender is stopping");
-            }
-        }
-
-    }
-
-    /**
      * The single background thread converting and batching events, fed by a queue bounded to
-     * {@link DeliveryOptions#maxQueuedEvents()}, typed as a {@link ThreadPoolExecutor} so that its queue can be
-     * inspected.
+     * {@link DeliveryOptions#maxQueuedEvents()}, and the scheduler periodically requesting a flush, which that
+     * thread runs as soon as it is done with its current event.
      */
-    private final ThreadPoolExecutor workerExecutor;
-
-    /**
-     * The scheduler periodically queuing a flush, created once the delivery is. Volatile,
-     * {@link #stop(long, TimeUnit)} being free to run on another thread than {@link #start()}.
-     */
-    private volatile @Nullable ScheduledExecutorService flushScheduler;
+    private final EventWorker worker;
 
     private final C logConfiguration;
 
@@ -236,34 +157,9 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     private final DropReporter<LogEvent> discardReporter;
 
     /**
-     * Whether a periodic flush is waiting for the background thread, which runs it after the event it is
-     * processing, or on its own when idle: a flush needing a slot of its own in a full queue would wait for as
-     * long as the application keeps logging faster than the delivery keeps up.
-     */
-    private final AtomicBoolean flushRequested = new AtomicBoolean();
-
-    /**
-     * Whether {@link #flushTask} sits in the queue, so that a single one does at a time: the background thread
-     * running the flush after an event leaves it there, and a backlogged queue would otherwise take one more
-     * every period, each in the place of an event.
-     */
-    private final AtomicBoolean flushTaskQueued = new AtomicBoolean();
-
-    /**
-     * The task running a requested flush while the background thread is idle, a single instance so that
-     * {@link DiscardOldestEventPolicy} can tell it was evicted.
-     */
-    private final Runnable flushTask = this::flushIfRequested;
-
-    /**
      * Events discarded on their way to the delivery, reported or not, for {@link #getMetrics()}.
      */
     private final LongAdder discardedEvents = new LongAdder();
-
-    /**
-     * The time between two periodic flushes, in milliseconds, taken from the delivery options.
-     */
-    private final long flushIntervalMillis;
 
     /**
      * The minimum severity of an event flushing the batch right after it, or {@code null} for none, taken from
@@ -319,8 +215,8 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @param converter     The class name of the converter, or {@code null} for the default one
      * @param deadLetters   The appender the dropped documents are handed to, or {@code null} for none
      */
-    // The reporter only keeps the reference to this appender, calling it once an event is discarded, which an
-    // appender under construction receives none of
+    // The reporter and the worker only keep the reference to this appender, calling it once an event is
+    // discarded or delivered, which an appender under construction receives none of
     @SuppressWarnings("this-escape")
     private AbstractLogDeliveryAppender(String name, @Nullable Filter filter, C configuration, @Nullable String converter,
                                         @Nullable Appender deadLetters) {
@@ -328,11 +224,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         this.logConfiguration = Objects.requireNonNull(configuration, "configuration must not be null");
         DeliveryOptions options = Objects.requireNonNull(configuration.getDeliveryOptions(),
                 "configuration.getDeliveryOptions() must not be null");
-        // At least a millisecond, as the delivery options require
-        this.flushIntervalMillis = options.flushInterval().toMillis();
         this.flushLevel = options.flushLevel();
         this.closeTimeout = options.closeTimeout();
-        this.workerExecutor = newWorkerExecutor(options.maxQueuedEvents(), name);
+        // A flush interval of at least a millisecond, as the delivery options require
+        this.worker = new EventWorker(options.maxQueuedEvents(), options.flushInterval().toMillis(),
+                namedThreadFactory("worker", name), namedThreadFactory("flush-scheduler", name), new WorkerCallbacks());
         this.defaultConverter = new DefaultLogConverter(configuration);
         this.namedConverter = createConverter(converter, configuration);
         this.deadLetterAppender = deadLetters;
@@ -363,19 +259,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Creates the single-thread executor backing {@link #workerExecutor}, its queue bounded to the given
-     * capacity, with {@link DiscardOldestEventPolicy} in place of the default {@code AbortPolicy}.
-     *
-     * @param queueCapacity The maximum number of tasks the queue can hold
-     * @param appenderName  The name of this appender, which its thread is named after
-     * @return The executor to use for {@link #workerExecutor}
-     */
-    private ThreadPoolExecutor newWorkerExecutor(int queueCapacity, String appenderName) {
-        return new ThreadPoolExecutor(1, 1, 0L, MILLISECONDS, new LinkedBlockingQueue<>(queueCapacity),
-                namedThreadFactory("worker", appenderName), new DiscardOldestEventPolicy());
-    }
-
-    /**
      * Starts the log delivery handler (see {@link #createLogDeliveryHandler()}) and schedules the periodic flush
      * described in the class documentation.
      */
@@ -391,23 +274,10 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         startLogDeliveryHandler();
 
         if (logDeliveryHandler != null) {
-            // Created here, by the thread applying the configuration, rather than by the first thread to log,
-            // whose thread group and priority it would take
-            workerExecutor.prestartCoreThread();
-            startPeriodicFlush();
+            worker.start();
         }
 
         super.start();
-    }
-
-    /**
-     * Schedules the periodic flush, sending what would otherwise wait for the next event, however long that
-     * takes: a batch under the threshold, documents stacked while the retry backoff holds transmissions off, or
-     * put back by a failed transmission.
-     */
-    private void startPeriodicFlush() {
-        flushScheduler = newSingleThreadScheduledExecutor(namedThreadFactory("flush-scheduler", getName()));
-        flushScheduler.scheduleWithFixedDelay(this::requestFlush, flushIntervalMillis, flushIntervalMillis, MILLISECONDS);
     }
 
     /**
@@ -423,60 +293,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Requests a flush from {@link #flushScheduler}, run on the background thread like everything else: after
-     * its current event (see {@link #flushRequested}), or by {@link #flushTask} once idle, queued unless one
-     * already is. A full queue leaves it to the next event processed.
-     */
-    private void requestFlush() {
-        if (flushRequested.getAndSet(true) || !flushTaskQueued.compareAndSet(false, true)) {
-            // Still waiting for the background thread, or for the task queued earlier, which runs it
-            return;
-        }
-        try {
-            workerExecutor.execute(flushTask);
-        } catch (RejectedExecutionException e) {
-            // A full queue, whose next event runs it, or a worker shutting down, whose stop flushes anyway
-            flushTaskQueued.set(false);
-        } catch (Throwable e) {
-            // Throwable: an Error escaping the periodic flush, the heap running out say, cancels all its later
-            // runs. Withdrawn, the next run requesting it again rather than waiting for an event that may not come
-            flushTaskQueued.set(false);
-            flushRequested.set(false);
-            error("Unable to queue a flush, the next one will send what is pending", e);
-        }
-    }
-
-    /**
-     * Runs the flush {@link #requestFlush()} requested, unless the background thread ran it already.
-     */
-    private void flushIfRequested() {
-        // Lowered first, so that a flush requested from now on queues a task of its own
-        flushTaskQueued.set(false);
-        if (flushRequested.compareAndSet(true, false)) {
-            executeLogDeliveryTask(this::flushLogDeliveryHandler);
-        }
-    }
-
-    /**
-     * Runs a delivery task on the background thread, then flushes the batch if a periodic flush is waiting
-     * (see {@link #flushRequested}), or if the event it delivered is urgent (see {@link #isUrgent(LogEvent)}),
-     * each part failing on its own.
-     *
-     * @param task  The delivery task to run
-     * @param event The logging event it delivers
-     */
-    private void deliver(Runnable task, LogEvent event) {
-        executeLogDeliveryTask(task);
-        // The waiting flush first, which a severity failing to be checked would otherwise hold up for good, a
-        // flush being requested again only once the one waiting ran
-        executeLogDeliveryTask(() -> {
-            if ((flushRequested.get() && flushRequested.compareAndSet(true, false)) || isUrgent(event)) {
-                flushLogDeliveryHandler();
-            }
-        });
-    }
-
-    /**
      * Flushes the delivery handler, read on the background thread since it may not be created yet.
      */
     private void flushLogDeliveryHandler() {
@@ -484,6 +300,40 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         if (handler != null) {
             handler.flush();
         }
+    }
+
+    /**
+     * What the worker of this appender hands back to it: the events its full queue discards, the flushes it
+     * runs, the severity of the events it delivers, and its own failures, reported through the
+     * {@code ErrorHandler} of this appender, which a configuration may replace.
+     */
+    private final class WorkerCallbacks implements EventWorker.Callbacks {
+
+        @Override
+        public void discard(LogEvent event, String reason) {
+            AbstractLogDeliveryAppender.this.discard(event, reason);
+        }
+
+        @Override
+        public void flush() {
+            flushLogDeliveryHandler();
+        }
+
+        @Override
+        public boolean isUrgent(LogEvent event) {
+            return AbstractLogDeliveryAppender.this.isUrgent(event);
+        }
+
+        @Override
+        public void error(String message) {
+            AbstractLogDeliveryAppender.this.error(message);
+        }
+
+        @Override
+        public void error(String message, Throwable cause) {
+            AbstractLogDeliveryAppender.this.error(message, cause);
+        }
+
     }
 
     /**
@@ -589,7 +439,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             Runnable task = Objects.requireNonNull(createLogDeliveryTask(immutableEvent),
                     "createLogDeliveryTask() returned null");
             // Everything else, the check of its severity included, runs once it is queued, on the worker
-            workerExecutor.execute(new EventTask(immutableEvent, () -> deliver(task, immutableEvent)));
+            worker.submit(immutableEvent, task);
         } catch (RejectedExecutionException e) {
             // A full queue evicts rather than rejects, so this is the appender stopping
             error("Log delivery task rejected: the appender is stopping or stopped", e);
@@ -733,20 +583,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
     }
 
     /**
-     * Runs the given log delivery task, reporting what it throws through the {@code ErrorHandler} of this
-     * appender rather than letting it end the worker thread.
-     *
-     * @param task The log delivery task to execute
-     */
-    private void executeLogDeliveryTask(Runnable task) {
-        try {
-            task.run();
-        } catch (Throwable e) {
-            error("Log delivery task execution error", e);
-        }
-    }
-
-    /**
      * Creates the task transmitting the given event, called on the application thread: it should only capture
      * what it needs, leaving the conversion and the transmission to the task, run on the background thread.
      * Defaults to a task converting the event with {@link #getLogConverter()} and sending the document to the
@@ -825,7 +661,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return {@code true} if the queue is currently full
      */
     public boolean isBackpressured() {
-        return workerExecutor.getQueue().remainingCapacity() == 0;
+        return worker.isFull();
     }
 
     /**
@@ -837,7 +673,7 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
      * @return The number of entries currently queued
      */
     public int getQueuedEventCount() {
-        return workerExecutor.getQueue().size();
+        return worker.size();
     }
 
     /**
@@ -880,21 +716,11 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
         long startNanos = System.nanoTime();
         long budgetNanos = timeout > 0 ? timeUnit.toNanos(timeout) : defaultStopTimeoutNanos();
         try {
-            // No more flushes nor events, and the queued ones processed, so that closing the handler flushes them
-            if (flushScheduler != null) {
-                flushScheduler.shutdownNow();
-            }
-            workerExecutor.shutdown();
-            if (!workerExecutor.awaitTermination(budgetNanos, NANOSECONDS)) {
-                error("Log delivery thread pool did not terminate within " + Duration.ofNanos(budgetNanos)
-                        + ", some logs may be lost");
-                abandonQueuedEvents();
-            }
-        } catch (InterruptedException e) {
-            error("Thread interrupted during termination", e);
-            currentThread().interrupt();
-            // Otherwise left running past the stop, stuck for good or feeding the queue to a closed delivery
-            abandonQueuedEvents();
+            // No more flushes nor events, and the queued ones processed, so that closing the handler flushes them.
+            // Those still queued once the budget is spent, or the wait interrupted, are reported in one notification
+            List<LogEvent> abandonedEvents = worker.stop(budgetNanos);
+            discardedEvents.add(abandonedEvents.size());
+            reportDiscarded(abandonedEvents, "appender stopped before the event could be processed");
         } finally {
             if (discardReporter.stop(remainingNanos(startNanos, budgetNanos))) {
                 error("The delivery listener was still being notified of discarded logging events as the appender "
@@ -908,21 +734,6 @@ public abstract class AbstractLogDeliveryAppender<C extends LogConfiguration> ex
             setStopped();
         }
         return true;
-    }
-
-    /**
-     * Stops the background thread without waiting for it any longer, interrupting the task it runs, possibly
-     * stuck, and reports the events still queued, which never ran, in one notification.
-     */
-    private void abandonQueuedEvents() {
-        List<LogEvent> abandonedEvents = new ArrayList<>();
-        for (Runnable abandoned : workerExecutor.shutdownNow()) {
-            if (abandoned instanceof EventTask task) {
-                abandonedEvents.add(task.event());
-            }
-        }
-        discardedEvents.add(abandonedEvents.size());
-        reportDiscarded(abandonedEvents, "appender stopped before the event could be processed");
     }
 
     /**

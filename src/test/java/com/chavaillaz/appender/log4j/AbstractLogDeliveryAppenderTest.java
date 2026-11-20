@@ -177,9 +177,7 @@ class AbstractLogDeliveryAppenderTest {
      */
     private static ThreadPoolExecutor workerExecutorOf(AbstractLogDeliveryAppender<?> appender)
             throws ReflectiveOperationException {
-        Field field = AbstractLogDeliveryAppender.class.getDeclaredField("workerExecutor");
-        field.setAccessible(true);
-        return (ThreadPoolExecutor) field.get(appender);
+        return (ThreadPoolExecutor) executorField().get(workerOf(appender));
     }
 
     /**
@@ -187,9 +185,25 @@ class AbstractLogDeliveryAppenderTest {
      */
     private static void replaceWorkerExecutor(AbstractLogDeliveryAppender<?> appender, ThreadPoolExecutor executor)
             throws ReflectiveOperationException {
-        Field field = AbstractLogDeliveryAppender.class.getDeclaredField("workerExecutor");
+        executorField().set(workerOf(appender), executor);
+    }
+
+    /**
+     * The worker of an appender, running its queue and its background thread.
+     */
+    private static EventWorker workerOf(AbstractLogDeliveryAppender<?> appender) throws ReflectiveOperationException {
+        Field field = AbstractLogDeliveryAppender.class.getDeclaredField("worker");
         field.setAccessible(true);
-        field.set(appender, executor);
+        return (EventWorker) field.get(appender);
+    }
+
+    /**
+     * The field holding the executor of a worker.
+     */
+    private static Field executorField() throws ReflectiveOperationException {
+        Field field = EventWorker.class.getDeclaredField("executor");
+        field.setAccessible(true);
+        return field;
     }
 
     private ErrorHandler recordingErrorHandler(List<Throwable> errors) {
