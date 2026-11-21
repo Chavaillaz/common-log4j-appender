@@ -40,7 +40,6 @@
         <!-- The date every entry of the archives carries, so that a commit builds the same bytes wherever it is
              built. The release script sets it along with the version, through versions:set -->
         <project.build.outputTimestamp>2026-09-28T00:00:00Z</project.build.outputTimestamp>
-        <lombok.version>1.18.48</lombok.version>
         <log4j.version>2.26.1</log4j.version>
         <byte-buddy.version>1.18.17</byte-buddy.version>
         <!-- A warning of the compiler fails the build on the JDK the library is released with, a later one only
@@ -87,13 +86,6 @@
     </dependencyManagement>
 
     <dependencies>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <version>${lombok.version}</version>
-            <scope>test</scope>
-        </dependency>
-
         <dependency>
             <groupId>org.jspecify</groupId>
             <artifactId>jspecify</artifactId>
@@ -244,13 +236,6 @@
                 <configuration>
                     <release>21</release>
                     <showWarnings>true</showWarnings>
-                    <annotationProcessorPaths>
-                        <path>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                            <version>${lombok.version}</version>
-                        </path>
-                    </annotationProcessorPaths>
                 </configuration>
                 <executions>
                     <execution>

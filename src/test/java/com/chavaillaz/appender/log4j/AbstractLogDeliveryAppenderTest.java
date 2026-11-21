@@ -40,7 +40,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-import lombok.Getter;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.AbstractLogEvent;
 import org.apache.logging.log4j.core.Appender;
@@ -1087,7 +1086,6 @@ class AbstractLogDeliveryAppenderTest {
     /**
      * Records the caller location of every event it converts, declaring that it requires it or not.
      */
-    @Getter
     static class LocationRecordingAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         List<@Nullable StackTraceElement> sources = new CopyOnWriteArrayList<>();
@@ -1096,6 +1094,10 @@ class AbstractLogDeliveryAppenderTest {
         LocationRecordingAppender(boolean locationRequired) {
             super("location-recording", null, TestLogConfiguration.builder().build());
             this.locationRequired = locationRequired;
+        }
+
+        public List<@Nullable StackTraceElement> getSources() {
+            return sources;
         }
 
         @Override
@@ -3049,7 +3051,6 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
-    @Getter
     static class LogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
@@ -3057,6 +3058,15 @@ class AbstractLogDeliveryAppenderTest {
 
         protected LogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
             super(name, filter, configuration);
+        }
+
+        @Override
+        public LogDelivery getLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        public AtomicInteger getCountTaskExecuted() {
+            return countTaskExecuted;
         }
 
         @Override
@@ -3075,7 +3085,6 @@ class AbstractLogDeliveryAppenderTest {
      * An appender whose delivery implements only what {@link LogDelivery} requires, leaving its listener, health,
      * metrics and bounded close to the defaults, as a delivery not extending {@link AbstractBatchLogDelivery} may.
      */
-    @Getter
     static class MinimalLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         List<Map<String, Object>> sent = new CopyOnWriteArrayList<>();
@@ -3083,6 +3092,14 @@ class AbstractLogDeliveryAppenderTest {
 
         protected MinimalLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
             super(name, filter, configuration);
+        }
+
+        public List<Map<String, Object>> getSent() {
+            return sent;
+        }
+
+        public AtomicInteger getCloseCount() {
+            return closeCount;
         }
 
         @Override
@@ -3116,7 +3133,6 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
-    @Getter
     static class StuckLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
@@ -3126,6 +3142,11 @@ class AbstractLogDeliveryAppenderTest {
                                             CountDownLatch interrupted) {
             super(name, filter, configuration);
             this.interrupted = interrupted;
+        }
+
+        @Override
+        public LogDelivery getLogDeliveryHandler() {
+            return logDeliveryHandler;
         }
 
         @Override
@@ -3146,7 +3167,6 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
-    @Getter
     static class BlockingLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
@@ -3156,6 +3176,11 @@ class AbstractLogDeliveryAppenderTest {
                                                CountDownLatch releaseTask) {
             super(name, filter, configuration);
             this.releaseTask = releaseTask;
+        }
+
+        @Override
+        public LogDelivery getLogDeliveryHandler() {
+            return logDeliveryHandler;
         }
 
         @Override
@@ -3176,7 +3201,6 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
-    @Getter
     static class RecordingBlockingLogDeliveryAppender<C extends LogConfiguration> extends AbstractLogDeliveryAppender<C> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
@@ -3187,6 +3211,15 @@ class AbstractLogDeliveryAppenderTest {
                                                          CountDownLatch releaseFirstTask) {
             super(name, filter, configuration);
             this.releaseFirstTask = releaseFirstTask;
+        }
+
+        @Override
+        public LogDelivery getLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        public List<String> getProcessedMessages() {
+            return processedMessages;
         }
 
         @Override
@@ -3221,7 +3254,6 @@ class AbstractLogDeliveryAppenderTest {
      * {@link RecordingBlockingLogDeliveryAppender}, which captures it on the calling thread. The very first
      * task blocks until released, so every event appended meanwhile is still queued behind it.
      */
-    @Getter
     static class DeferredFormattingLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
@@ -3232,6 +3264,15 @@ class AbstractLogDeliveryAppenderTest {
                                                         CountDownLatch releaseFirstTask) {
             super(name, filter, configuration);
             this.releaseFirstTask = releaseFirstTask;
+        }
+
+        @Override
+        public LogDelivery getLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        public List<String> getFormattedMessages() {
+            return formattedMessages;
         }
 
         @Override
@@ -3257,7 +3298,6 @@ class AbstractLogDeliveryAppenderTest {
      * Records the events it processes and the closing of its delivery, each event taking the given time once the
      * appender began stopping, so that all of that time is spent within the stop, whatever ran before it.
      */
-    @Getter
     static class RecordingLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         List<String> events;
@@ -3269,6 +3309,10 @@ class AbstractLogDeliveryAppenderTest {
             super(name, filter, configuration);
             this.events = events;
             this.taskDelayMillis = taskDelayMillis;
+        }
+
+        public List<Duration> getCloseTimeouts() {
+            return closeTimeouts;
         }
 
         @Override
@@ -3409,13 +3453,16 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
-    @Getter
     static class FailStartLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         AtomicInteger countTaskCreated = new AtomicInteger();
 
         protected FailStartLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
             super(name, filter, configuration);
+        }
+
+        public AtomicInteger getCountTaskCreated() {
+            return countTaskCreated;
         }
 
         @Override
@@ -3432,7 +3479,6 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
-    @Getter
     static class FailFirstLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
@@ -3441,6 +3487,15 @@ class AbstractLogDeliveryAppenderTest {
 
         protected FailFirstLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
             super(name, filter, configuration);
+        }
+
+        @Override
+        public LogDelivery getLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        public AtomicInteger getCountTaskExecuted() {
+            return countTaskExecuted;
         }
 
         @Override
@@ -3460,7 +3515,6 @@ class AbstractLogDeliveryAppenderTest {
 
     }
 
-    @Getter
     static class FailCreationLogDeliveryAppender extends AbstractLogDeliveryAppender<TestLogConfiguration> {
 
         LogDelivery logDeliveryHandler = mock(LogDelivery.class);
@@ -3469,6 +3523,15 @@ class AbstractLogDeliveryAppenderTest {
 
         protected FailCreationLogDeliveryAppender(String name, Filter filter, TestLogConfiguration configuration) {
             super(name, filter, configuration);
+        }
+
+        @Override
+        public LogDelivery getLogDeliveryHandler() {
+            return logDeliveryHandler;
+        }
+
+        public AtomicInteger getCountTaskExecuted() {
+            return countTaskExecuted;
         }
 
         @Override

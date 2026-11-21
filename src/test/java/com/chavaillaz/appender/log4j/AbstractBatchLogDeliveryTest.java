@@ -22,7 +22,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -37,7 +36,6 @@ import com.chavaillaz.appender.LogDeliveryListener;
 import com.chavaillaz.appender.TransmissionResult;
 import com.chavaillaz.appender.internal.BackoffPolicy;
 
-@Slf4j
 @DisplayName("AbstractBatchLogDelivery")
 class AbstractBatchLogDeliveryTest {
 
