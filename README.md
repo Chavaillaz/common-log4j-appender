@@ -650,8 +650,8 @@ A change is ready once that passes, which takes:
   then those of `java`, `javax` and `jakarta`, then those of third parties, then those of `com.chavaillaz`,
   each group sorted alphabetically and separated from the next by a blank line, with no star import and none
   left unused.
-- **No compiler warning.** Every check of the compiler is on (`-Xlint:all`), and a warning fails the build on
-  JDK 21. A later JDK only shows the warnings of the checks it adds.
+- **No compiler warning.** Every check of the compiler is on (`-Xlint:all`), and a warning fails the build,
+  on JDK 21 as on any later one, whose compiler adds checks of its own.
 - **Dependency versions converging.** Two dependencies asking for different versions of a third one, the test
   ones included, fail the build, rather than Maven taking whichever it reaches first: the version is then managed
   in the POM, the newest one asked for unless something rules it out.
