@@ -125,7 +125,7 @@ entirely until you have a reason to tune something.
 The interface is read-only: build an immutable instance once, since background threads read it repeatedly
 without synchronization. Log4j2's `@PluginBuilderFactory` pattern gives that shape naturally, its `Builder`
 holding the mutable attributes and its `build()` returning the configuration, a record for instance (the
-implementations linked above generate theirs with Lombok, through `@Value` and `@Builder`):
+implementations linked above write a final class with a builder of its own, as `DeliveryOptions` is):
 
 ```java
 public record ExampleConfiguration(String application, String host, String environment,
